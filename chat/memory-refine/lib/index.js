@@ -5984,11 +5984,110 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
             }
             副本.traces = [] // 召回历史不跟过去，那边是新的开始
             saveStore(到, 副本)
-            setEnabled(到, true) // 复制过去了就顺手把开关打开，不然等于没复制
+            // 复制过去了就顺手把开关打开：目标是预设池就开预设开关，是会话就开会话开关
+            if (String(到).startsWith('preset_')) {
+              const c = loadCfg()
+              if (!c.presets || typeof c.presets !== 'object') c.presets = {}
+              c.presets[String(到).slice('preset_'.length)] = true
+              saveCfg(c)
+            } else setEnabled(到, true)
             diag('复制记忆：' + 从 + ' → ' + 到 + '（' + (副本.memories || []).length + ' 条）')
             out = { ok: true, 复制了: (副本.memories || []).length, 到: 到, 从: 从 }
           }
         }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 存档：固定格式，不再兼容 md/txt ----
+    // 导出：写到 home\memory-archives\<来源>-<时间>.json
+    // 导入：只认这个格式（format/version 对不上就拒绝）
+    const 存档目录 = join(CFG_DIR, 'memory-archives')
+    const 存档格式 = 'dsh-xykp.memory'
+
+    mroute('/dsh-fish-memory/archive/export', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const 从 = String(b.session || '')
+      let out = { ok: false, message: '没找到会话' }
+      try {
+        if (!从) throw new Error('要指明从哪个记忆库导出')
+        const data = loadStore(从)
+        if (!(data.memories || []).length) throw new Error('这边没有记忆，没什么可导出的')
+        mkdirSync(存档目录, { recursive: true })
+        const 名 = String(从).replace(/[^a-zA-Z0-9_-]/g, '_') + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json'
+        const 路径 = join(存档目录, 名)
+        writeFileSync(
+          路径,
+          JSON.stringify(
+            {
+              format: 存档格式,
+              version: 1,
+              exportedAt: new Date().toISOString(),
+              source: 从,
+              memories: data.memories,
+            },
+            null,
+            2,
+          ),
+          'utf8',
+        )
+        diag('导出存档：' + 从 + ' → ' + 路径)
+        out = { ok: true, path: 路径, count: (data.memories || []).length }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    mroute('/dsh-fish-memory/archive/import', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const 到 = String(b.session || '')
+      const 路径 = String(b.path || '').trim()
+      let out = { ok: false, message: '没找到会话' }
+      try {
+        if (!到) throw new Error('要指明导入到哪个记忆库')
+        if (!路径) throw new Error('要给出存档路径')
+        const 原 = JSON.parse(readFileSync(路径, 'utf8'))
+        if (!原 || 原.format !== 存档格式 || 原.version !== 1) throw new Error('不是本插件导出的存档（格式对不上）')
+        const 进 = Array.isArray(原.memories) ? 原.memories : []
+        const data = loadStore(到)
+        const norm = (s) => String(s || '').replace(/[\s，。、！？,.!?:;""'']/g, '')
+        const 已有 = new Set((data.memories || []).map((m) => norm(m.text)))
+        let 加 = 0
+        let 跳 = 0
+        for (const m of 进) {
+          if (!m || !m.text) continue
+          const k = norm(m.text)
+          if (!k || 已有.has(k)) {
+            跳++
+            continue
+          }
+          已有.add(k)
+          data.memories.push({ ...m, source: m.source ? m.source + '｜存档导入' : '存档导入' })
+          加++
+        }
+        if (加 > 0) {
+          try {
+            backupStore(到)
+          } catch (error) {}
+          saveStore(到, data)
+        }
+        diag('导入存档：' + 路径 + ' → ' + 到 + '（加 ' + 加 + '，跳过 ' + 跳 + '）')
+        out = { ok: true, added: 加, skipped: 跳 }
       } catch (error) {
         out = { ok: false, message: String((error && error.message) || error) }
       }

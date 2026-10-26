@@ -195,6 +195,8 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [rf, setRfState] = React.useState(进度.提炼.状态)
       const [rfNote, setRfNoteState] = React.useState(进度.提炼.说明)
       const [复制开, set复制开] = React.useState(false) // 「复制记忆到别的会话」展开没有
+      const [存档路径, set存档路径] = React.useState('') // 从存档导入时填的路径
+      const [存档提示, set存档提示] = React.useState(null)
       const [复制到, set复制到] = React.useState('') // 复制到哪个会话
       const [搜词, set搜词] = React.useState('') // 记忆列表的检索词
       const setExp = (v) => 改进度('扩词', v, 进度.扩词.说明)
@@ -433,7 +435,16 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       // ---- 第二级：某个会话的详情 ----
       if (open) {
         const s = (d.sessions || []).find((x) => x.id === open)
-        if (!s) return React.createElement('div', { style: S.wrap }, '找不到这个会话')
+        if (!s) {
+          // 找不到也得有路回去（池子还没进清单/会话被删了的时候）
+          return React.createElement(
+            'div',
+            { style: S.wrap },
+            React.createElement('div', { style: S.link, onClick: () => setOpen(null) }, '← 所有会话'),
+            React.createElement('div', { style: S.h }, '找不到这个记忆库'),
+            React.createElement('div', { style: S.dim }, '宿主可能还没把它列进清单；重启一次再试试，或者点上面回到列表。'),
+          )
+        }
         const tr = (s.traces || []).slice(-1)[0]
         const 删 = (id, action) => post('/delete', { session: open, id, action }).then(() => { setConfirm(null); load() })
         // ⭐⭐ 2026-09-23（反馈「过期条目没标作废」）：
@@ -1732,6 +1743,75 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
           if (expNote) 小件.push(React.createElement('div', { key: 'n', style: Object.assign({}, S.ok, { fontSize: 12, margin: '4px 0' }) }, expNote))
           if (rfNote) 小件.push(React.createElement('div', { key: 'n2', style: Object.assign({}, S.ok, { fontSize: 12, margin: '4px 0' }) }, rfNote))
 
+          // ---- 存档：导出 / 导入（固定格式）----
+          {
+            小件.push(
+              React.createElement(
+                'div',
+                { key: 'archive', style: { marginTop: 14 } },
+                React.createElement('div', { style: S.h }, '导出为存档'),
+                React.createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                  React.createElement(
+                    'button',
+                    {
+                      style: S.btn,
+                      disabled: busy,
+                      onClick: () => {
+                        setBusy(true)
+                        post('/archive/export', { session: open })
+                          .then((r) => {
+                            setBusy(false)
+                            set存档提示(r && r.ok ? '✓ 已导出（' + r.count + ' 条）：' + r.path : '✗ ' + ((r && r.message) || '？'))
+                          })
+                          .catch((e) => {
+                            setBusy(false)
+                            set存档提示('✗ ' + ((e && e.message) || e))
+                          })
+                      },
+                    },
+                    '导出（' + (s.memories || []).length + ' 条）',
+                  ),
+                  React.createElement('span', { style: Object.assign({}, S.dim, { fontSize: 12 }) }, '写到 home\\memory-archives\\ 下'),
+                ),
+                React.createElement('div', { style: S.h, marginTop: 10 }, '从存档导入'),
+                React.createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                  React.createElement('input', {
+                    style: Object.assign({}, S.inp, { flex: 1, minWidth: 220 }),
+                    placeholder: '存档文件路径（必须是本插件导出的）',
+                    value: 存档路径,
+                    onChange: (e) => set存档路径(e.target.value),
+                  }),
+                  React.createElement(
+                    'button',
+                    {
+                      style: S.btn,
+                      disabled: busy || !存档路径.trim(),
+                      onClick: () => {
+                        setBusy(true)
+                        post('/archive/import', { session: open, path: 存档路径.trim() })
+                          .then((r) => {
+                            setBusy(false)
+                            set存档提示(r && r.ok ? '✓ 导入 ' + r.added + ' 条（跳过重复 ' + r.skipped + '）' : '✗ ' + ((r && r.message) || '？'))
+                            load()
+                          })
+                          .catch((e) => {
+                            setBusy(false)
+                            set存档提示('✗ ' + ((e && e.message) || e))
+                          })
+                      },
+                    },
+                    '导入',
+                  ),
+                ),
+                存档提示 ? React.createElement('div', { style: Object.assign({}, S.dim, { fontSize: 12, marginTop: 4, wordBreak: 'break-all' }) }, 存档提示) : null,
+              ),
+            )
+          }
+
           // ---- 复制记忆到别的会话 ----
           // 新开一个空对话把记忆复制过去 —— 那边一点历史都没有，测起来最干净 ✓
           {
@@ -1744,7 +1824,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                   React.createElement(
                     'div',
                     { style: Object.assign({}, S.h, { cursor: 'pointer' }), onClick: () => set复制开(!复制开) },
-                    (复制开 ? '▾ ' : '▸ ') + '复制记忆到别的会话',
+                    (复制开 ? '▾ ' : '▸ ') + '导出到其他会话或预设',
                   ),
                   复制开
                     ? React.createElement(
