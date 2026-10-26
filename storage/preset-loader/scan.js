@@ -89,6 +89,7 @@ export function scanDir(yaml, dir) {
       mtime,
       size,
       rows: parsed.definition.plugins.length,
+      content: text,
     })
   }
   return out.sort((a, b) => (a.definition?.order ?? 999) - (b.definition?.order ?? 999) || a.id.localeCompare(b.id))
@@ -166,3 +167,92 @@ export function appendChangelog(changelogPath, lines) {
   mkdirSync(join(changelogPath, '..'), { recursive: true })
   appendFileSync(changelogPath, lines.join('\n') + '\n', 'utf8')
 }
+
+// ---------- 上次读取的快照（每个预设文件夹一个隐藏文件）----------
+// 光有指纹只能知道「变了」，不知道「变成什么样」；快照就是拿来出 diff 的。
+export function snapshotPath(dir, id) {
+  return join(dir, id, '.last-read.json')
+}
+
+export function readSnapshot(dir, id) {
+  try {
+    const raw = JSON.parse(readFileSync(snapshotPath(dir, id), 'utf8'))
+    if (raw && typeof raw.content === 'string') return raw
+  } catch (e) {}
+  return null
+}
+
+export function writeSnapshot(dir, id, { mtime = '', sha256 = '', content = '' } = {}) {
+  try {
+    const file = snapshotPath(dir, id)
+    mkdirSync(join(file, '..'), { recursive: true })
+    const tmp = file + '.tmp'
+    writeFileSync(tmp, JSON.stringify({ savedAt: new Date().toISOString(), mtime, sha256, content }), 'utf8')
+    renameSync(tmp, file)
+  } catch (e) {}
+}
+
+// ---------- 行级 unified diff（自己写的，不引依赖）----------
+export function diffLines(oldText, newText, context = 3) {
+  const a = String(oldText ?? '').split(/\r?\n/)
+  const b = String(newText ?? '').split(/\r?\n/)
+  if (a.length > 4000 || b.length > 4000) return '（文件太长，只记指纹不记 diff）'
+
+  const n = a.length
+  const m = b.length
+  const dp = new Array(n + 1)
+  for (let i = 0; i <= n; i++) dp[i] = new Uint32Array(m + 1)
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+
+  const ops = []
+  let i = 0
+  let j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ t: ' ', s: a[i], a: i + 1, b: j + 1 })
+      i++
+      j++
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      ops.push({ t: '-', s: a[i], a: i + 1, b: null })
+      i++
+    } else {
+      ops.push({ t: '+', s: b[j], a: null, b: j + 1 })
+      j++
+    }
+  }
+  while (i < n) ops.push({ t: '-', s: a[i], a: ++i, b: null })
+  while (j < m) ops.push({ t: '+', s: b[j], a: null, b: ++j })
+
+  const changedIdx = []
+  ops.forEach((op, idx) => {
+    if (op.t !== ' ') changedIdx.push(idx)
+  })
+  if (!changedIdx.length) return ''
+
+  const ranges = []
+  for (const idx of changedIdx) {
+    const start = Math.max(0, idx - context)
+    const end = Math.min(ops.length - 1, idx + context)
+    const last = ranges[ranges.length - 1]
+    if (last && start <= last.end + 1) last.end = Math.max(last.end, end)
+    else ranges.push({ start, end })
+  }
+
+  const aBefore = (upto) => ops.slice(0, upto).filter((op) => op.t !== '+').length
+  const out = []
+  for (const range of ranges) {
+    const slice = ops.slice(range.start, range.end + 1)
+    const aCount = slice.filter((op) => op.t !== '+').length
+    const bCount = slice.filter((op) => op.t !== '-').length
+    const aStart = slice.find((op) => op.a !== null)?.a ?? aBefore(range.start) + 1
+    const bStart = slice.find((op) => op.b !== null)?.b ?? ops.slice(0, range.start).filter((op) => op.t !== '-').length + 1
+    out.push(`@@ -${aStart},${aCount} +${bStart},${bCount} @@`)
+    for (const op of slice) out.push(op.t + op.s)
+  }
+  return out.join('\n')
+}
+

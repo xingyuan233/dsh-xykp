@@ -27,6 +27,9 @@ import {
   appendChangelog,
   metaOf,
   localStamp,
+  readSnapshot,
+  writeSnapshot,
+  diffLines,
 } from './scan.js'
 
 export const name = 'preset-loader'
@@ -61,6 +64,8 @@ async function boot(ctx, config) {
 
   // id -> { dispose, definition, sha256 }
   const owned = new Map()
+  // id -> 上次装载失败的那个文件指纹（文件没再变就别反复试）
+  const badSha = new Map()
   let syncing = Promise.resolve()
 
   async function registeredIds() {
@@ -102,14 +107,14 @@ async function boot(ctx, config) {
     }
   }
 
-  /** 改动后重注册：先卸旧的，装新的；新的不行就装回旧的 */
+  /** 改动后重注册：先卸旧的，装新的；新的不行就装回旧的。返回是否装上新版本 */
   async function reload(entry, previous) {
     try {
       await previous.dispose()
     } catch (error) {}
     owned.delete(entry.id)
     log(`检测到改动，重注册 ${entry.id}`)
-    if (await register(entry)) return
+    if (await register(entry)) return true
     try {
       const dispose = await ctx.agentPresets.register(previous.definition)
       owned.set(entry.id, { dispose, definition: previous.definition, sha256: previous.sha256 })
@@ -117,6 +122,7 @@ async function boot(ctx, config) {
     } catch (err) {
       warn(`回滚 ${entry.id} 也失败：`, err?.message || err)
     }
+    return false
   }
 
   async function check() {
@@ -127,6 +133,7 @@ async function boot(ctx, config) {
     for (const entry of good) next[entry.id] = metaOf(entry)
 
     const existing = await registeredIds()
+    const diffs = [] // { id, text }
     for (const entry of good) {
       const mine = owned.get(entry.id)
       if (!mine) {
@@ -134,10 +141,44 @@ async function boot(ctx, config) {
           log(`跳过 ${entry.id}：profile 里已经声明过（只记指纹）`)
           continue
         }
-        await register(entry)
+        if (await register(entry)) {
+          writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
+        }
         continue
       }
-      if (mine.sha256 !== entry.sha256) await reload(entry, mine)
+      if (mine.sha256 === entry.sha256) {
+        // 内容没变：补一下快照（第一次跑 / 只有 touch 的时候）
+        const snap = readSnapshot(dir, entry.id)
+        if (!snap || snap.sha256 !== entry.sha256 || snap.mtime !== entry.mtime) {
+          writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
+        }
+        continue
+      }
+
+      // 内容变了：先看这份改动是不是已经失败过（失败过就别反复试）
+      if (badSha.get(entry.id) === entry.sha256) {
+        log(`跳过 ${entry.id}：这份改动上次装载失败过，等文件再变`)
+        continue
+      }
+      badSha.delete(entry.id)
+
+      // 拿上次的快照出 diff，再重注册
+      const snap = readSnapshot(dir, entry.id)
+      if (!snap) {
+        warn(`${entry.id} 改了，但没有上次快照（只记指纹，不出 diff）`)
+      } else if (snap.sha256 !== entry.sha256) {
+        const text = diffLines(snap.content, entry.content)
+        if (text) {
+          diffs.push({ id: entry.id, text })
+          log(`${entry.id} 的改动：\n` + text)
+        }
+      }
+
+      const ok = await reload(entry, mine)
+      if (!ok) badSha.set(entry.id, entry.sha256)
+      if (owned.get(entry.id)?.sha256 === entry.sha256) {
+        writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
+      }
     }
 
     for (const [id, mine] of [...owned]) {
@@ -154,7 +195,11 @@ async function boot(ctx, config) {
     const diff = diffLock(lock, next)
     if (diff.added.length || diff.changed.length || diff.removed.length) {
       writeLock(lockPath, { version: 1, updatedAt: new Date().toISOString(), presets: next })
+      const stamp = localStamp()
       const lines = changelogLines(diff, next)
+      for (const item of diffs) {
+        lines.push('', `${stamp}  ${item.id} diff：`, item.text)
+      }
       appendChangelog(changelogPath, lines)
       log('预设变动已留痕：\n' + lines.join('\n'))
     } else {
