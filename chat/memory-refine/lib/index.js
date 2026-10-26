@@ -6245,7 +6245,6 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
           if (!文) continue
           对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
         }
-        对话 = 对话.slice(-20000)
         if (!对话.trim()) throw new Error('这个会话里没读出对话')
         const agent = ctx.agents.list()[0]
         const 上限 = Math.max(1, Math.min(100, Number(b.limit) || 20))
@@ -6412,7 +6411,6 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
           if (!文) continue
           对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
         }
-        对话 = 对话.slice(-80000)
         if (!对话.trim()) throw new Error('这段对话里没读出内容')
 
         const agent = ctx.agents.list()[0]
@@ -6420,15 +6418,10 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
           '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
           '要详细、按小节写（时间线 / 关键决定与约定 / 对方的状态与偏好 / 正在做的事与没做完的 / 重要的原话要点），' +
           '第一人称，不要寒暄、不要省略细节，能写多细写多细。直接输出交接正文，不要写思考过程、不要解释。'
-        // 空回复重试：输入太长/预算太小的时候，模型可能只「想」不「说」
-        let 回 = await 问模型(ctx, agent, 系统, 对话.slice(-30000), 2000)
-        let summary = 回 && 回.ok ? String(回.text || '').trim() : ''
-        if (!summary) {
-          diag('转移概括第一次为空（' + ((回 && 回.message) || 'ok 但空') + '），缩短输入重试')
-          回 = await 问模型(ctx, agent, 系统, 对话.slice(-12000), 1200)
-          summary = 回 && 回.ok ? String(回.text || '').trim() : ''
-        }
-        if (!summary) throw new Error('模型给了空概括（输入 ' + 对话.length + ' 字，可能是输出预算不够）')
+        // 不截断：这段对话原样全给模型（上下文通常还有几百 k，不差这几 k）
+        const 回 = await 问模型(ctx, agent, 系统, 对话, 8000)
+        const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
+        if (!summary) throw new Error('模型给了空概括（输入 ' + 对话.length + ' 字）')
 
         const c = loadCfg()
         if (!c.transferNext || typeof c.transferNext !== 'object') c.transferNext = {}
