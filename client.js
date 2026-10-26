@@ -197,6 +197,15 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [复制开, set复制开] = React.useState(false) // 「复制记忆到别的会话」展开没有
       const [存档路径, set存档路径] = React.useState('') // 从存档导入时填的路径
       const [存档提示, set存档提示] = React.useState(null)
+      const [导入来源, set导入来源] = React.useState('') // 从其他会话/预设导入
+      const [提炼来源, set提炼来源] = React.useState('') // 从会话提炼
+      const [对话列, set对话列] = React.useState([])
+      const [换旧, set换旧] = React.useState('')
+      const [换新, set换新] = React.useState('')
+      const [自定义, set自定义] = React.useState('')
+      const [转移文本, set转移文本] = React.useState('')
+      const [显示未命中, set显示未命中] = React.useState(false)
+      const [召回上限, set召回上限] = React.useState(50)
       const [复制到, set复制到] = React.useState('') // 复制到哪个会话
       const [搜词, set搜词] = React.useState('') // 记忆列表的检索词
       const setExp = (v) => 改进度('扩词', v, 进度.扩词.说明)
@@ -341,6 +350,11 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
             set预设列((r && r.presets) || [])
           })
           .catch(() => set预设列([]))
+        get('/conversations')
+          .then((r) => {
+            set对话列((r && r.conversations) || [])
+          })
+          .catch(() => set对话列([]))
       }, [])
 
       React.useEffect(() => {
@@ -1871,6 +1885,238 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 ),
               )
             }
+          }
+
+          // ---- 从其他会话或预设导入（拉过来）----
+          {
+            const 源 = (d.sessions || []).filter((x) => x.id !== open)
+            if (源.length) {
+              小件.push(
+                React.createElement(
+                  'div',
+                  { key: 'pull', style: { marginTop: 14 } },
+                  React.createElement('div', { style: S.h }, '从其他会话或预设导入'),
+                  React.createElement(
+                    'div',
+                    { style: S.nameBox },
+                    React.createElement('div', { style: { flex: 'none', width: 76 } }, '从'),
+                    React.createElement(
+                      'select',
+                      { style: Object.assign({}, S.inp, { flex: 1, width: 'auto', minWidth: 160 }), value: 导入来源, onChange: (e) => set导入来源(e.target.value) },
+                      React.createElement('option', { value: '' }, '（选一个）'),
+                      源.map((x) => React.createElement('option', { key: x.id, value: x.id }, (x.title || x.id.slice(0, 18)) + '（' + x.count + ' 条）')),
+                    ),
+                    React.createElement(
+                      'button',
+                      {
+                        style: S.btn,
+                        disabled: busy || !导入来源,
+                        onClick: () => {
+                          setBusy(true)
+                          post('/pull', { session: open, from: 导入来源 })
+                            .then((r) => {
+                              setBusy(false)
+                              setNotes([r && r.ok ? '✓ 导入 ' + r.added + ' 条（跳过重复 ' + r.skipped + '）' : '✗ ' + ((r && r.message) || '？')])
+                              load()
+                            })
+                            .catch((e) => {
+                              setBusy(false)
+                              setNotes(['✗ ' + ((e && e.message) || e)])
+                            })
+                        },
+                      },
+                      '导入',
+                    ),
+                  ),
+                ),
+              )
+            }
+          }
+
+          // ---- 从会话提炼并导入 ----
+          {
+            小件.push(
+              React.createElement(
+                'div',
+                { key: 'summary', style: { marginTop: 14 } },
+                React.createElement('div', { style: S.h }, '从会话提炼并导入'),
+                React.createElement('div', { style: S.dim }, '选一个对话，用当前对话的模型归纳成记忆（最多 20 条）。'),
+                React.createElement(
+                  'div',
+                  { style: S.nameBox },
+                  React.createElement(
+                    'select',
+                    { style: Object.assign({}, S.inp, { flex: 1, width: 'auto', minWidth: 160 }), value: 提炼来源, onChange: (e) => set提炼来源(e.target.value) },
+                    React.createElement('option', { value: '' }, '（选一个对话）'),
+                    (对话列 || []).map((x) => React.createElement('option', { key: x.sid, value: x.sid }, (x.title || x.sid.slice(0, 18)) + '（' + x.话数 + ' 句）')),
+                  ),
+                  React.createElement(
+                    'button',
+                    {
+                      style: S.btn,
+                      disabled: busy || !提炼来源,
+                      onClick: () => {
+                        setBusy(true)
+                        post('/summary/import', { session: open, from: 提炼来源 })
+                          .then((r) => {
+                            setBusy(false)
+                            setNotes([r && r.ok ? '✓ 提炼出 ' + r.added + ' 条' : '✗ ' + ((r && r.message) || '？')])
+                            load()
+                          })
+                          .catch((e) => {
+                            setBusy(false)
+                            setNotes(['✗ ' + ((e && e.message) || e)])
+                          })
+                      },
+                    },
+                    '提炼导入',
+                  ),
+                ),
+              ),
+            )
+          }
+
+          // ---- 整体修改 ----
+          {
+            小件.push(
+              React.createElement(
+                'div',
+                { key: 'modify', style: { marginTop: 14 } },
+                React.createElement('div', { style: S.h }, '整体修改'),
+                React.createElement(
+                  'div',
+                  { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 } },
+                  React.createElement('input', { style: Object.assign({}, S.inp, { width: 120 }), placeholder: '旧名字', value: 换旧, onChange: (e) => set换旧(e.target.value) }),
+                  React.createElement('span', { style: S.dim }, '→'),
+                  React.createElement('input', { style: Object.assign({}, S.inp, { width: 120 }), placeholder: '新名字', value: 换新, onChange: (e) => set换新(e.target.value) }),
+                  React.createElement(
+                    'button',
+                    {
+                      style: S.btn,
+                      disabled: busy || !换旧,
+                      onClick: () => {
+                        setBusy(true)
+                        post('/rename', { session: open, from: 换旧, to: 换新 })
+                          .then((r) => {
+                            setBusy(false)
+                            setNotes([r && r.ok ? '✓ 人称替换 ' + r.changed + ' 条' : '✗ ' + ((r && r.message) || '？')])
+                            load()
+                          })
+                          .catch((e) => {
+                            setBusy(false)
+                            setNotes(['✗ ' + ((e && e.message) || e)])
+                          })
+                      },
+                    },
+                    '人称替换',
+                  ),
+                ),
+                React.createElement(
+                  'div',
+                  null,
+                  React.createElement('textarea', {
+                    style: Object.assign({}, S.area, { minHeight: 60 }),
+                    placeholder: '自定义提示词：每轮跟在记忆后面一起注入（可留空）',
+                    value: 自定义 || (s.customPrompt || ''),
+                    onChange: (e) => set自定义(e.target.value),
+                  }),
+                  React.createElement(
+                    'button',
+                    {
+                      style: S.btn,
+                      disabled: busy,
+                      onClick: () => {
+                        setBusy(true)
+                        post('/prompt', { session: open, text: 自定义 !== '' ? 自定义 : s.customPrompt || '' })
+                          .then(() => {
+                            setBusy(false)
+                            setNotes(['✓ 提示词已保存'])
+                            load()
+                          })
+                          .catch((e) => {
+                            setBusy(false)
+                            setNotes(['✗ ' + ((e && e.message) || e)])
+                          })
+                      },
+                    },
+                    '保存提示词',
+                  ),
+                ),
+                React.createElement('div', null, 扩词区()),
+              ),
+            )
+          }
+
+          // ---- 转移到下一个对话（仅预设）----
+          if (s.preset) {
+            小件.push(
+              React.createElement(
+                'div',
+                { key: 'transfer', style: { marginTop: 14 } },
+                React.createElement('div', { style: S.h }, '转移到下一个对话'),
+                React.createElement('div', { style: S.dim }, '这个预设下次开新对话时注入一次，用完就没。'),
+                React.createElement('textarea', {
+                  style: Object.assign({}, S.area, { minHeight: 70 }),
+                  placeholder: '要交接的话（一次性）',
+                  value: 转移文本,
+                  onChange: (e) => set转移文本(e.target.value),
+                }),
+                React.createElement(
+                  'button',
+                  {
+                    style: S.btn,
+                    disabled: busy || !转移文本.trim(),
+                    onClick: () => {
+                      setBusy(true)
+                      post('/transfer/next', { preset: s.preset, text: 转移文本.trim() })
+                        .then((r) => {
+                          setBusy(false)
+                          setNotes([r && r.ok ? '✓ 已排好，下一个对话开头注入一次' : '✗ ' + ((r && r.message) || '？')])
+                          set转移文本('')
+                        })
+                        .catch((e) => {
+                          setBusy(false)
+                          setNotes(['✗ ' + ((e && e.message) || e)])
+                        })
+                    },
+                  },
+                  '排进下一个对话',
+                ),
+              ),
+            )
+          }
+
+          // ---- 转移到文档 ----
+          {
+            小件.push(
+              React.createElement(
+                'div',
+                { key: 'doc', style: { marginTop: 14 } },
+                React.createElement('div', { style: S.h }, '转移到文档'),
+                React.createElement('div', { style: S.dim }, '把记忆概括写成 markdown，路径固定（存在库里），之后可以自己改。'),
+                React.createElement(
+                  'button',
+                  {
+                    style: S.btn,
+                    disabled: busy,
+                    onClick: () => {
+                      setBusy(true)
+                      post('/transfer/doc', { session: open })
+                        .then((r) => {
+                          setBusy(false)
+                          setNotes([r && r.ok ? '✓ 写到 ' + r.path : '✗ ' + ((r && r.message) || '？')])
+                        })
+                        .catch((e) => {
+                          setBusy(false)
+                          setNotes(['✗ ' + ((e && e.message) || e)])
+                        })
+                    },
+                  },
+                  '导出概括文档',
+                ),
+                s.summaryPath ? React.createElement('div', { style: Object.assign({}, S.dim, { fontSize: 12, marginTop: 4, wordBreak: 'break-all' }) }, '上次写到：' + s.summaryPath) : null,
+              ),
+            )
           }
           return 小件
         }
@@ -3666,14 +3912,6 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
           //   可它后面跟的却是那两个区块 —— 看着像它俩的标题，其实只是句说明 ✗
           //   （「设置页面会不会有点乱」）
           //   → 挪到**末尾**，跟「这一页到底会怎么变」那些说明放一起 ✓
-          React.createElement('div', null, 扩词区()),
-          React.createElement(
-            'div',
-            { style: Object.assign({}, S.h, { cursor: 'pointer' }), onClick: () => setImpOpen(!impOpen) },
-            (impOpen ? '▾ ' : '▸ ') + '从旧档案导入',
-          ),
-          React.createElement('div', { style: S.dim }, '把一个文件夹里的档案拆成一条条记忆，你挑完再导。文件夹在下面选。'),
-          impOpen ? React.createElement('div', null, 导入区()) : null,
           tr
             ? React.createElement(
                 'div',
@@ -3686,6 +3924,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                   //   （反馈：「这里为什么只有这些，该显示最近标中的」）
                   const 排好 = (tr.rows || []).slice().sort((a, b) => (b.P || 0) - (a.P || 0) || (b.C || 0) - (a.C || 0))
                   const 进去的 = 排好.filter((r) => !r.omission)
+                  const 显示的 = 排好.filter((r) => 显示未命中 || !r.omission).slice(0, Math.max(1, 召回上限 || 50))
                   return React.createElement(
                     'div',
                     null,
@@ -3696,7 +3935,31 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                         ? '✓ 挑中并塞进去了 ' + 进去的.length + ' 条（排在最前面）'
                         : '这次一条都没挑中（线索跟记忆对不上）',
                     ),
-                    排好.slice(0, 20).map((r, i) => {
+                    React.createElement(
+                      'div',
+                      { style: { display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', margin: '4px 0 6px', fontSize: 12 } },
+                      React.createElement(
+                        'label',
+                        { style: Object.assign({}, S.dim, { display: 'flex', gap: 4, alignItems: 'center', cursor: 'pointer' }) },
+                        React.createElement('input', { type: 'checkbox', checked: 显示未命中, onChange: (e) => set显示未命中(e.target.checked) }),
+                        '显示未命中',
+                      ),
+                      React.createElement('span', { style: S.dim }, '最多显示'),
+                      React.createElement('input', {
+                        type: 'number',
+                        min: 1,
+                        max: 500,
+                        step: 10,
+                        style: Object.assign({}, S.inp, { width: 70 }),
+                        value: 召回上限,
+                        onChange: (e) => set召回上限(Number(e.target.value) || 50),
+                      }),
+                      React.createElement('span', { style: S.dim }, '条（共 ' + 排好.length + ' 条）'),
+                    ),
+                    React.createElement(
+                      'div',
+                      { style: { maxHeight: 260, overflowY: 'auto', border: '1px solid rgba(128,128,128,.25)', borderRadius: 6, padding: '2px 6px' } },
+                      显示的.map((r, i) => {
                       const mm = s.memories.find((x) => x.id === r.id) || (s.deleted || []).find((x) => x.id === r.id)
                       const why = r.omission
                         ? { hard_gate: '没命中线索', below_threshold: '分数不够', limit: '超过条数上限', budget: '超过字数上限', duplicate: '跟另一条重复', fact_cap: '长期事实占满了名额' }[r.omission] || r.omission
@@ -3719,6 +3982,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                         React.createElement('div', { style: Object.assign({}, 色, { width: 96 }) }, why + (r.timeHit ? ' ⭐' : '')),
                       )
                     }),
+                    ),
                   )
                 })(),
                 React.createElement(

@@ -2887,8 +2887,8 @@ function markTraceStatus(data, id, status) {
   return 动
 }
 
-function render(selected, now, selfName) {
-  if (!selected.length) return ''
+function render(selected, now, selfName, customPrompt) {
+  if (!selected.length && !customPrompt) return ''
   const lines = selected.map((r) => {
     // ⭐ 注入前再换一次人称 —— 这样**以前写错的老记忆**读出来也是对的 ✓
     const body = normalizePerson(String(r.m.text || '').trim(), selfName)
@@ -2905,6 +2905,7 @@ function render(selected, now, selfName) {
     '每条前面的 `#xxxxxxxx` 是它的 id：觉得没用了就用 `memory_rm` 删掉；要更新就删旧的、再用 `memory_ins` 记新的。',
     '',
     ...lines,
+    ...(customPrompt ? ['', '【自定义提示词】', String(customPrompt)] : []),
   ].join('\n')
 }
 
@@ -3398,6 +3399,8 @@ function buildMemoryList(ctx) {
         live: 是池 ? false : liveIds.has(sid),
         parent: 分支来处Of(ctx, sid),
         count: data.memories.length,
+        customPrompt: data.customPrompt || '',
+        summaryPath: data.summaryPath || '',
         memories: data.memories.map((m) => {
           // ⚠⚠ 2026-09-22 修（反馈：「没标时间的还是鲜活 100%，有些还是 —」）：
           //   原来这里自己写了一套公式 —— 长期事实无条件 1（100%）、
@@ -3743,8 +3746,26 @@ export function apply(ctx) {
           }
           diag('  注入被调用：query 长度=' + query.length)
           if (!query) return ''
+          // 一次性「转移到下一个对话」：这个预设的下一个会话开头注入一次，用完就删
+          let 转移 = ''
+          if (String(sid).startsWith('preset_')) {
+            const 池名 = String(sid).slice('preset_'.length)
+            try {
+              const c = loadCfg()
+              const t = c.transferNext && c.transferNext[池名]
+              if (t && t.text) {
+                转移 = String(t.text)
+                delete c.transferNext[池名]
+                saveCfg(c)
+                diag('转移提示词已注入（' + 池名 + '）：' + 转移.length + ' 字')
+              }
+            } catch (error) {}
+          }
           const data = loadStore(sid)
-          if (!data.memories.length) return ''
+          if (!data.memories.length) {
+            const 尾巴 = data.customPrompt ? '【自定义提示词】\n' + String(data.customPrompt) : ''
+            return [转移, 尾巴].filter(Boolean).join('\n\n')
+          }
           补历史尺(sid, agent.session) // ⭐ 第一次用到时把她的会话历史补成尺子（只做一次）✓
           const { selected, scored, gate } = recall(data, query, now, sid)
           // ⚠ 只存**最相关的前 24 条**，别把 850 条全存进来 ✗
@@ -3771,14 +3792,15 @@ export function apply(ctx) {
             })),
           })
           saveStore(sid, data)
-          const 注入文本 = render(selected, now, selfNameOf(sid))
+          const 注入文本 = render(selected, now, selfNameOf(sid), data.customPrompt)
+          const 最终 = 转移 ? 转移 + '\n\n' + 注入文本 : 注入文本
           // ⭐ 2026-10-22 她要能看见「这一轮到底注入了什么」：
           //    搬到官方桌面端之后界面上看不到了，那就写进 diag.log，一眼能翻。
           //    只记一行、截断 400 字，不占空间。
           try {
-            diag('注入 ' + selected.length + ' 条：' + (注入文本 || '（空）').split(String.fromCharCode(10)).join(' ⏎ ').slice(0, 400))
+            diag('注入 ' + selected.length + ' 条：' + (最终 || '（空）').split(String.fromCharCode(10)).join(' ⏎ ').slice(0, 400))
           } catch (error) {}
-          return 注入文本
+          return 最终
         } catch (error) {
           return '' // 记忆坏了也不能影响对话
         }
@@ -6088,6 +6110,274 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         }
         diag('导入存档：' + 路径 + ' → ' + 到 + '（加 ' + 加 + '，跳过 ' + 跳 + '）')
         out = { ok: true, added: 加, skipped: 跳 }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 从其他会话或预设导入（拉过来，合并，不覆盖）----
+    mroute('/dsh-fish-memory/pull', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const 到 = String(b.session || '')
+      const 从 = String(b.from || '')
+      let out = { ok: false, message: '没找到记忆库' }
+      try {
+        if (!到 || !从) throw new Error('要指明从哪到哪')
+        if (到 === 从) throw new Error('来源和目标不能是同一个')
+        const 母的 = loadStore(从)
+        const 进 = 母的.memories || []
+        if (!进.length) throw new Error('来源那边没有记忆')
+        const data = loadStore(到)
+        const norm = (s) => String(s || '').replace(/[\s，。、！？,.!?:;""'']/g, '')
+        const 已有 = new Set((data.memories || []).map((m) => norm(m.text)))
+        let 加 = 0
+        let 跳 = 0
+        for (const m of 进) {
+          const k = norm(m.text)
+          if (!k || 已有.has(k)) {
+            跳++
+            continue
+          }
+          已有.add(k)
+          data.memories.push({ ...m, id: m.id, source: (m.source || '') + '｜从别处导入' })
+          加++
+        }
+        if (加) {
+          try {
+            backupStore(到)
+          } catch (error) {}
+          saveStore(到, data)
+        }
+        diag('拉取记忆：' + 从 + ' → ' + 到 + '（加 ' + 加 + '，跳 ' + 跳 + '）')
+        out = { ok: true, added: 加, skipped: 跳 }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 会话列表（给「从会话提炼并导入」挑）----
+    mroute('/dsh-fish-memory/conversations', (req, res) => {
+      let list = []
+      try {
+        const 标题 = ctx.get('sessionTitle')
+        for (const s of ctx.sessions.list() || []) {
+          const sid = sessionIdOf(s)
+          if (!sid) continue
+          let title = ''
+          try {
+            title = 标题 && typeof 标题.get === 'function' ? 标题.get(s) || '' : ''
+          } catch (error) {}
+          list.push({ sid, title: title || sid.slice(0, 18), 话数: 0 })
+        }
+      } catch (error) {
+        diag('列会话失败：' + (error && error.message))
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ ok: true, conversations: list }))
+    })
+
+    // ---- 从会话提炼并导入：用当前对话的模型，不单独指定 ----
+    mroute('/dsh-fish-memory/summary/import', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const 到 = String(b.session || '')
+      const 从 = String(b.from || '')
+      let out = { ok: false, message: '？' }
+      try {
+        if (!到 || !从) throw new Error('要指明导入到哪、从哪个会话提炼')
+        const sess = (ctx.sessions.list() || []).find((x) => sessionIdOf(x) === 从)
+        if (!sess) throw new Error('找不到这个会话（可能已经不在线）')
+        let 对话 = ''
+        for (const seq of sess.surface.nodes) {
+          const ev = sess.eventAt(seq)
+          if (!ev) continue
+          let msg
+          try {
+            msg = sess.deriveEventMessage(ev)
+          } catch (error) {
+            msg = ev.data && ev.data.message
+          }
+          if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
+          const 文 = (msg.content || [])
+            .filter((b) => b && b.type === 'text')
+            .map((b) => b.text)
+            .join('\n')
+            .trim()
+          if (!文) continue
+          对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
+        }
+        对话 = 对话.slice(-20000)
+        if (!对话.trim()) throw new Error('这个会话里没读出对话')
+        const agent = ctx.agents.list()[0]
+        const 系统 =
+          '你是长期记忆整理员。给你一段两个人之间的对话，请挑出值得长期记住的事（约定、喜好、重要经历、对方的状态变化）。' +
+          '每行一条，第一人称（自己是「我」，对方是「ta」），最多 20 条；不要编号、不要解释、不要空行。'
+        const 出 = await 问模型(ctx, agent, 系统, 对话, 800)
+        const 行 = String(出 || '')
+          .split(/\r?\n/)
+          .map((x) => x.replace(/^[\s\-*•·\d.)、]+/, '').trim())
+          .filter((x) => x.length >= 4)
+          .slice(0, 20)
+        if (!行.length) throw new Error('模型没给出可用的条目')
+        const data = loadStore(到)
+        const norm = (s) => String(s || '').replace(/[\s，。、！？,.!?:;""'']/g, '')
+        const 已有 = new Set((data.memories || []).map((m) => norm(m.text)))
+        let 加 = 0
+        for (const t of 行) {
+          const k = norm(t)
+          if (!k || 已有.has(k)) continue
+          已有.add(k)
+          data.memories.push({
+            id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+            text: t,
+            at: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            category: 'event',
+            importance: 0.5,
+            source: '从会话提炼（' + 从 + '）',
+          })
+          加++
+        }
+        if (加) {
+          try {
+            backupStore(到)
+          } catch (error) {}
+          saveStore(到, data)
+        }
+        diag('会话提炼：' + 从 + ' → ' + 到 + '（加 ' + 加 + '）')
+        out = { ok: true, added: 加, total: 行.length }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 整体修改：人称替换 / 自定义提示词 ----
+    mroute('/dsh-fish-memory/rename', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const sid = String(b.session || '')
+      const 从 = String(b.from || '')
+      const 到 = String(b.to || '')
+      let out = { ok: false, message: '？' }
+      try {
+        if (!sid || !从) throw new Error('要给出记忆库和旧名字')
+        const data = loadStore(sid)
+        let n = 0
+        for (const m of data.memories || []) {
+          if (typeof m.text === 'string' && m.text.includes(从)) {
+            m.text = m.text.split(从).join(到)
+            n++
+          }
+        }
+        if (n) {
+          try {
+            backupStore(sid)
+          } catch (error) {}
+          saveStore(sid, data)
+        }
+        diag('人称替换：' + sid + ' 「' + 从 + '」→「' + 到 + '」改 ' + n + ' 条')
+        out = { ok: true, changed: n }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    mroute('/dsh-fish-memory/prompt', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const sid = String(b.session || '')
+      let out = { ok: false, message: '？' }
+      try {
+        if (!sid) throw new Error('要给出记忆库')
+        const data = loadStore(sid)
+        data.customPrompt = String(b.text || '').slice(0, 2000)
+        saveStore(sid, data)
+        out = { ok: true }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 转移到下一个对话（仅预设；一次性）----
+    mroute('/dsh-fish-memory/transfer/next', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const preset = String(b.preset || '')
+      const text = String(b.text || '').slice(0, 4000)
+      let out = { ok: false, message: '？' }
+      try {
+        if (!preset) throw new Error('只能对预设做这个')
+        const c = loadCfg()
+        if (!c.transferNext || typeof c.transferNext !== 'object') c.transferNext = {}
+        c.transferNext[preset] = { text, at: new Date().toISOString() }
+        saveCfg(c)
+        diag('转移提示词：' + preset + '，' + text.length + ' 字（下一个对话注入一次）')
+        out = { ok: true }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 转移到文档：概括导出，路径固定、可改 ----
+    mroute('/dsh-fish-memory/transfer/doc', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const sid = String(b.session || '')
+      let out = { ok: false, message: '？' }
+      try {
+        if (!sid) throw new Error('要给出记忆库')
+        const data = loadStore(sid)
+        const 名 = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_') + '-history.md'
+        mkdirSync(存档目录, { recursive: true })
+        const 路径 = data.summaryPath || join(存档目录, 名)
+        const 行 = ['# 记忆概括 · ' + sid, '', '导出时间：' + new Date().toISOString(), '']
+        for (const m of data.memories || []) {
+          const 时 = m.at ? String(m.at).slice(0, 10) : ''
+          const 星 = m.importance >= 0.8 ? '★ ' : ''
+          行.push('- ' + 星 + (时 ? '[' + 时 + '] ' : '') + String(m.text || ''))
+        }
+        writeFileSync(路径, 行.join('\n') + '\n', 'utf8')
+        data.summaryPath = 路径
+        saveStore(sid, data)
+        diag('转移文档：' + sid + ' → ' + 路径)
+        out = { ok: true, path: 路径, count: (data.memories || []).length }
       } catch (error) {
         out = { ok: false, message: String((error && error.message) || error) }
       }
