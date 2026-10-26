@@ -23,8 +23,8 @@ DSH（DeepSeek Harness）的插件集合。一个仓库、一个包、内部按�
 
 | 模块 | 来源 | 状态 |
 |---|---|---|
-| `storage/preset-loader` | `tools\preset-folder` | **已搬（含热重载）** |
-| 预设 → 活跃会话表 | `tools\preset-active` | 待搬（`chat/preset-binder`） |
+| `storage/preset-loader` | `tools\preset-folder` | **已搬（热重载 + 快照 diff）** |
+| `chat/preset-binder` | `tools\preset-active` | **已搬（时间/模型/token/上下文明细）** |
 | 记忆（预设池） | `dsh-fish-memory` 的本地补丁版 | 待搬 |
 | QQ 通道 | `dsh-onebot-qq` 的本地补丁版 | 等 NapCat 换稳定版后重写 |
 | B 站工具 | `dsh-plugin-bilibili` | 待重写（只做工具，不做定时强刷） |

@@ -13,7 +13,9 @@
     "node": ">=20"
   },
   "exports": {
-    "./storage/preset-loader": "./storage/preset-loader/index.js"
+    "./storage/preset-loader": "./storage/preset-loader/index.js",
+    "./chat/preset-binder": "./chat/preset-binder/index.js",
+    "./chat/preset-binder/table": "./chat/preset-binder/table.js"
   },
   "files": [
     "core",
