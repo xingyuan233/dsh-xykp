@@ -2216,7 +2216,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 'div',
                 { key: 'transfer', style: { marginTop: 14 } },
                 React.createElement('div', { style: S.h }, '转移到下一个对话'),
-                React.createElement('div', { style: S.dim }, '点按钮会让当前模型把这段对话概括成交接说明；下面框里可以补几句注意事项（可留空）。下次这个预设开新对话时注入一次，用完就没。'),
+                React.createElement('div', { style: S.dim }, '上下文快满时用它：让当前模型把这段对话压成一份详细交接（不是记几条记忆，记忆本来就在）；下面框里可以补注意事项。下次这个预设开新对话时注入一次。'),
                 React.createElement('textarea', {
                   style: Object.assign({}, S.area, { minHeight: 70 }),
                   placeholder: '额外补充（可选）：比如「别把刚才说的那件事忘了」',
@@ -2235,7 +2235,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                           setBusy(false)
                           setNotes(
                             r && r.ok
-                              ? ['✓ 概括好了，下一个对话开头注入一次', String(r.summary || '').slice(0, 300)]
+                              ? ['✓ 概括好了，下一个对话开头注入一次', String(r.summary || '').slice(0, 1200)]
                               : ['✗ ' + ((r && r.message) || '？')],
                           )
                           set转移文本('')

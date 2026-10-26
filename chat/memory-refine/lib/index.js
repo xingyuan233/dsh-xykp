@@ -6409,14 +6409,15 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
           if (!文) continue
           对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
         }
-        对话 = 对话.slice(-20000)
+        对话 = 对话.slice(-80000)
         if (!对话.trim()) throw new Error('这段对话里没读出内容')
 
         const agent = ctx.agents.list()[0]
         const 系统 =
-          '把下面这段对话概括成一份「交接说明」：保留关键决定、约定、对方的状态和未完成的事；' +
-          '第一人称，简洁分点（最多 8 点），不要寒暄、不要复述原话。'
-        const 回 = await 问模型(ctx, agent, 系统, 对话, 900)
+          '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
+          '要详细、按小节写（时间线 / 关键决定与约定 / 对方的状态与偏好 / 正在做的事与没做完的 / 重要的原话要点），' +
+          '第一人称，不要寒暄、不要省略细节，能写多细写多细。'
+        const 回 = await 问模型(ctx, agent, 系统, 对话, 3000)
         if (!回 || !回.ok) throw new Error('模型没回：' + ((回 && 回.message) || '？'))
         const summary = String(回.text || '').trim()
         if (!summary) throw new Error('模型给了空概括')
