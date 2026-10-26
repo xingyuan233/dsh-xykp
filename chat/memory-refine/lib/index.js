@@ -6222,15 +6222,16 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         对话 = 对话.slice(-20000)
         if (!对话.trim()) throw new Error('这个会话里没读出对话')
         const agent = ctx.agents.list()[0]
+        const 上限 = Math.max(1, Math.min(100, Number(b.limit) || 20))
         const 系统 =
           '你是长期记忆整理员。给你一段两个人之间的对话，请挑出值得长期记住的事（约定、喜好、重要经历、对方的状态变化）。' +
-          '每行一条，第一人称（自己是「我」，对方是「ta」），最多 20 条；不要编号、不要解释、不要空行。'
-        const 出 = await 问模型(ctx, agent, 系统, 对话, 800)
+          `每行一条，第一人称（自己是「我」，对方是「ta」），最多 ${上限} 条；不要编号、不要解释、不要空行。`
+        const 出 = await 问模型(ctx, agent, 系统, 对话, Math.min(2000, 40 * 上限))
         const 行 = String(出 || '')
           .split(/\r?\n/)
           .map((x) => x.replace(/^[\s\-*•·\d.)、]+/, '').trim())
           .filter((x) => x.length >= 4)
-          .slice(0, 20)
+          .slice(0, 上限)
         if (!行.length) throw new Error('模型没给出可用的条目')
         const data = loadStore(到)
         const norm = (s) => String(s || '').replace(/[\s，。、！？,.!?:;""'']/g, '')

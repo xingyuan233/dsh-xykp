@@ -199,6 +199,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [存档提示, set存档提示] = React.useState(null)
       const [导入来源, set导入来源] = React.useState('') // 从其他会话/预设导入
       const [提炼来源, set提炼来源] = React.useState('') // 从会话提炼
+      const [提炼上限, set提炼上限] = React.useState(20)
       const [对话列, set对话列] = React.useState([])
       const [换旧, set换旧] = React.useState('')
       const [换新, set换新] = React.useState('')
@@ -1756,6 +1757,12 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
           }
           if (expNote) 小件.push(React.createElement('div', { key: 'n', style: Object.assign({}, S.ok, { fontSize: 12, margin: '4px 0' }) }, expNote))
           if (rfNote) 小件.push(React.createElement('div', { key: 'n2', style: Object.assign({}, S.ok, { fontSize: 12, margin: '4px 0' }) }, rfNote))
+          return 小件
+        }
+
+        // ---- 附加区：导出 / 导入 / 提炼 / 整体修改 / 转移 ----
+        const 附加区 = () => {
+          const 小件 = []
 
           // ---- 存档：导出 / 导入（固定格式）----
           {
@@ -1940,7 +1947,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 'div',
                 { key: 'summary', style: { marginTop: 14 } },
                 React.createElement('div', { style: S.h }, '从会话提炼并导入'),
-                React.createElement('div', { style: S.dim }, '选一个对话，用当前对话的模型归纳成记忆（最多 20 条）。'),
+                React.createElement('div', { style: S.dim }, '选一个对话，用当前对话的模型归纳成记忆。'),
                 React.createElement(
                   'div',
                   { style: S.nameBox },
@@ -1950,6 +1957,17 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                     React.createElement('option', { value: '' }, '（选一个对话）'),
                     (对话列 || []).map((x) => React.createElement('option', { key: x.sid, value: x.sid }, (x.title || x.sid.slice(0, 18)) + '（' + x.话数 + ' 句）')),
                   ),
+                  React.createElement('span', { style: S.dim }, '最多'),
+                  React.createElement('input', {
+                    type: 'number',
+                    min: 1,
+                    max: 100,
+                    step: 5,
+                    style: Object.assign({}, S.inp, { width: 70 }),
+                    value: 提炼上限,
+                    onChange: (e) => set提炼上限(Number(e.target.value) || 20),
+                  }),
+                  React.createElement('span', { style: S.dim }, '条'),
                   React.createElement(
                     'button',
                     {
@@ -1957,7 +1975,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                       disabled: busy || !提炼来源,
                       onClick: () => {
                         setBusy(true)
-                        post('/summary/import', { session: open, from: 提炼来源 })
+                        post('/summary/import', { session: open, from: 提炼来源, limit: 提炼上限 })
                           .then((r) => {
                             setBusy(false)
                             setNotes([r && r.ok ? '✓ 提炼出 ' + r.added + ' 条' : '✗ ' + ((r && r.message) || '？')])
@@ -2703,6 +2721,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 ),
               )
             : null,
+          React.createElement('div', { key: 'extra', style: { marginBottom: 8 } }, 附加区()),
           // ⚠ 记忆列表**默认折叠** —— 库里几百条的时候，它压在中间会把
           //   「提炼 / 扩词」那些按钮顶到很下面，她得一直翻才够得着 ✗
           React.createElement(
@@ -3985,11 +4004,6 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                     ),
                   )
                 })(),
-                React.createElement(
-                  'div',
-                  { style: Object.assign({}, S.dim, { fontSize: 12, marginTop: 6 }) },
-                  '「进去了」= 这一轮塞进提示词了；「像是用上了」= 她回复里的实词跟这条重合得多（这是猜的）；「已失效」= 这条后来被删了或改过。',
-                ),
               )
             : null,
           // ⭐ 2026-09-22：说明都放末尾（原来「备份」插在中间，看着像别的区块的标题）
