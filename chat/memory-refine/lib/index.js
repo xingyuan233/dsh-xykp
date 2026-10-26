@@ -3776,7 +3776,14 @@ export function apply(ctx) {
             try {
               const c = loadCfg()
               const t = c.transferNext && c.transferNext[池名]
-              if (t && (t.summary || t.extra)) {
+              // 只交给「刚开的那个新会话」：这个会话还没说过话（没有 assistant 回复）才注入；
+              // 不然谁先请求谁就把交接吃掉了（实测就是被别的活着的会话抢走）
+              let 是新会话 = true
+              try {
+                const ev = agent.session.snapshotEvents ? agent.session.snapshotEvents() || [] : []
+                是新会话 = !ev.some((e) => (e && (e.type || e.kind)) === 'assistant/message')
+              } catch (error) {}
+              if (t && (t.summary || t.extra) && 是新会话) {
                 转移 =
                   '【上一个对话的交接（一次性；看到就懂了，不用复述这段话）】\n' +
                   String(t.summary || '') +
@@ -6419,7 +6426,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
           '要详细、按小节写（时间线 / 关键决定与约定 / 对方的状态与偏好 / 正在做的事与没做完的 / 重要的原话要点），' +
           '第一人称，不要寒暄、不要省略细节，能写多细写多细。直接输出交接正文，不要写思考过程、不要解释。'
         // 不截断：这段对话原样全给模型（上下文通常还有几百 k，不差这几 k）
-        const 回 = await 问模型(ctx, agent, 系统, 对话, 8000)
+        const 回 = await 问模型(ctx, agent, 系统, 对话, 65536)
         const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
         if (!summary) throw new Error('模型给了空概括（输入 ' + 对话.length + ' 字）')
 
