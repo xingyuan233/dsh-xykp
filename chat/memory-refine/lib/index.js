@@ -2688,8 +2688,11 @@ function recall(data, query, now, sid) {
   //   实测过：只换打分公式，它们照样六条，因为**总能比出六条来**。
   //   尺子是「她自己怎么说话」：天天说的词不算信息，偶尔说的才算 ✓
   const 门槛 = typeof policy.queryGate === 'number' ? policy.queryGate : 0.8
+  // 明显在问「记忆」的话，不拿信息量门槛拦：「你还记得刚才在干嘛嘛」这种字面上没啥稀有词，
+  // 但它恰恰最该去翻记忆（实测就是这么被门挡掉的）
+  const 问记忆 = /(记得|记不记得|还记得|刚才|刚刚|之前|上次|以前|我们|那会儿|先前)/.test(query)
   let gate = null
-  if (门槛 > 0 && sid) {
+  if (门槛 > 0 && sid && !问记忆) {
     const v = 问句信息量(sid, query, df)
     if (v < 门槛) {
       // 这道门挡下来的时候**不做 851 次打分**，省一趟；理由照样记进 trace 给她看 ✓
