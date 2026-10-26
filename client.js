@@ -2216,10 +2216,10 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 'div',
                 { key: 'transfer', style: { marginTop: 14 } },
                 React.createElement('div', { style: S.h }, '转移到下一个对话'),
-                React.createElement('div', { style: S.dim }, '这个预设下次开新对话时注入一次，用完就没。框里写的就是全部内容（系统会自动加一句「上一个对话的交接」）；不写就不注入。'),
+                React.createElement('div', { style: S.dim }, '点按钮会让当前模型把这段对话概括成交接说明；下面框里可以补几句注意事项（可留空）。下次这个预设开新对话时注入一次，用完就没。'),
                 React.createElement('textarea', {
                   style: Object.assign({}, S.area, { minHeight: 70 }),
-                  placeholder: '要交接的话（一次性）',
+                  placeholder: '额外补充（可选）：比如「别把刚才说的那件事忘了」',
                   value: 转移文本,
                   onChange: (e) => set转移文本(e.target.value),
                 }),
@@ -2227,13 +2227,17 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                   'button',
                   {
                     style: S.btnMain,
-                    disabled: busy || !转移文本.trim(),
+                    disabled: busy,
                     onClick: () => {
                       setBusy(true)
                       post('/transfer/next', { preset: s.preset, text: 转移文本.trim() })
                         .then((r) => {
                           setBusy(false)
-                          setNotes([r && r.ok ? '✓ 已排好，下一个对话开头注入一次' : '✗ ' + ((r && r.message) || '？')])
+                          setNotes(
+                            r && r.ok
+                              ? ['✓ 概括好了，下一个对话开头注入一次', String(r.summary || '').slice(0, 300)]
+                              : ['✗ ' + ((r && r.message) || '？')],
+                          )
                           set转移文本('')
                         })
                         .catch((e) => {
@@ -2242,7 +2246,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                         })
                     },
                   },
-                  '排进下一个对话',
+                  '概括当前对话 → 排给下一个对话',
                 ),
               ),
             )

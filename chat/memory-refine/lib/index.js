@@ -3773,9 +3773,11 @@ export function apply(ctx) {
             try {
               const c = loadCfg()
               const t = c.transferNext && c.transferNext[池名]
-              if (t && t.text) {
+              if (t && (t.summary || t.extra)) {
                 转移 =
-                  '【上一个对话的交接（一次性；看到就懂了，不用复述这段话）】\n' + String(t.text)
+                  '【上一个对话的交接（一次性；看到就懂了，不用复述这段话）】\n' +
+                  String(t.summary || '') +
+                  (t.extra ? '\n\n【补充注意】\n' + String(t.extra) : '')
                 delete c.transferNext[池名]
                 saveCfg(c)
                 diag('转移提示词已注入（' + 池名 + '）：' + 转移.length + ' 字')
@@ -6358,16 +6360,73 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         b = JSON.parse(body || '{}')
       } catch (error) {}
       const preset = String(b.preset || '')
-      const text = String(b.text || '').slice(0, 4000)
+      const extra = String(b.text || '').slice(0, 2000)
       let out = { ok: false, message: '？' }
       try {
         if (!preset) throw new Error('只能对预设做这个')
+        // 找这个预设当前活着的会话来概括（优先传入的 session，其次同预设的 agent）
+        let sess = null
+        if (b.session) {
+          try {
+            sess = ctx.sessions.get(String(b.session))
+          } catch (error) {}
+        }
+        if (!sess) {
+          // 先看 preset-binder 记的活跃会话，再退回同预设的 agent
+          try {
+            const 表 = JSON.parse(readFileSync(join(CFG_DIR, 'storages', 'preset-binder.json'), 'utf8'))
+            const 活跃 = 表 && 表.presets && 表.presets[preset] && 表.presets[preset].active
+            if (活跃) sess = ctx.sessions.get(String(活跃))
+          } catch (error) {}
+        }
+        if (!sess) {
+          const 目标 = (ctx.agents.list() || []).find((a) => {
+            try {
+              return ctx.get('agentPresets')?.composedPreset(a.ctx) === preset
+            } catch (error) {
+              return false
+            }
+          })
+          sess = 目标 && 目标.session
+        }
+        if (!sess) throw new Error('这个预设现在没有活着的对话，没法概括')
+        let 对话 = ''
+        for (const seq of sess.surface.nodes) {
+          const ev = sess.eventAt(seq)
+          if (!ev) continue
+          let msg
+          try {
+            msg = sess.deriveEventMessage(ev)
+          } catch (error) {
+            msg = ev.data && ev.data.message
+          }
+          if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
+          const 文 = (msg.content || [])
+            .filter((x) => x && x.type === 'text')
+            .map((x) => x.text)
+            .join('\n')
+            .trim()
+          if (!文) continue
+          对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
+        }
+        对话 = 对话.slice(-20000)
+        if (!对话.trim()) throw new Error('这段对话里没读出内容')
+
+        const agent = ctx.agents.list()[0]
+        const 系统 =
+          '把下面这段对话概括成一份「交接说明」：保留关键决定、约定、对方的状态和未完成的事；' +
+          '第一人称，简洁分点（最多 8 点），不要寒暄、不要复述原话。'
+        const 回 = await 问模型(ctx, agent, 系统, 对话, 900)
+        if (!回 || !回.ok) throw new Error('模型没回：' + ((回 && 回.message) || '？'))
+        const summary = String(回.text || '').trim()
+        if (!summary) throw new Error('模型给了空概括')
+
         const c = loadCfg()
         if (!c.transferNext || typeof c.transferNext !== 'object') c.transferNext = {}
-        c.transferNext[preset] = { text, at: new Date().toISOString() }
+        c.transferNext[preset] = { summary, extra, at: new Date().toISOString() }
         saveCfg(c)
-        diag('转移提示词：' + preset + '，' + text.length + ' 字（下一个对话注入一次）')
-        out = { ok: true }
+        diag('转移：' + preset + ' 概括 ' + summary.length + ' 字，补充 ' + extra.length + ' 字（下一个对话注入一次）')
+        out = { ok: true, summary }
       } catch (error) {
         out = { ok: false, message: String((error && error.message) || error) }
       }
