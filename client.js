@@ -182,6 +182,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [showDeleted, setShowDeleted] = React.useState(false)
       const [selfDraft, setSelfDraft] = React.useState({}) // 每个会话「她自己叫什么」的草稿
       const [pronounDraft, setPronounDraft] = React.useState(null) // 用户的称呼草稿
+      const [预设列, set预设列] = React.useState([]) // 「使用记忆的预设」那块的数据
       const [edit, setEdit] = React.useState(null) // 正在改的那条：{id, text, importance}
       const [pronounAsk, setPronounAsk] = React.useState(null) // 改了称呼，问要不要连旧记忆一起改
       const [imp, setImp] = React.useState(null) // 档案导入：扫描结果 + 勾选状态
@@ -333,6 +334,11 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
             setErr(null)
           })
           .catch((e) => setErr(String((e && e.message) || e)))
+        get('/presets')
+          .then((r) => {
+            set预设列((r && r.presets) || [])
+          })
+          .catch(() => set预设列([]))
       }, [])
 
       React.useEffect(() => {
@@ -2291,30 +2297,6 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
           React.createElement('div', { style: S.link, onClick: () => setOpen(null) }, '← 所有会话'),
           React.createElement('div', { style: S.h }, s.title || s.id),
           React.createElement('div', { style: S.dim }, s.id + '　' + s.memories.length + ' 条记忆' + (已删.length ? '　（另外还收着 ' + 已删.length + ' 条）' : '')),
-          React.createElement(
-            'div',
-            { style: S.nameBox },
-            React.createElement('div', { style: { flex: 'none', width: 132 } }, '她自己叫什么'),
-            React.createElement('input', {
-              style: Object.assign({}, S.inp, { width: 130 }),
-              placeholder: '比如 小明',
-              value: selfDraft[open] !== undefined ? selfDraft[open] : s.selfName || s.titleName || '',
-              onChange: (e) => setSelfDraft(Object.assign({}, selfDraft, { [open]: e.target.value })),
-            }),
-            React.createElement(
-              'button',
-              {
-                style: S.btn,
-                onClick: () =>
-                  post('/names', { session: open, selfName: (selfDraft[open] !== undefined ? selfDraft[open] : s.selfName) || '' }).then(() => {
-                    setSelfDraft({})
-                    load()
-                  }),
-              },
-              '存',
-            ),
-            React.createElement('span', { style: Object.assign({}, S.dim, { fontSize: 12, flex: 1 }) }, '记的时候写到这个名字，会自动换成「我」—— 已有的记忆也会顺手洗一遍。' + (s.selfName ? '' : s.titleName ? '（先填的是会话标题，确认没问题点「存」）' : '')),
-          ),
           // ---- 2026-09-21 新加：她自己后台手动加一条 ----
           // 跟模型自己记是两回事：它记受上面那个开关管，**手动加不受管** ✓
           // （开关管的是「他自己记不记、注不注入」，管不到她手动写）
@@ -3779,71 +3761,52 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
         React.createElement(
           'div',
           { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 } },
-          React.createElement('span', { style: { fontSize: 15, fontWeight: 600 } }, '鱼的记忆'),
+          React.createElement('span', { style: { fontSize: 15, fontWeight: 600 } }, '记忆'),
           React.createElement('span', { style: Object.assign({}, S.dim, { fontSize: 12 }) }, 'v' + (d.version || '?')),
         ),
-        React.createElement('div', { style: Object.assign({}, S.h, { marginTop: 0 }) }, '哪些会话用记忆'),
+        React.createElement('div', { style: Object.assign({}, S.h, { marginTop: 0 }) }, '使用记忆的预设'),
+        React.createElement('div', { style: S.dim }, '默认全是关的。开了的预设，所有跑它的会话共用同一份记忆。'),
+        React.createElement(
+          'div',
+          { style: { margin: '8px 0 16px' } },
+          预设列.length
+            ? 预设列.map((p) =>
+                React.createElement(
+                  'div',
+                  { key: p.id, style: { display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0' } },
+                  React.createElement(
+                    'button',
+                    {
+                      style: Object.assign({}, S.btn, {
+                        flex: 'none',
+                        width: 56,
+                        color: p.on ? '#8fd0a0' : 'inherit',
+                        borderColor: p.on ? 'rgba(143,208,160,.6)' : 'rgba(128,128,128,.35)',
+                      }),
+                      disabled: busy,
+                      onClick: () => {
+                        setBusy(true)
+                        post('/presets/toggle', { preset: p.id, on: !p.on })
+                          .then(() => {
+                            setBusy(false)
+                            load()
+                          })
+                          .catch(() => setBusy(false))
+                      },
+                    },
+                    p.on ? '● 开' : '○ 关',
+                  ),
+                  React.createElement('span', { style: { flex: 1 } }, p.name + '（' + p.id + '）'),
+                ),
+              )
+            : React.createElement('div', { style: S.dim }, '读不到预设列表'),
+        ),
+        React.createElement('div', { style: S.h }, '使用记忆的会话'),
         React.createElement(
           'div',
           { style: S.dim },
-          '默认全是关的 —— 你点「开」的那个会话才会记、才会读。每个会话一份记忆，淡了只是不容易被想起来，不会删。',
+          '默认全是关的 —— 你点「开」的那个会话才会记、才会读。预设开着的会话不用单独开；两边谁开都算开。',
         ),
-        React.createElement(
-          'div',
-          { style: S.nameBox },
-          React.createElement('div', { style: { flex: 'none', width: 132 } }, '用户的称呼'),
-          React.createElement('input', {
-            style: Object.assign({}, S.inp, { width: 90 }),
-            placeholder: 'ta / 她 / 他',
-            value: pronounDraft !== null ? pronounDraft : d.userPronoun || 'ta',
-            onChange: (e) => setPronounDraft(e.target.value),
-          }),
-          React.createElement(
-            'button',
-            {
-              style: S.btn,
-              onClick: () => {
-                const p = pronounDraft !== null ? pronounDraft : d.userPronoun || 'ta'
-                post('/names', { userPronoun: p }).then((r) => {
-                  setPronounDraft(null)
-                  // 影响到了旧记忆就先问一句，不偷偷改 ✓
-                  if (r && r.称呼影响几条 > 0 && !r.称呼已改) setPronounAsk({ n: r.称呼影响几条, to: p, 例子: r.称呼例子 || [] })
-                  else setPronounAsk(null)
-                  load()
-                })
-              },
-            },
-            '存',
-          ),
-          React.createElement('span', { style: Object.assign({}, S.dim, { fontSize: 12, flex: 1 }) }, '记忆里提到你时用哪个字。默认「ta」；设成「她」或「他」就按你设的记。'),
-        ),
-        pronounAsk
-          ? React.createElement(
-              'div',
-              { style: S.askBox },
-              React.createElement(
-                'div',
-                { style: { flex: 1 } },
-                React.createElement('div', null, '已有 ' + pronounAsk.n + ' 条旧记忆里还写着旧的字。要一起改成「' + pronounAsk.to + '」吗？'),
-                (pronounAsk.例子 || []).slice(0, 2).map((e, i) =>
-                  React.createElement('div', { key: i, style: Object.assign({}, S.dim, { fontSize: 12, marginTop: 2 }) }, '　「' + e.旧 + '」→「' + e.新 + '」'),
-                ),
-              ),
-              React.createElement(
-                'button',
-                {
-                  style: S.btn,
-                  onClick: () =>
-                    post('/names', { userPronoun: pronounAsk.to, applyToExisting: true }).then(() => {
-                      setPronounAsk(null)
-                      load()
-                    }),
-                },
-                '一起改',
-              ),
-              React.createElement('button', { style: S.btn, onClick: () => setPronounAsk(null) }, '以后再说'),
-            )
-          : null,
         (d.sessions || []).map((s) =>
           React.createElement(
             'div',
@@ -3882,7 +3845,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
         React.createElement(
           'div',
           { style: Object.assign({}, S.h, { cursor: 'pointer' }), onClick: () => set看参数(!看参数) },
-          (看参数 ? '▾ ' : '▸ ') + '参数（调一次就不动的东西，点开调）',
+          (看参数 ? '▾ ' : '▸ ') + '配置',
         ),
         看参数
           ? React.createElement(
@@ -3924,9 +3887,9 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
             name: 'settings.section',
             id: 'memory',
             order: 51,
-            label: () => '鱼的记忆',
+            label: () => '记忆',
           },
-          () => React.createElement('div', null, React.createElement(更新条), React.createElement(Section)),
+          () => React.createElement(Section),
         ),
       )
     }

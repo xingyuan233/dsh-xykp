@@ -20,7 +20,9 @@
     "./chat/preset-binder/table": "./chat/preset-binder/table.js",
     "./chat/toolret-forget": "./chat/toolret-forget/index.js",
     "./chat/toolret-forget/fold": "./chat/toolret-forget/fold.js",
-    "./chat/memory-refine": "./chat/memory-refine/lib/index.js"
+    "./chat/memory-refine": "./chat/memory-refine/lib/index.js",
+    "./senses/screenshot": "./senses/screenshot/index.js",
+    "./senses/keymouse": "./senses/keymouse/index.js"
   },
   "dsh": {
     "client": {

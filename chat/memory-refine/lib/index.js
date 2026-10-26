@@ -4030,16 +4030,41 @@ export function apply(ctx) {
         }),
       )
 
-    // ⭐ 设置页那个「检查更新」：查这个插件自己的仓库（地址从 package.json 读）
-    const 自查更新 = createSelfUpdate({
-      packageRoot: join(dirname(fileURLToPath(import.meta.url)), '..'),
-      diag,
-    })
-    mroute('/dsh-fish-memory/update', async (req, res) => {
-      const u = new URL(req.url, 'http://127.0.0.1')
-      const r = await 自查更新.check(u.searchParams.get('refresh') === '1')
+    // 预设级的记忆开关（「使用记忆的预设」那一块）
+    mroute('/dsh-fish-memory/presets', async (req, res) => {
+      let presets = []
+      try {
+        const reg = ctx.get('agentPresets')
+        const list = reg && typeof reg.list === 'function' ? await reg.list() : []
+        const c = loadCfg()
+        const m = c.presets && typeof c.presets === 'object' ? c.presets : {}
+        presets = list.map((p) => ({ id: p.id, name: p.name || p.id, on: m[p.id] === true }))
+      } catch (error) {
+        diag('读预设列表失败：' + (error && error.message))
+      }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-      res.end(JSON.stringify({ ok: true, ...r }))
+      res.end(JSON.stringify({ ok: true, presets, bind: bindPresetList() }))
+    })
+
+    mroute('/dsh-fish-memory/presets/toggle', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const id = String(b.preset || '').trim()
+      const 回话 = (code, obj) => {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(JSON.stringify(obj))
+      }
+      if (!id) return 回话(400, { ok: false, message: '缺 preset' })
+      const c = loadCfg()
+      if (!c.presets || typeof c.presets !== 'object') c.presets = {}
+      c.presets[id] = !!b.on
+      saveCfg(c)
+      diag('预设记忆开关：' + id + ' = ' + (!!b.on))
+      return 回话(200, { ok: true, preset: id, on: !!b.on })
     })
 
     mroute('/dsh-fish-memory/page', (req, res) => {

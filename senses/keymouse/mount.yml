@@ -1,14 +1,3 @@
 - insert:
-    - id: mcp-input
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        transport: stdio
-        serverName: input
-        command: 'D:\Program-Files\Python\312\python.exe'
-        args:
-          - 'D:\AI\DeepseekHarness\plugins\senses\keymouse\server.py'
-        cwd: 'D:\AI\DeepseekHarness\plugins\senses\keymouse'
-        env:
-          PYTHONUTF8: '1'
-          PYTHONIOENCODING: 'utf-8'
-        failOnStartupError: false
+    - id: senses-keymouse
+      name: 'dsh-xykp/senses/keymouse'

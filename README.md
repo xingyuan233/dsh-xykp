@@ -30,7 +30,7 @@ DSH（DeepSeek Harness）的插件集合。一个仓库、一个包、内部按�
 | B 站工具 | `dsh-plugin-bilibili` | 待重写（只做工具，不做定时强刷） |
 | 安装安全闸 | `dsh-plugin-gate` | 待搬 |
 | 会话工具 | `dsh-session-delete` | 待搬 |
-| 截屏 / 输入 MCP | `tools\screen-mcp` → `senses/screenshot`、`tools\input-mcp` → `senses/keymouse` | **已搬（DXGI 抓屏不落盘 / SendInput 输入）** |
+| 截屏 / 输入 | `tools\screen-mcp` → `senses/screenshot`、`tools\input-mcp` → `senses/keymouse` | **已搬；原生工具 `screenshot_acquire` / `mouse_input` / `keyboard_input`（Python 后端 + stdio 桥接）** |
 
 ## 许可
 
