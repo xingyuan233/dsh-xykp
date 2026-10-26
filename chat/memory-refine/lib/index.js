@@ -6226,7 +6226,9 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         const 系统 =
           '你是长期记忆整理员。给你一段两个人之间的对话，请挑出值得长期记住的事（约定、喜好、重要经历、对方的状态变化）。' +
           `每行一条，第一人称（自己是「我」，对方是「ta」），最多 ${上限} 条；不要编号、不要解释、不要空行。`
-        const 出 = await 问模型(ctx, agent, 系统, 对话, Math.min(2000, 40 * 上限))
+        const 回 = await 问模型(ctx, agent, 系统, 对话, Math.min(2000, 40 * 上限))
+        if (!回 || !回.ok) throw new Error('模型没回：' + ((回 && 回.message) || '？'))
+        const 出 = 回.text
         const 行 = String(出 || '')
           .split(/\r?\n/)
           .map((x) => x.replace(/^[\s\-*•·\d.)、]+/, '').trim())
@@ -6379,6 +6381,137 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         saveStore(sid, data)
         diag('转移文档：' + sid + ' → ' + 路径)
         out = { ok: true, path: 路径, count: (data.memories || []).length }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 存档列表（给「从存档导入」快速选）----
+    mroute('/dsh-fish-memory/archive/list', (req, res) => {
+      let files = []
+      try {
+        if (existsSync(存档目录)) {
+          files = readdirSync(存档目录)
+            .filter((f) => f.endsWith('.json'))
+            .map((f) => {
+              const 路径 = join(存档目录, f)
+              let st = null
+              try {
+                st = statSync(路径)
+              } catch (error) {}
+              return { name: f, path: 路径, size: st ? st.size : 0, mtime: st ? st.mtime.toISOString() : '' }
+            })
+            .sort((a, b) => (b.mtime || '').localeCompare(a.mtime || ''))
+        }
+      } catch (error) {}
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify({ ok: true, dir: 存档目录, files }))
+    })
+
+    // ---- 整体修改：让模型按格式改一遍，先出预览，不直接落库 ----
+    mroute('/dsh-fish-memory/rewrite', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const sid = String(b.session || '')
+      const mode = String(b.mode || 'expand')
+      const extra = String(b.prompt || '').slice(0, 2000)
+      let out = { ok: false, message: '？' }
+      try {
+        if (!sid) throw new Error('要给出记忆库')
+        const data = loadStore(sid)
+        const 条目 = (data.memories || []).map((m) => ({ id: m.id, text: m.text, related: m.related || null }))
+        if (!条目.length) throw new Error('这边没有记忆')
+        const agent = ctx.agents.list()[0]
+        const 系统 =
+          mode === 'expand'
+            ? '给你一串记忆条目（JSON 数组），给每条补 2~5 个检索关键词（related）。只输出 JSON 数组，元素 {"id":"原 id","related":["词1","词2"]}，不要别的内容。'
+            : mode === 'person'
+              ? '给你一串记忆条目（JSON 数组），把每条里的人称统一成第一人称（自己是「我」，对方是「ta」），不改事实、不加内容。只输出 JSON 数组，元素 {"id":"原 id","text":"改写后的正文"}。'
+              : '给你一串记忆条目（JSON 数组）和一条要求，按要求改写每条的正文。只输出 JSON 数组，元素 {"id":"原 id","text":"改写后的正文"}，不要解释。'
+        const 用户 = (extra ? '要求：' + extra + '\n\n' : '') + JSON.stringify(条目).slice(0, 20000)
+        const 回 = await 问模型(ctx, agent, 系统, 用户, Math.min(4000, 30 * 条目.length + 300))
+        if (!回 || !回.ok) throw new Error('模型没回：' + ((回 && 回.message) || '？'))
+        const 出 = 回.text
+        const 文 = String(出 || '')
+        const 起 = 文.indexOf('[')
+        const 止 = 文.lastIndexOf(']')
+        if (起 < 0 || 止 <= 起) throw new Error('模型没按 JSON 返回')
+        const arr = JSON.parse(文.slice(起, 止 + 1))
+        if (!Array.isArray(arr) || !arr.length) throw new Error('模型返回空结果')
+        data.rewritePreview = { mode, at: new Date().toISOString(), items: arr.slice(0, 500) }
+        saveStore(sid, data)
+        diag('整体修改预览：' + sid + ' 模式=' + mode + ' 条数=' + arr.length)
+        out = { ok: true, count: arr.length, mode, items: arr.slice(0, 30) }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    mroute('/dsh-fish-memory/rewrite/apply', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const sid = String(b.session || '')
+      let out = { ok: false, message: '？' }
+      try {
+        const data = loadStore(sid)
+        const pv = data.rewritePreview
+        if (!pv || !Array.isArray(pv.items) || !pv.items.length) throw new Error('没有待应用的预览')
+        try {
+          backupStore(sid)
+        } catch (error) {}
+        const 按id = new Map((data.memories || []).map((m) => [String(m.id), m]))
+        let n = 0
+        for (const it of pv.items) {
+          const m = 按id.get(String(it.id))
+          if (!m) continue
+          if (Array.isArray(it.related)) {
+            m.related = it.related.slice(0, 8).map(String)
+            n++
+          }
+          if (typeof it.text === 'string' && it.text.trim()) {
+            m.text = it.text.trim().slice(0, 500)
+            n++
+          }
+        }
+        delete data.rewritePreview
+        saveStore(sid, data)
+        diag('整体修改应用：' + sid + ' 改动 ' + n + ' 处（原版在 .bak）')
+        out = { ok: true, changed: n }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    mroute('/dsh-fish-memory/rewrite/undo', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      const sid = String(b.session || '')
+      let out = { ok: false, message: '？' }
+      try {
+        const bak = storePath(sid) + '.bak'
+        if (!existsSync(bak)) throw new Error('没有可撤销的备份')
+        const data = JSON.parse(readFileSync(bak, 'utf8'))
+        saveStore(sid, data)
+        diag('整体修改撤销：' + sid + ' ← .bak')
+        out = { ok: true }
       } catch (error) {
         out = { ok: false, message: String((error && error.message) || error) }
       }

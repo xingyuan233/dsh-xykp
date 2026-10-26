@@ -120,6 +120,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       barIn: { height: '100%', background: 'linear-gradient(90deg,#5b8fd6,#8fd0a0)', transition: 'width .25s' },
       area: { width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 5, border: '1px solid rgba(128,128,128,.35)', background: 'transparent', color: 'inherit', fontSize: 13, lineHeight: 1.7, fontFamily: 'inherit', resize: 'vertical' },
       btnDanger: { padding: '3px 10px', borderRadius: 6, border: '1px solid rgba(200,120,120,.6)', background: 'rgba(200,120,120,.18)', color: 'inherit', cursor: 'pointer', fontSize: 12 },
+      btnMain: { padding: '4px 12px', borderRadius: 6, border: '1px solid rgba(91,143,214,.7)', background: 'rgba(91,143,214,.25)', color: 'inherit', cursor: 'pointer', fontSize: 12, fontWeight: 600 },
       ok: { color: '#8fd0a0' },
       drop: { color: '#c98080' },
       warn: { color: '#e0b070' },
@@ -196,6 +197,11 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [rfNote, setRfNoteState] = React.useState(进度.提炼.说明)
       const [复制开, set复制开] = React.useState(false) // 「复制记忆到别的会话」展开没有
       const [存档路径, set存档路径] = React.useState('') // 从存档导入时填的路径
+      const [存档列, set存档列] = React.useState([])
+      const [存档目录, set存档目录] = React.useState('')
+      const [修改模式, set修改模式] = React.useState('expand')
+      const [修改提示, set修改提示] = React.useState('')
+      const [修改预览, set修改预览] = React.useState(null)
       const [存档提示, set存档提示] = React.useState(null)
       const [导入来源, set导入来源] = React.useState('') // 从其他会话/预设导入
       const [提炼来源, set提炼来源] = React.useState('') // 从会话提炼
@@ -356,6 +362,12 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
             set对话列((r && r.conversations) || [])
           })
           .catch(() => set对话列([]))
+        get('/archive/list')
+          .then((r) => {
+            set存档列((r && r.files) || [])
+            set存档目录((r && r.dir) || '')
+          })
+          .catch(() => set存档列([]))
       }, [])
 
       React.useEffect(() => {
@@ -1799,6 +1811,33 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 React.createElement('div', { style: S.h, marginTop: 10 }, '从存档导入'),
                 React.createElement(
                   'div',
+                  { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 } },
+                  React.createElement(
+                    'select',
+                    {
+                      style: Object.assign({}, S.inp, { flex: 1, width: 'auto', minWidth: 220 }),
+                      value: '',
+                      onChange: (e) => {
+                        if (e.target.value) set存档路径(e.target.value)
+                      },
+                    },
+                    React.createElement('option', { value: '' }, 存档列.length ? '（从 ' + (存档目录 || '存档目录') + ' 里选一个）' : '（还没有存档）'),
+                    存档列.map((f) =>
+                      React.createElement('option', { key: f.path, value: f.path }, f.name + '（' + Math.round((f.size || 0) / 1024) + ' KB）'),
+                    ),
+                  ),
+                  React.createElement(
+                    'button',
+                    {
+                      style: S.btn,
+                      disabled: !存档列.length,
+                      onClick: () => set存档路径(存档列[0].path),
+                    },
+                    '选最近的',
+                  ),
+                ),
+                React.createElement(
+                  'div',
                   { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
                   React.createElement('input', {
                     style: Object.assign({}, S.inp, { flex: 1, minWidth: 220 }),
@@ -2004,6 +2043,13 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 React.createElement(
                   'div',
                   { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 } },
+                  React.createElement(
+                    'select',
+                    { style: Object.assign({}, S.inp, { width: 'auto', minWidth: 130 }), value: 修改模式, onChange: (e) => set修改模式(e.target.value) },
+                    React.createElement('option', { value: 'expand' }, '扩词'),
+                    React.createElement('option', { value: 'person' }, '人称改写'),
+                    React.createElement('option', { value: 'prompt' }, '自定义提示词改写'),
+                  ),
                   React.createElement('input', { style: Object.assign({}, S.inp, { width: 120 }), placeholder: '旧名字', value: 换旧, onChange: (e) => set换旧(e.target.value) }),
                   React.createElement('span', { style: S.dim }, '→'),
                   React.createElement('input', { style: Object.assign({}, S.inp, { width: 120 }), placeholder: '新名字', value: 换新, onChange: (e) => set换新(e.target.value) }),
@@ -2026,7 +2072,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                           })
                       },
                     },
-                    '人称替换',
+                    '直接替换',
                   ),
                 ),
                 React.createElement(
@@ -2060,7 +2106,105 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                     '保存提示词',
                   ),
                 ),
-                React.createElement('div', null, 扩词区()),
+                React.createElement(
+                  'div',
+                  { style: { marginTop: 8 } },
+                  修改模式 === 'prompt'
+                    ? React.createElement('textarea', {
+                        style: Object.assign({}, S.area, { minHeight: 54, marginBottom: 6 }),
+                        placeholder: '这次整体修改的要求，比如「把每条改得更短、更像日记」',
+                        value: 修改提示,
+                        onChange: (e) => set修改提示(e.target.value),
+                      })
+                    : null,
+                  React.createElement(
+                    'div',
+                    { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                    React.createElement(
+                      'button',
+                      {
+                        style: S.btnMain,
+                        disabled: busy,
+                        onClick: () => {
+                          setBusy(true)
+                          set修改预览(null)
+                          post('/rewrite', { session: open, mode: 修改模式, prompt: 修改提示 })
+                            .then((r) => {
+                              setBusy(false)
+                              if (!r || !r.ok) {
+                                setNotes(['✗ ' + ((r && r.message) || '？')])
+                                return
+                              }
+                              set修改预览(r.items || [])
+                              setNotes(['✓ 模型回来了 ' + r.count + ' 条，先看看再应用'])
+                            })
+                            .catch((e) => {
+                              setBusy(false)
+                              setNotes(['✗ ' + ((e && e.message) || e)])
+                            })
+                        },
+                      },
+                      '开始执行（用当前模型）',
+                    ),
+                    修改预览 && 修改预览.length
+                      ? React.createElement(
+                          'button',
+                          {
+                            style: S.btnMain,
+                            disabled: busy,
+                            onClick: () => {
+                              setBusy(true)
+                              post('/rewrite/apply', { session: open })
+                                .then((r) => {
+                                  setBusy(false)
+                                  setNotes([r && r.ok ? '✓ 已应用 ' + r.changed + ' 处（原版已备份，可撤销）' : '✗ ' + ((r && r.message) || '？')])
+                                  set修改预览(null)
+                                  load()
+                                })
+                                .catch((e) => {
+                                  setBusy(false)
+                                  setNotes(['✗ ' + ((e && e.message) || e)])
+                                })
+                            },
+                          },
+                          '应用',
+                        )
+                      : null,
+                    修改预览 && 修改预览.length
+                      ? React.createElement(
+                          'button',
+                          {
+                            style: S.btnDanger,
+                            disabled: busy,
+                            onClick: () => {
+                              setBusy(true)
+                              post('/rewrite/undo', { session: open })
+                                .then((r) => {
+                                  setBusy(false)
+                                  setNotes([r && r.ok ? '✓ 已恢复备份' : '✗ ' + ((r && r.message) || '？')])
+                                  load()
+                                })
+                                .catch((e) => {
+                                  setBusy(false)
+                                  setNotes(['✗ ' + ((e && e.message) || e)])
+                                })
+                            },
+                          },
+                          '撤销（恢复备份）',
+                        )
+                      : null,
+                  ),
+                  修改预览 && 修改预览.length
+                    ? React.createElement(
+                        'div',
+                        { style: { maxHeight: 200, overflowY: 'auto', border: '1px solid rgba(128,128,128,.25)', borderRadius: 6, padding: '4px 8px', marginTop: 6, fontSize: 12 } },
+                        修改预览.map((it, i) =>
+                          React.createElement('div', { key: i, style: { padding: '2px 0' } },
+                            '#' + String(it.id || '').slice(0, 8) + '  ' + (it.text ? String(it.text).slice(0, 80) : '') + (it.related ? '  [' + (it.related || []).join('/') + ']' : '')),
+                        ),
+                      )
+                    : null,
+                ),
               ),
             )
           }
@@ -2082,7 +2226,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 React.createElement(
                   'button',
                   {
-                    style: S.btn,
+                    style: S.btnMain,
                     disabled: busy || !转移文本.trim(),
                     onClick: () => {
                       setBusy(true)
@@ -2115,7 +2259,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 React.createElement(
                   'button',
                   {
-                    style: S.btn,
+                    style: S.btnMain,
                     disabled: busy,
                     onClick: () => {
                       setBusy(true)
