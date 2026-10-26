@@ -18,14 +18,16 @@ const PREFIX = '[toolret-forget]'
 const log = (...args) => console.log(PREFIX, ...args)
 const warn = (...args) => console.warn(PREFIX, ...args)
 
-const tool = (ctx) => ({
-  name: 'forget_tool_results',
-  description:
-    '把工具结果折叠掉：从下一轮起模型看不到这些结果的原文（日志里仍保留）。' +
-    '一次性并行调了很多工具、只要其中几条时用它。' +
-    '序号按最近一个「带工具调用的步骤」从 1 开始；不填 forget/keep 就全忘。' +
-    '这个工具自己的结果也会被折叠，所以选择本身不会留在对话里。',
-  parameters: {
+// 注意：defineTool 收的是「字段表」DSL（它自己会转成 JSON Schema），但这个插件是直接
+// ctx.tools.register，parameters 会原样发给模型。所以这里必须写成完整的 JSON Schema——
+// 少一个顶层 type: 'object'，每轮请求都会被 provider 拒绝：
+//   Invalid schema for function 'forget_tool_results': schema must be a JSON Schema of
+//   'type: "object"', got 'type: null'.
+// （2026-10-26 事故：alive 预设的会话全部卡死，就是因为这里少了 object 根。）
+export const parameters = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
     step: {
       type: 'number',
       description: '1 = 最近一次带工具调用的步骤（默认）；2 = 再往前一个步骤。',
@@ -49,6 +51,16 @@ const tool = (ctx) => ({
       description: '可选，一句话写进占位里，比如「只是中间过程」。',
     },
   },
+}
+
+const tool = (ctx) => ({
+  name: 'forget_tool_results',
+  description:
+    '把工具结果折叠掉：从下一轮起模型看不到这些结果的原文（日志里仍保留）。' +
+    '一次性并行调了很多工具、只要其中几条时用它。' +
+    '序号按最近一个「带工具调用的步骤」从 1 开始；不填 forget/keep 就全忘。' +
+    '这个工具自己的结果也会被折叠，所以选择本身不会留在对话里。',
+  parameters,
   output: {
     schema: {
       type: 'object',
