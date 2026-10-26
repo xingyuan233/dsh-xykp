@@ -32,13 +32,11 @@ export const name = 'token-reporter'
 export const inject = ['tools', 'agents']
 
 const DEFAULTS = {
-  tool: true,
   presets: [],
   prompt: {
-    enabled: false,
     order: 880,
     header: '[token]',
-    fields: ['turn', 'session', 'context'],
+    fields: ['turn', 'session', 'cache', 'context', 'cost'],
   },
   cost: { input: 0, cacheRead: 0, output: 0 },
   sessionsRoot: '',
@@ -367,17 +365,16 @@ function toolDefinition(ctx, config) {
 export function apply(ctx, rawConfig = {}) {
   const config = pickConfig(rawConfig)
   const presets = new Set(config.presets || [])
-  // presets 就是开关：不填 = 不启用，跟 toolret-forget 一个口径。
-  if (!presets.size) {
-    log('没填 presets，不启用（填 [alive] 这样才生效；每轮提示摘要另由 prompt.enabled 控制）。')
-    return
-  }
 
   const watched = new Set()
   const perAgent = new Map()
   const disposers = []
 
-  /** 只在 presets 列出的预设里挂工具/提示摘要。 */
+  // 工具是全局常驻的：工具定义只占系统提示词一次（KV 缓存友好），
+  // 开关它反而会因为工具集变化让整个提示词重传，纯浪费。
+  disposers.push(ctx.tools.register(toolDefinition(ctx, config)))
+
+  /** 摘要按预设生效：presets 里列出的预设有提示摘要，其余没有。 */
   const allowed = (agent) => {
     try {
       const id = ctx.agentPresets?.composedPreset?.(agent.ctx)
@@ -389,20 +386,17 @@ export function apply(ctx, rawConfig = {}) {
 
   const watch = (agent) => {
     if (!agent || watched.has(agent)) return
-    if (!allowed(agent)) return
+    if (!presets.size || !allowed(agent)) return
     watched.add(agent)
     const mine = []
     try {
-      if (config.tool !== false) mine.push(agent.ctx.tools.register(toolDefinition(ctx, config)))
-      if (config.prompt.enabled) {
-        mine.push(
-          agent.ctx.systemPrompt.section({
-            name: 'token-reporter',
-            order: config.prompt.order,
-            text: () => promptLine(agent, config),
-          }),
-        )
-      }
+      mine.push(
+        agent.ctx.systemPrompt.section({
+          name: 'token-reporter',
+          order: config.prompt.order,
+          text: () => promptLine(agent, config),
+        }),
+      )
       perAgent.set(agent, mine)
       agent.ctx.on('dispose', () => {
         watched.delete(agent)
@@ -418,9 +412,9 @@ export function apply(ctx, rawConfig = {}) {
       try {
         preset = ctx.agentPresets?.composedPreset?.(agent.ctx) || '?'
       } catch {}
-      log(`已挂到会话 ${agent.session?.id || agent.id}（预设 ${preset}）`)
+      log(`已挂提示摘要：${agent.session?.id || agent.id}（预设 ${preset}）`)
     } catch (err) {
-      log(`挂会话失败：${err?.message || err}`)
+      log(`挂提示摘要失败：${err?.message || err}`)
     }
   }
 
@@ -466,8 +460,8 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   log(
-    `已启用：预设 ${presets.size ? [...presets].join('/') : '全部'}，工具 ${
-      config.tool !== false ? 'token_report' : '（关）'
-    }，提示摘要 ${config.prompt.enabled ? `开（${config.prompt.fields.join('/')}）` : '关'}`,
+    `已启用：工具 token_report（全局）；提示摘要 ${
+      presets.size ? `预设 ${[...presets].join('/')}（${config.prompt.fields.join('/')}）` : '不注入（presets 为空）'
+    }`,
   )
 }

@@ -2,11 +2,11 @@
 
 给每个会话附带 token 信息，并提供 `token_report` 工具查余额和用量。
 
-**`presets` 就是开关**：不填 = 整个插件不启用（什么也不注册、不发请求），
-填了才在那些预设里生效——和 `toolret-forget` 一个口径。生效后：
-
-- 工具 `token_report` 可以调；
-- 每轮提示摘要另有 `prompt.enabled`，默认关。
+- **工具 `token_report` 是全局的**，一直可用，没有开关——工具定义只占系统提示词一次
+  （KV 缓存友好），关掉反而会让工具集变化、整段提示词重传，纯浪费。
+- **`presets` 决定「哪些预设想在每轮系统提示里看到 token 用量摘要」**：
+  不填 = 都不注入摘要；填 `[alive]` 就只有 alive 的会话带摘要。
+- 摘要**字段默认全开**（`turn/session/cache/context/cost`），要收窄用 `prompt.fields`。
 
 ## 配置
 
@@ -15,14 +15,12 @@
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
       config:
-        presets: [alive]         # 开关：不填 = 不启用；填了才在这些预设里生效
-        tool: true               # 注册 token_report 工具
-        prompt:                  # 每轮把摘要塞进系统提示（默认关）
-          enabled: true
+        presets: [alive]         # 哪些预设注入提示摘要；不填 = 都不注入（工具照样可用）
+        prompt:                  # 摘要格式，字段默认全开，一般不用配
           order: 880             # 提示里的顺序（越大越靠后）
           header: '[token]'
-          fields: [turn, session, context]   # 见下表
-        cost:                    # 可选：元 / 百万 token，用来估算
+          fields: [turn, session, cache, context, cost]
+        cost:                    # 可选：元 / 百万 token，用来估算（0 = 不显示费用）
           input: 2
           cacheRead: 0.2
           output: 3
@@ -39,7 +37,10 @@
 | `context` | 上下文占用 / 窗口大小（contextPressure） |
 | `cost` | 按 `cost` 单价估算的会话费用（单价为 0 时不显示） |
 
-`fields` 全空 = 不注入任何东西（等价关闭）。余额不放进提示（每轮联网查太贵），只在工具里查。
+`fields` 留空 = 不注入任何东西。余额不放进摘要（每轮联网查太贵），只在工具里查。
+
+> 摘要每轮都会被新的一份替换（system prompt 节点是 replace 语义，不会累加），
+> 所以不需要额外「折叠」；会被 `toolret-forget` 抹掉的是**工具结果**，见下。
 
 ## 工具 token_report
 
@@ -79,9 +80,9 @@
 
 ## 注意
 
-- 默认关闭；`enabled: true` 才会注册工具和提示摘要。
-- `token_report` 的结果是一次性的：建议把它填进 `toolret-forget` 的 `autoForget` 名单，
-  回合结束就折叠，别让它留在下一轮的上下文里：
+- 工具全局可用；`presets` 只管摘要注入，不填就不注入。
+- `token_report` 的结果只看当前那份，旧的不留：默认把它填进 `toolret-forget` 的
+  `autoForget` 名单，回合结束就折叠，下一轮不会带着上一轮的 token 信息：
 
   ```yaml
   - insert:
@@ -92,7 +93,6 @@
           autoForget: [token_report]
   ```
 
-  注意 `toolret-forget` 也按 `presets` 生效——token-reporter 在别的预设里也要折叠的话，
-  两边的 `presets` 得对得上。
+  注意 `toolret-forget` 也按 `presets` 生效——要让别的预设也折叠，两边的 `presets` 得对得上。
 - `usage` 只统计经过本机 DSH 的调用；换机器/换 home 目录后数字从那时开始。
 - 订阅型 provider（官方返回 usage 不带价格）没有单价信息，费用只能按 `cost` 自己填的价估。
