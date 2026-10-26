@@ -179,6 +179,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [editing, setEditing] = React.useState(null) // 正在打字的那格（原样显示她敲的字）
       const [notes, setNotes] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
+      const [busyText, setBusyText] = React.useState(null) // 等模型的时候显示遮罩，别让人以为没点上
       const [confirm, setConfirm] = React.useState(null) // 正在等确认的删除（二次确认，手滑不了）
       const [showDeleted, setShowDeleted] = React.useState(false)
       const [selfDraft, setSelfDraft] = React.useState({}) // 每个会话「她自己叫什么」的草稿
@@ -371,6 +372,10 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       }, [])
 
       React.useEffect(() => {
+        if (!busy) setBusyText(null)
+      }, [busy])
+
+      React.useEffect(() => {
         load()
       }, [load])
 
@@ -458,6 +463,37 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       if (!d || !params) return React.createElement('div', { style: S.wrap }, '加载中…')
 
       const now = Date.now()
+
+      const 等待层 = (txt) =>
+        React.createElement(
+          'div',
+          {
+            style: {
+              position: 'fixed',
+              inset: 0,
+              zIndex: 9999,
+              background: 'rgba(0,0,0,.42)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 13,
+              cursor: 'progress',
+            },
+          },
+          React.createElement(
+            'div',
+            {
+              style: {
+                padding: '18px 28px',
+                borderRadius: 10,
+                background: 'var(--dsw-alias-bg-elevated, #2b2b2b)',
+                border: '1px solid rgba(128,128,128,.45)',
+                boxShadow: '0 8px 30px rgba(0,0,0,.35)',
+              },
+            },
+            txt,
+          ),
+        )
 
       // ---- 第二级：某个会话的详情 ----
       if (open) {
@@ -2014,6 +2050,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                       disabled: busy || !提炼来源,
                       onClick: () => {
                         setBusy(true)
+                        setBusyText('正在让模型提炼这个对话…')
                         post('/summary/import', { session: open, from: 提炼来源, limit: 提炼上限 })
                           .then((r) => {
                             setBusy(false)
@@ -2127,6 +2164,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                         disabled: busy,
                         onClick: () => {
                           setBusy(true)
+                          setBusyText('模型正在按「' + 修改模式 + '」改写…')
                           set修改预览(null)
                           post('/rewrite', { session: open, mode: 修改模式, prompt: 修改提示 })
                             .then((r) => {
@@ -2154,6 +2192,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                             disabled: busy,
                             onClick: () => {
                               setBusy(true)
+                              setBusyText('正在应用…')
                               post('/rewrite/apply', { session: open })
                                 .then((r) => {
                                   setBusy(false)
@@ -2178,6 +2217,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                             disabled: busy,
                             onClick: () => {
                               setBusy(true)
+                              setBusyText('正在恢复备份…')
                               post('/rewrite/undo', { session: open })
                                 .then((r) => {
                                   setBusy(false)
@@ -2230,6 +2270,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                     disabled: busy,
                     onClick: () => {
                       setBusy(true)
+                      setBusyText('正在把这段对话压成交接说明…')
                       post('/transfer/next', { preset: s.preset, text: 转移文本.trim() })
                         .then((r) => {
                           setBusy(false)
@@ -4162,6 +4203,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
             '记忆一变就会自动备份：上一版存在同目录的 .bak，另外每天存一份，留 14 天。' +
               '「补日期」「补标不淡」「改」「删」之前也都会先备一份。',
           ),
+          busyText ? 等待层(busyText) : null,
         )
       }
 
@@ -4388,6 +4430,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
           : null,
         React.createElement('div', { style: S.h }, '看某个会话'),
         React.createElement('div', { style: S.dim }, '点上面的会话名字'),
+        busyText ? 等待层(busyText) : null,
       )
     }
 
