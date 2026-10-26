@@ -3781,7 +3781,10 @@ export function apply(ctx) {
               let 是新会话 = true
               try {
                 const ev = agent.session.snapshotEvents ? agent.session.snapshotEvents() || [] : []
-                是新会话 = !ev.some((e) => (e && (e.type || e.kind)) === 'assistant/message')
+                const 类型 = (e) => (e && (e.type || e.kind)) || ''
+                // 必须是「已经有一句用户话、但还没回复过」的会话 ——
+                // 光点了「+」还没说话的空白会话不许吃交接（实测就是那样被吞掉的）
+                是新会话 = ev.some((e) => 类型(e) === 'user/message') && !ev.some((e) => 类型(e) === 'assistant/message')
               } catch (error) {}
               if (t && (t.summary || t.extra) && 是新会话) {
                 转移 =
