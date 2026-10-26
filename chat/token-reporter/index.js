@@ -32,7 +32,6 @@ export const name = 'token-reporter'
 export const inject = ['tools', 'agents']
 
 const DEFAULTS = {
-  enabled: false,
   tool: true,
   presets: [],
   prompt: {
@@ -367,19 +366,19 @@ function toolDefinition(ctx, config) {
 
 export function apply(ctx, rawConfig = {}) {
   const config = pickConfig(rawConfig)
-  if (config.enabled !== true) {
-    log('未启用（config.enabled=false，默认关）。打开后才会注册工具与提示摘要。')
+  const presets = new Set(config.presets || [])
+  // presets 就是开关：不填 = 不启用，跟 toolret-forget 一个口径。
+  if (!presets.size) {
+    log('没填 presets，不启用（填 [alive] 这样才生效；每轮提示摘要另由 prompt.enabled 控制）。')
     return
   }
 
-  const presets = new Set(config.presets || [])
   const watched = new Set()
   const perAgent = new Map()
   const disposers = []
 
-  /** 和 toolret-forget 同一套：presets 为空 = 所有预设，否则只挂列出的预设。 */
+  /** 只在 presets 列出的预设里挂工具/提示摘要。 */
   const allowed = (agent) => {
-    if (!presets.size) return true
     try {
       const id = ctx.agentPresets?.composedPreset?.(agent.ctx)
       return !!id && presets.has(id)

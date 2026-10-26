@@ -1,7 +1,12 @@
 # chat/token-reporter — token 用量与账号余额
 
-给每个会话附带 token 信息，并提供 `token_report` 工具查余额和用量。**默认全关**：
-`config.enabled=false` 时插件什么都不注册、不发请求。
+给每个会话附带 token 信息，并提供 `token_report` 工具查余额和用量。
+
+**`presets` 就是开关**：不填 = 整个插件不启用（什么也不注册、不发请求），
+填了才在那些预设里生效——和 `toolret-forget` 一个口径。生效后：
+
+- 工具 `token_report` 可以调；
+- 每轮提示摘要另有 `prompt.enabled`，默认关。
 
 ## 配置
 
@@ -10,9 +15,8 @@
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
       config:
-        enabled: true            # 总开关（默认 false）
+        presets: [alive]         # 开关：不填 = 不启用；填了才在这些预设里生效
         tool: true               # 注册 token_report 工具
-        presets: []              # 生效的预设；留空 = 全部，[alive] 就只挂 alive
         prompt:                  # 每轮把摘要塞进系统提示（默认关）
           enabled: true
           order: 880             # 提示里的顺序（越大越靠后）
