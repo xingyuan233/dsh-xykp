@@ -76,5 +76,19 @@
 ## 注意
 
 - 默认关闭；`enabled: true` 才会注册工具和提示摘要。
+- `token_report` 的结果是一次性的：建议把它填进 `toolret-forget` 的 `autoForget` 名单，
+  回合结束就折叠，别让它留在下一轮的上下文里：
+
+  ```yaml
+  - insert:
+      - id: toolret-forget
+        name: 'dsh-xykp/chat/toolret-forget'
+        config:
+          presets: [alive]
+          autoForget: [token_report]
+  ```
+
+  注意 `toolret-forget` 也按 `presets` 生效——token-reporter 在别的预设里也要折叠的话，
+  两边的 `presets` 得对得上。
 - `usage` 只统计经过本机 DSH 的调用；换机器/换 home 目录后数字从那时开始。
 - 订阅型 provider（官方返回 usage 不带价格）没有单价信息，费用只能按 `cost` 自己填的价估。
