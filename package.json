@@ -21,6 +21,7 @@
     "./chat/toolret-forget": "./chat/toolret-forget/index.js",
     "./chat/toolret-forget/fold": "./chat/toolret-forget/fold.js",
     "./chat/memory-refine": "./chat/memory-refine/lib/index.js",
+    "./chat/token-reporter": "./chat/token-reporter/index.js",
     "./senses/screenshot": "./senses/screenshot/index.js",
     "./senses/keymouse": "./senses/keymouse/index.js"
   },

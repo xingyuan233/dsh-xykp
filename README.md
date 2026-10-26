@@ -31,6 +31,7 @@ DSH（DeepSeek Harness）的插件集合。一个仓库、一个包、内部按�
 | 安装安全闸 | `dsh-plugin-gate` | 待搬 |
 | 会话工具 | `dsh-session-delete` | 待搬 |
 | 截屏 / 输入 | `tools\screen-mcp` → `senses/screenshot`、`tools\input-mcp` → `senses/keymouse` | **已搬；原生工具 `screenshot_acquire` / `mouse_input` / `keyboard_input`（Python 后端 + stdio 桥接）** |
+| token 用量 / 余额 | 新增 · `chat/token-reporter` | **已加（默认关：`token_report` 工具 + 可选每轮提示摘要）** |
 
 ## 许可
 

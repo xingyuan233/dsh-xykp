@@ -1,0 +1,79 @@
+# chat/token-reporter — token 用量与账号余额
+
+给每个会话附带 token 信息，并提供 `token_report` 工具查余额和用量。**默认全关**：
+`config.enabled=false` 时插件什么都不注册、不发请求。
+
+## 配置
+
+```yaml
+- insert:
+    - id: token-reporter
+      name: 'dsh-xykp/chat/token-reporter'
+      config:
+        enabled: true            # 总开关（默认 false）
+        tool: true               # 注册 token_report 工具
+        prompt:                  # 每轮把摘要塞进系统提示（默认关）
+          enabled: true
+          order: 880             # 提示里的顺序（越大越靠后）
+          header: '[token]'
+          fields: [turn, session, context]   # 见下表
+        cost:                    # 可选：元 / 百万 token，用来估算
+          input: 2
+          cacheRead: 0.2
+          output: 3
+        sessionsRoot: ''         # 默认 $DSH_HOME/sessions
+```
+
+### prompt.fields 可选项
+
+| 字段 | 内容 |
+|---|---|
+| `turn` | 上一步的 in / out / cacheRead（tokenUsage.last） |
+| `session` | 本会话累计（input + cacheRead + cacheWrite + output） |
+| `cache` | 缓存命中率（cacheRead / prompt 总量） |
+| `context` | 上下文占用 / 窗口大小（contextPressure） |
+| `cost` | 按 `cost` 单价估算的会话费用（单价为 0 时不显示） |
+
+`fields` 全空 = 不注入任何东西（等价关闭）。余额不放进提示（每轮联网查太贵），只在工具里查。
+
+## 工具 token_report
+
+| 参数 | 说明 |
+|---|---|
+| `action` | `balance` 余额 / `usage` 时间段用量 / `session` 本会话 / `all`（默认） |
+| `since` | `today` / `7d` / `24h` / `30m` / `YYYY-MM-DD` / ISO，默认 `7d` |
+| `until` | 同上，默认现在 |
+| `provider` / `model` | 子串过滤（如 `deepseek-account`、`deepseek-flash`） |
+| `group_by` | `day`（默认）或 `model` |
+
+### 余额来源（按顺序）
+
+1. DSH 的 `deepseekAccount` 服务（平台登录态）：`getBalance()` 读
+   `platform.deepseek.com/api/v0/users/get_user_summary`，充值/赠金分开。
+2. 环境变量 `DEEPSEEK_API_KEY` → 官方 `GET https://api.deepseek.com/user/balance`
+   （`is_available` + 各币种 total/granted/topped_up）。
+
+### 用量来源
+
+扫 `$DSH_HOME/sessions/<workspace>/<session>/session*.jsonl[.zstd]`：
+每个 `assistant/message` 事件的 `data.usage` 是 provider 上报的精确用量，
+`data.message.source` 带 provider/model。首次扫描 7 天约 1.2s，之后按文件 mtime 缓存。
+
+> 为什么不用 `storages/preset-binder.json`：那张表只记配置里列出的预设
+> （`standard`/`ptc`/`minimal`/`cordis` 被 ignore），而且 `maxSessions: 5`，
+> 只覆盖最近几个会话。日志才是全量。
+
+## 关于「官方用量接口」
+
+- 余额：官方有 `GET /user/balance`（[文档](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)）。
+- 时间段用量：**官方没有公开接口**。平台后台的用量报表走的是私有接口
+  `/api/v0/usage/cost`、`/api/v0/usage/amount`，需要浏览器里的 `userToken`
+  （第三方项目 `dsh-deepseek-balance` 就是这么做的），未公开、可能随时变。
+  所以本插件默认用本地会话日志统计 DSH 自己的用量；非 DSH 调用（别的客户端/脚本）
+  不在统计范围内。
+
+## 注意
+
+- 默认关闭；`enabled: true` 才会注册工具和提示摘要。
+- `usage` 只统计经过本机 DSH 的调用；换机器/换 home 目录后数字从那时开始。
+- 订阅型 provider（官方返回 usage 不带价格）没有单价信息，费用只能按 `cost` 自己填的价估。
