@@ -1,0 +1,14 @@
+- insert:
+    - id: mcp-screen
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: screen
+        command: 'D:\Program-Files\Python\312\python.exe'
+        args:
+          - 'D:\AI\DeepseekHarness\plugins\senses\screenshot\server.py'
+        cwd: 'D:\AI\DeepseekHarness\plugins\senses\screenshot'
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+        failOnStartupError: false

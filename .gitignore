@@ -4,3 +4,10 @@ dist/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Python（senses/ 下的 MCP server）
+__pycache__/
+*.pyc
+
+# 测试产物：screenshot/test_client.py 会存一张
+mcp_test.jpg
