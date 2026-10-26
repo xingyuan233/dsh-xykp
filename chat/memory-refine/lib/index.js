@@ -3371,6 +3371,11 @@ function buildMemoryList(ctx) {
       for (const fn of readdirSync(STORE_DIR)) {
         if (!fn.endsWith('.json')) continue
         const sid = fn.replace(/\.json$/, '')
+        // 预设池（preset_xxx）不是会话，但也得露出来（点进去看/改）
+        if (String(sid).startsWith('preset_')) {
+          push(sid)
+          continue
+        }
         // 在线的一律算存在；已知.ok 为假时**一条都不藏**（宁可多露，不可错藏）
         if (已知.ok && !liveIds.has(sid) && !已知.ids.has(String(sid))) { 藏了++; continue }
         push(sid)
@@ -3383,11 +3388,14 @@ function buildMemoryList(ctx) {
     for (const sid of ids) {
       const data = loadStore(sid)
       if (!out.policy) out.policy = data.policy
+      const 是池 = String(sid).startsWith('preset_')
+      const 池名 = 是池 ? String(sid).slice('preset_'.length) : ''
       out.sessions.push({
         id: sid,
-        title: titleOfSession(ctx, sid),
-        enabled: isEnabled(sid),
-        live: liveIds.has(sid),
+        title: 是池 ? '预设：' + 池名 : titleOfSession(ctx, sid),
+        enabled: 是池 ? presetMemoryOn(池名) : isEnabled(sid),
+        preset: 是池 ? 池名 : undefined,
+        live: 是池 ? false : liveIds.has(sid),
         parent: 分支来处Of(ctx, sid),
         count: data.memories.length,
         memories: data.memories.map((m) => {

@@ -3796,7 +3796,14 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                     },
                     p.on ? '● 开' : '○ 关',
                   ),
-                  React.createElement('span', { style: { flex: 1 } }, p.name + '（' + p.id + '）'),
+                  React.createElement(
+                    'span',
+                    {
+                      style: Object.assign({}, S.link, { flex: 1, cursor: 'pointer' }),
+                      onClick: () => setOpen('preset_' + p.id),
+                    },
+                    p.name + '（' + p.id + '）',
+                  ),
                 ),
               )
             : React.createElement('div', { style: S.dim }, '读不到预设列表'),
@@ -3807,7 +3814,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
           { style: S.dim },
           '默认全是关的 —— 你点「开」的那个会话才会记、才会读。预设开着的会话不用单独开；两边谁开都算开。',
         ),
-        (d.sessions || []).map((s) =>
+        (d.sessions || []).filter((s) => !s.preset).map((s) =>
           React.createElement(
             'div',
             { key: s.id, style: Object.assign({}, S.row, S.条) },
