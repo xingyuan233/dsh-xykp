@@ -1,0 +1,21 @@
+{
+  "name": "dsh-xykp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 插件集合（kilopackages）：预设、记忆、通道、B 站工具与配套小服务。",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/xingyuan233/dsh-xykp.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "presets",
+    "README.md",
+    "LICENSE"
+  ]
+}
