@@ -1714,6 +1714,23 @@ function lastUserTextOf(session) {
   return ''
 }
 
+// 上一轮模型说过的话（一起当召回线索 —— 记忆不该只围着用户那句话转）
+function lastAssistantTextOf(session) {
+  try {
+    if (!session || typeof session.snapshotEvents !== 'function') return ''
+    const ev = session.snapshotEvents() || []
+    for (let i = ev.length - 1; i >= 0; i--) {
+      const e = ev[i]
+      const type = e && (e.type || e.kind)
+      if (type !== 'assistant/message') continue
+      const p = e.payload !== undefined ? e.payload : e.data
+      const txt = textOfMessage(p)
+      if (txt) return txt
+    }
+  } catch (error) {}
+  return ''
+}
+
 // ---------- 时间 ----------
 
 // 北京时间的一天（「每天最多记几条」要有明确定义）
@@ -3731,7 +3748,10 @@ export function apply(ctx) {
       text: () => {
         try {
           const now = Date.now()
-          const query = lastText || lastUserTextOf(agent.session) // ⭐ 优先用监听收到的最新一条
+          // 线索 = 用户这句话 + 上一轮模型说的话（只拿用户那句，召回就变成「用户的记忆」了）
+          const 用户话 = (lastText || lastUserTextOf(agent.session)).slice(-4000)
+          const 模型话 = lastAssistantTextOf(agent.session).slice(-1200)
+          const query = (用户话 + (模型话 ? '\n' + 模型话 : '')).trim()
 
           // 探针：看看 requestContext() 里有没有「当前输入」（只记一次）
           if (!probed) {
