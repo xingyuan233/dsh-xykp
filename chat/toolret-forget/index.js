@@ -49,23 +49,33 @@ const tool = (ctx) => ({
       description: '可选，一句话写进占位里，比如「只是中间过程」。',
     },
   },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { ok: { type: 'boolean' }, message: { type: 'string' } },
+    },
+    render(_args, value) {
+      return [{ type: 'text', text: String((value && value.message) || '✓') }]
+    },
+  },
   async execute(args, exec) {
     try {
       const session = exec?.agent?.session
-      if (!session) return `${SELF_MARK} 没折叠：拿不到会话`
+      if (!session) return { ok: false, message: `${SELF_MARK} 没折叠：拿不到会话` }
       const { foldSelection } = await import('./fold.js')
       const result = foldSelection(ctx, session, args || {})
       if (!result.folded.length) {
-        return `${SELF_MARK} 没折叠任何结果${result.reason ? `：${result.reason}` : ''}${
-          result.missing?.length ? `（序号不存在或还没结果：${result.missing.join(',')}）` : ''
-        }`
+        const why = result.reason ? `：${result.reason}` : ''
+        const missing = result.missing?.length ? `（序号不存在或还没结果：${result.missing.join(',')}）` : ''
+        return { ok: false, message: `${SELF_MARK} 没折叠任何结果${why}${missing}` }
       }
       const names = result.folded.map((item) => `#${item.index} ${item.tool}`).join('、')
       log(`折叠了第 ${result.step} 步的 ${result.folded.length} 条：${names}`)
-      return `${SELF_MARK} 已折叠 ${result.folded.length} 条工具结果（第 ${result.step} 步）：${names}`
+      return { ok: true, message: `${SELF_MARK} 已折叠 ${result.folded.length} 条工具结果（第 ${result.step} 步）：${names}` }
     } catch (err) {
       warn('执行失败：', err?.message || err)
-      return `${SELF_MARK} 折叠失败：${err?.message || err}`
+      return { ok: false, message: `${SELF_MARK} 折叠失败：${err?.message || err}` }
     }
   },
 })
