@@ -21,15 +21,39 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { randomUUID } from 'node:crypto'
+// 2026-10-26：本地等价实现搬到单独文件（它现在真的会编译字段表 DSL，见那边的注释）
+import { localDefineTool } from './local-tool.mjs'
 
 /** 插件自己那棵树（`dependencies` 装出来的那份）—— 用模块位置算，别依赖 cwd */
 const SELF_MODULES = join(dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', '@deepseek-ai')
+
+/**
+ * 从「当前进程自己」倒推宿主的 `node_modules/@deepseek-ai`。
+ * 🔴 2026-10-26 事故：DSH 装在 `D:\AI\DeepseekHarness\npm`（非 APPDATA / 非全局），
+ *   原来那几个候选位置全落空 → 一路掉到本地等价实现 → defineTool 不编译字段表 →
+ *   memory_ins 的 parameters 没有 object 根，每轮请求 400。
+ *   宿主进程的 argv[1] 就是 `<...>/node_modules/@deepseek-ai/dsh/lib/bin.js`，
+ *   从里面取最后一段 node_modules 最稳（跟装在哪、是不是 pnpm 软链都没关系）。
+ */
+function runtimeRoots() {
+  const out = []
+  for (const entry of [process.argv?.[1], process.argv?.[0], process.execPath]) {
+    if (typeof entry !== 'string' || entry === '') continue
+    const marker = entry.lastIndexOf('node_modules')
+    if (marker <= 0) continue
+    const root = join(entry.slice(0, marker + 'node_modules'.length), '@deepseek-ai')
+    if (!out.includes(root)) out.push(root)
+  }
+  return out
+}
 
 /** 可能藏着宿主 `@deepseek-ai` 包的地方（不写死某一台机器，按可能性排序） */
 export function candidateRoots() {
   const out = []
   const push = (p) => { if (p && !out.includes(p)) out.push(p) }
   push(process.env.DSH_HOST_MODULES)
+  // ② 先看宿主进程自己的安装位置（最准；DSH 装在 D 盘也能找到）
+  for (const root of runtimeRoots()) push(root)
 
   const appdata = process.env.APPDATA
   if (appdata) {
@@ -95,23 +119,7 @@ async function fromHostTree(name, log) {
   return null
 }
 
-/** 兜底：这是**我们自己的等价实现**，只在拿不到宿主的 dsh-tools 时用 */
-function localDefineTool(options, log) {
-  // 宿主的 defineTool 会做 spec→JSONSchema 转换 + 参数校验；我们的 parameters / output.schema
-  // **本来就是标准 JSON Schema**（2026-10-14 那次 additionalProperties 报错就是被它校验出来的），
-  // 所以这里只补一条同样的校验，别的原样返回。
-  const check = (schema, where) => {
-    if (!schema || typeof schema !== 'object') return
-    if (schema.type === 'object' && schema.additionalProperties === undefined) {
-      throw new Error(`defineTool(${options.name}): ${where} 是 object 却没写 additionalProperties`)
-    }
-    for (const [k, v] of Object.entries(schema.properties || {})) check(v, `${where}.properties.${k}`)
-  }
-  check(options.parameters, 'parameters')
-  check(options.output?.schema, 'output.schema')
-  log?.(`dsh-tools 拿不到 —— 用本地等价实现顶上了（工具 ${options.name}）`)
-  return options
-}
+/** 兜底：本地等价实现（见 local-tool.mjs —— 它会把字段表 DSL 编译成 JSON Schema） */
 
 /**
  * 取回宿主半端要用的一点点东西
