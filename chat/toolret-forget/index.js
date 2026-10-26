@@ -134,7 +134,8 @@ async function boot(ctx, config) {
   // 「默认不保留」：某些工具的结果，这一轮用完、回合结束就折叠掉
   const sweep = (agent, why) => {
     const names = new Set(config.autoForget || [])
-    const all = config.autoForgetAll === true
+    // 默认不保留旧的工具结果：autoForgetAll 没写、也没给具体名单时按 true 算。
+    const all = config.autoForgetAll === true || (config.autoForgetAll === undefined && names.size === 0)
     if (!all && !names.size) return
     try {
       let folded = 0

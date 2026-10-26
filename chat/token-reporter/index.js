@@ -34,6 +34,7 @@ export const inject = ['tools', 'agents']
 const DEFAULTS = {
   enabled: false,
   tool: true,
+  presets: [],
   prompt: {
     enabled: false,
     order: 880,
@@ -320,6 +321,50 @@ const parameters = {
   },
 }
 
+function toolDefinition(ctx, config) {
+  return {
+    name: 'token_report',
+    description:
+      '查 token 用量和账号余额：action=balance 查当前账号余额（平台登录态或 DEEPSEEK_API_KEY）；' +
+      'action=usage 查 DSH 在某个时间段的 token 用量（可过滤 provider/model，数据来自本机会话日志）；' +
+      'action=session 查当前会话累计与上下文占用。默认 all。',
+    parameters,
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { text: { type: 'string' } },
+      },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value?.text ?? '') }]
+      },
+    },
+    async execute(args = {}, exec) {
+      const action = args.action || 'all'
+      const sections = []
+      if (action === 'balance' || action === 'all') {
+        const balance = await readBalance(ctx)
+        sections.push(`【余额 · ${balance.source}】\n${balance.text}`)
+      }
+      if (action === 'usage' || action === 'all') {
+        try {
+          sections.push(`【用量】\n${usageReport(ctx, config, args)}`)
+        } catch (err) {
+          sections.push(`【用量】查询失败：${err?.message || err}`)
+        }
+      }
+      if (action === 'session' || action === 'all') {
+        try {
+          sections.push(`【本会话】\n${sessionReport(ctx, exec?.agent?.session)}`)
+        } catch (err) {
+          sections.push(`【本会话】查询失败：${err?.message || err}`)
+        }
+      }
+      return { text: sections.join('\n\n') }
+    },
+  }
+}
+
 export function apply(ctx, rawConfig = {}) {
   const config = pickConfig(rawConfig)
   if (config.enabled !== true) {
@@ -327,96 +372,88 @@ export function apply(ctx, rawConfig = {}) {
     return
   }
 
-  const disposers = []
+  const presets = new Set(config.presets || [])
   const watched = new Set()
+  const perAgent = new Map()
+  const disposers = []
 
-  if (config.tool !== false) {
-    const off = ctx.tools.register({
-      name: 'token_report',
-      description:
-        '查 token 用量和账号余额：action=balance 查当前账号余额（平台登录态或 DEEPSEEK_API_KEY）；' +
-        'action=usage 查 DSH 在某个时间段的 token 用量（可过滤 provider/model，数据来自本机会话日志）；' +
-        'action=session 查当前会话累计与上下文占用。默认 all。',
-      parameters,
-      output: {
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          properties: { text: { type: 'string' } },
-        },
-        render(_args, value) {
-          return [{ type: 'text', text: String(value?.text ?? '') }]
-        },
-      },
-      async execute(args = {}, exec) {
-        const action = args.action || 'all'
-        const sections = []
-        if (action === 'balance' || action === 'all') {
-          const balance = await readBalance(ctx)
-          sections.push(`【余额 · ${balance.source}】\n${balance.text}`)
-        }
-        if (action === 'usage' || action === 'all') {
-          try {
-            sections.push(`【用量】\n${usageReport(ctx, config, args)}`)
-          } catch (err) {
-            sections.push(`【用量】查询失败：${err?.message || err}`)
-          }
-        }
-        if (action === 'session' || action === 'all') {
-          try {
-            sections.push(`【本会话】\n${sessionReport(ctx, exec?.agent?.session)}`)
-          } catch (err) {
-            sections.push(`【本会话】查询失败：${err?.message || err}`)
-          }
-        }
-        return { text: sections.join('\n\n') }
-      },
-    })
-    disposers.push(off)
+  /** 和 toolret-forget 同一套：presets 为空 = 所有预设，否则只挂列出的预设。 */
+  const allowed = (agent) => {
+    if (!presets.size) return true
+    try {
+      const id = ctx.agentPresets?.composedPreset?.(agent.ctx)
+      return !!id && presets.has(id)
+    } catch {
+      return false
+    }
   }
 
-  if (config.prompt.enabled) {
-    const watch = (agent) => {
-      if (!agent || watched.has(agent)) return
-      watched.add(agent)
-      try {
-        const off = agent.ctx.systemPrompt.section({
-          name: 'token-reporter',
-          order: config.prompt.order,
-          text: () => promptLine(agent, config),
-        })
-        // 插件卸载/热重载时必须一起摘掉：只挂在 agent.ctx 的 dispose 上会漏，
-        // 旧实例的 section 会一直留在提示里（连 enabled:false 都拦不住）。
-        disposers.push(off)
-        agent.ctx.on('dispose', () => {
-          watched.delete(agent)
+  const watch = (agent) => {
+    if (!agent || watched.has(agent)) return
+    if (!allowed(agent)) return
+    watched.add(agent)
+    const mine = []
+    try {
+      if (config.tool !== false) mine.push(agent.ctx.tools.register(toolDefinition(ctx, config)))
+      if (config.prompt.enabled) {
+        mine.push(
+          agent.ctx.systemPrompt.section({
+            name: 'token-reporter',
+            order: config.prompt.order,
+            text: () => promptLine(agent, config),
+          }),
+        )
+      }
+      perAgent.set(agent, mine)
+      agent.ctx.on('dispose', () => {
+        watched.delete(agent)
+        const list = perAgent.get(agent) || []
+        perAgent.delete(agent)
+        for (const off of list) {
           try {
             off?.()
           } catch {}
-        })
-      } catch (err) {
-        log(`给会话挂提示摘要失败：${err?.message || err}`)
-      }
-    }
-
-    ctx.on('agent/created', (payload) => {
+        }
+      })
+      let preset = '?'
       try {
-        watch(payload?.agent)
-      } catch (err) {
-        log(`处理 agent/created 失败：${err?.message || err}`)
-      }
-    })
+        preset = ctx.agentPresets?.composedPreset?.(agent.ctx) || '?'
+      } catch {}
+      log(`已挂到会话 ${agent.session?.id || agent.id}（预设 ${preset}）`)
+    } catch (err) {
+      log(`挂会话失败：${err?.message || err}`)
+    }
+  }
+
+  ctx.on('agent/created', (payload) => {
+    try {
+      watch(payload?.agent)
+    } catch (err) {
+      log(`处理 agent/created 失败：${err?.message || err}`)
+    }
+  })
+  const scan = () => {
     try {
       for (const agent of ctx.agents?.list?.() || []) watch(agent)
     } catch {}
-    const timer = setInterval(() => {
-      try {
-        for (const agent of ctx.agents?.list?.() || []) watch(agent)
-      } catch {}
-    }, 30_000)
-    if (typeof timer.unref === 'function') timer.unref()
-    disposers.push(() => clearInterval(timer))
   }
+  scan()
+  const timer = setInterval(scan, 30_000)
+  if (typeof timer.unref === 'function') timer.unref()
+  disposers.push(() => clearInterval(timer))
+
+  // 插件卸载/热重载时把自己挂上去的东西全部摘掉（不然旧 section 会一直留在提示里）。
+  disposers.push(() => {
+    for (const [, list] of perAgent) {
+      for (const off of list) {
+        try {
+          off?.()
+        } catch {}
+      }
+    }
+    perAgent.clear()
+    watched.clear()
+  })
 
   if (typeof ctx.on === 'function') {
     ctx.on('dispose', () => {
@@ -425,12 +462,13 @@ export function apply(ctx, rawConfig = {}) {
           off?.()
         } catch {}
       }
+      disposers.length = 0
     })
   }
 
   log(
-    `已启用：工具 ${config.tool !== false ? 'token_report' : '（关）'}，提示摘要 ${
-      config.prompt.enabled ? `开（${config.prompt.fields.join('/')}）` : '关'
-    }`,
+    `已启用：预设 ${presets.size ? [...presets].join('/') : '全部'}，工具 ${
+      config.tool !== false ? 'token_report' : '（关）'
+    }，提示摘要 ${config.prompt.enabled ? `开（${config.prompt.fields.join('/')}）` : '关'}`,
   )
 }

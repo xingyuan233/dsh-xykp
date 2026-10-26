@@ -12,6 +12,7 @@
       config:
         enabled: true            # 总开关（默认 false）
         tool: true               # 注册 token_report 工具
+        presets: []              # 生效的预设；留空 = 全部，[alive] 就只挂 alive
         prompt:                  # 每轮把摘要塞进系统提示（默认关）
           enabled: true
           order: 880             # 提示里的顺序（越大越靠后）

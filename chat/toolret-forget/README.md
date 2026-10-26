@@ -31,9 +31,12 @@ forget_tool_results({ step: 2, tool: 'bili_search' }) // 上上步里某个工�
 
 ```yaml
 config:
-  autoForget: [bili_search, bili_comments]   # 这些工具的结果，回合结束就折叠
+  autoForget: [bili_search, bili_comments]   # 只折叠这些工具的结果
   # autoForgetAll: true                     # 或者干脆全都不留
 ```
+
+**默认就是不保留**：`autoForgetAll` 不写、也没给 `autoForget` 名单时按 `true` 算——
+回合结束后所有旧的工具结果都折叠掉，只留本轮用。要关掉得显式写 `autoForgetAll: false`。
 
 2. **工具自己声明**：某个工具返回的文本以 `⟨fold⟩` 开头，这条结果一落地就会被折叠
    （适合「只给模型看一眼，用完不该留」的工具）。写自己的工具时 return `` `${SELF_MARK} ...` `` 即可。
