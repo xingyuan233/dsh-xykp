@@ -2216,7 +2216,7 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                 'div',
                 { key: 'transfer', style: { marginTop: 14 } },
                 React.createElement('div', { style: S.h }, '转移到下一个对话'),
-                React.createElement('div', { style: S.dim }, '这个预设下次开新对话时注入一次，用完就没。'),
+                React.createElement('div', { style: S.dim }, '这个预设下次开新对话时注入一次，用完就没。框里写的就是全部内容（系统会自动加一句「上一个对话的交接」）；不写就不注入。'),
                 React.createElement('textarea', {
                   style: Object.assign({}, S.area, { minHeight: 70 }),
                   placeholder: '要交接的话（一次性）',

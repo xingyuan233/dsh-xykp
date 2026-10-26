@@ -3774,7 +3774,8 @@ export function apply(ctx) {
               const c = loadCfg()
               const t = c.transferNext && c.transferNext[池名]
               if (t && t.text) {
-                转移 = String(t.text)
+                转移 =
+                  '【上一个对话的交接（一次性；看到就懂了，不用复述这段话）】\n' + String(t.text)
                 delete c.transferNext[池名]
                 saveCfg(c)
                 diag('转移提示词已注入（' + 池名 + '）：' + 转移.length + ' 字')
