@@ -78,7 +78,7 @@ const DEFAULT_POLICY = {
   threshold: 0.35, // ⭐ 2026-09-21 晚：改成卡 **C（证据）**，不再卡 P —— 见 recall 里那段长注释
   maxItems: 6,
   maxChars: 800,
-  dailyQuota: 8,
+  dailyQuota: 24,
   // ⭐ 2026-09-21 新加的两项（治「太敏感」，见 evaluate 上面的长注释）
   rarityK: 1, // 稀有度饱和点：归一化稀有度加起来到多少算「一半相关」（跟库大小无关）
   queryGate: 0.8, // 问句信息量门槛：这句话本身太没内容就不翻记忆。0 = 关掉这道门
@@ -103,7 +103,7 @@ const POLICY_SPEC = [
   { key: 'threshold', group: 'gate', label: '证据门槛', tip: '命中的词要够「稀有」才算真的有关。它只卡证据（C），不掺鲜活度 —— 所以调它不会误伤该想起的', min: 0.1, max: 0.8, step: 0.05 },
   { key: 'maxItems', group: 'gate', label: '最多注入几条', tip: '一次最多塞几条给她。越大越占上下文', min: 1, max: 12, step: 1 },
   { key: 'maxChars', group: 'gate', label: '注入字数上限', tip: '一次注入的记忆加起来最多多少字。超了的这次先不进（下次可能就进了）', min: 200, max: 3000, step: 100, unit: '字' },
-  { key: 'dailyQuota', group: 'gate', label: '每天最多记几条', tip: '她自己一天最多记几条', min: 1, max: 30, step: 1 },
+  { key: 'dailyQuota', group: 'gate', label: '每天最多记几条', tip: '她自己一天最多记几条（可以删旧的，记满了就想想哪条该更新）', min: 1, max: 100, step: 1 },
   { key: 'rarityK', group: 'gate', label: '稀有度饱和点', tip: '命中词的稀有度（0~1）加起来到多少算「一半相关」。越小越容易给', min: 0.3, max: 6, step: 0.1 },
   { key: 'queryGate', group: 'gate', label: '问句信息量门槛', tip: '这句话本身太没内容（像「在吗」）就不翻记忆。0 = 关掉这道门', min: 0, max: 2, step: 0.05 },
   { key: 'factsMax', group: 'gate', label: '长期事实最多占几条', tip: '要记一辈子的事（画像、喜好）最多占几个位置，剩下的留给事件。0 = 事实不参与召回', min: 0, max: 6, step: 1 },
@@ -2892,15 +2892,17 @@ function render(selected, now, selfName) {
   const lines = selected.map((r) => {
     // ⭐ 注入前再换一次人称 —— 这样**以前写错的老记忆**读出来也是对的 ✓
     const body = normalizePerson(String(r.m.text || '').trim(), selfName)
-    if (r.m.at) return '- ' + relTime(Date.parse(r.m.at), now) + '：' + body
-    if (r.m.category === 'stable_profile') return '- 一直：' + body
-    return '- ' + body // 不知道什么时候发生的，就不写时间（别编）
+    const tag = r.m.id ? '#' + String(r.m.id).slice(0, 8) + ' ' : ''
+    if (r.m.at) return '- ' + tag + relTime(Date.parse(r.m.at), now) + '：' + body
+    if (r.m.category === 'stable_profile') return '- ' + tag + '一直：' + body
+    return '- ' + tag + body // 不知道什么时候发生的，就不写时间（别编）
   })
   return [
     '【你记得的事】',
     '下面是你们过去真实发生过的事。有时间的事会写在前面；**没写时间的，说明不知道是什么时候**。',
     '有时间就按那个时间说（「今天早上」「3 天前」），不要说成「发生过」这种没有时间的话；不知道就说不知道，别编。',
     '想不起来的事就说想不起来，不要编。',
+    '每条前面的 `#xxxxxxxx` 是它的 id：觉得没用了就用 `memory_rm` 删掉；要更新就删旧的、再用 `memory_ins` 记新的。',
     '',
     ...lines,
   ].join('\n')
@@ -2923,13 +2925,14 @@ function sessionIdFromExec(exec) {
 
 function makeRememberTool(ctx, 固定sid = '', 启用 = true) {
   return defineTool({
-    name: 'remember',
+    name: 'memory_ins',
     description:
-      '把一件事记进长期记忆（以后每轮都可能想起来）。' +
+      '插入一条新记忆（以后每轮都可能想起来）。' +
       '**一条只装一件事** —— 一件事 = 一个属性、一个约定、一次事件；' +
       '「她身高一米七、体重52.5、平时侧睡」是**三件事**，分三次记（或一次说清一条），别挤在一条里。' +
       '只记长期有价值的事：她明确说的重要的话、约定、她的喜好、她的状态（生病/很累/很开心）、你们之间发生的事。' +
       '不要记日常琐事（吃了什么、今天天气怎样）、不要记你自己做过的事、不要记重复的东西。' +
+      '**要更新一条旧记忆**：先用 `memory_rm` 删掉旧的，再用这个记新的（或直接合并成一条新的）。' +
       '同一条一天最多记一次。**记的时候安静地记，不要在回复里说「记下了」「我记住了」这种话** —— 那很像在汇报工作。',
     parameters: {
       text: {
@@ -3163,6 +3166,72 @@ function makeRememberTool(ctx, 固定sid = '', 启用 = true) {
           '记下了（' + relTime(now, now) + '）。' +
           (作废的.length ? '顺手把 ' + 作废的.length + ' 条被这条取代的旧记忆标成「已被取代」（不再想起来，东西还留着）。' : ''),
       }
+    },
+  })
+}
+
+// ---------- memory_rm（她自己删）----------
+// 注入时每条都带 #id；她觉得哪条没用了/说错了，就删掉。
+// 删除 = 移到 data.deleted（还可撤销），不是物理销毁。
+function makeMemoryRmTool(ctx, 固定sid = '', 启用 = true) {
+  return defineTool({
+    name: 'memory_rm',
+    description:
+      '删掉一条记忆（不再被想起来，但还留在「已删除」里，可撤销）。' +
+      'id 就是注入时每条前面的 `#xxxxxxxx`（前八位就够），也可以用原文片段定位。' +
+      '想「更新」一条记忆：先用这个删掉旧的，再用 `memory_ins` 记新的（或者把旧的整合成一条新的）。',
+    parameters: {
+      id: { type: 'string', description: '记忆 id：注入里每条前面的 #xxxxxxxx（前缀匹配就行）' },
+      text: { type: 'string', description: '或者给原文片段（和 id 二选一）' },
+      reason: { type: 'string', description: '可选，为什么删（比如「过时了」「合并进新的」）' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { ok: { type: 'boolean' }, message: { type: 'string' } },
+      },
+      render(_args, value) {
+        return [{ type: 'text', text: String((value && value.message) || '✓') }]
+      },
+    },
+    async execute(args, exec) {
+      const sid = 固定sid || sessionIdFromExec(exec)
+      if (!sid) return { ok: false, message: '没删（拿不到会话）' }
+      if (!启用) return { ok: false, message: '这个会话的记忆是关着的' }
+      const wantId = String((args && args.id) || '').trim()
+      const wantText = String((args && args.text) || '').trim()
+      if (!wantId && !wantText) return { ok: false, message: '要删哪条？给我 id 或原文片段' }
+
+      const data = loadStore(sid)
+      const norm = (s) => String(s || '').replace(/[\s，。、！？,.!?:;""'']/g, '')
+      let target
+      if (wantId) target = (data.memories || []).find((m) => String(m.id).startsWith(wantId))
+      if (!target && wantText) {
+        const t = norm(wantText)
+        target = (data.memories || []).find((m) => {
+          const a = norm(m.text)
+          return a && t && (a.includes(t) || t.includes(a))
+        })
+      }
+      if (!target) return { ok: false, message: '没找到这条记忆（id 或原文对不上）' }
+
+      try {
+        backupStore(sid)
+      } catch (error) {}
+      data.memories = (data.memories || []).filter((m) => m !== target)
+      if (!Array.isArray(data.deleted)) data.deleted = []
+      data.deleted.push({
+        ...target,
+        deletedAt: new Date().toISOString(),
+        删除原因: String((args && args.reason) || '').slice(0, 120),
+      })
+      try {
+        markTraceStatus(data, target.id, 'invalidated')
+      } catch (error) {}
+      saveStore(sid, data)
+      diag('memory_rm：' + sid + ' 删了「' + String(target.text).slice(0, 40) + '」')
+      return { ok: true, message: '删掉了：' + String(target.text).slice(0, 60) }
     },
   })
 }
@@ -3719,12 +3788,13 @@ export function apply(ctx) {
     //   "for a per-agent variant, register through that agent's `agent.ctx` instead"
     //   "Scoped registrations shadow globals"
     // 所以挂到 agent 自己的 ctx 上，开关一关就跟着 `off()` 卸掉 —— 关掉就是真的不出现 ✓
-    let 工具off = null
+    const 工具们 = []
     try {
-      工具off = agent.ctx.tools.register(makeRememberTool(agent.ctx, 绑预设 ? sid : '', 启用))
-      diag('  remember 工具挂上了（' + sid + '）')
+      工具们.push(agent.ctx.tools.register(makeRememberTool(agent.ctx, 绑预设 ? sid : '', 启用)))
+      工具们.push(agent.ctx.tools.register(makeMemoryRmTool(agent.ctx, 绑预设 ? sid : '', 启用)))
+      diag('  memory_ins / memory_rm 工具挂上了（' + sid + '）')
     } catch (error) {
-      diag('  remember 工具挂不上：' + (error && error.message))
+      diag('  记忆工具挂不上：' + (error && error.message))
     }
 
     // 两样一起卸（注入 + 工具 + 常驻提示）
@@ -3752,7 +3822,7 @@ export function apply(ctx) {
       } catch (error) {}
     }
     return function off() {
-      卸掉(工具off)
+      for (const t of 工具们) 卸掉(t)
       卸掉(注入off)
       卸掉(提示off)
     }
