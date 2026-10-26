@@ -17,7 +17,8 @@
     "./chat/preset-binder": "./chat/preset-binder/index.js",
     "./chat/preset-binder/table": "./chat/preset-binder/table.js",
     "./chat/toolret-forget": "./chat/toolret-forget/index.js",
-    "./chat/toolret-forget/fold": "./chat/toolret-forget/fold.js"
+    "./chat/toolret-forget/fold": "./chat/toolret-forget/fold.js",
+    "./chat/memory-refine": "./chat/memory-refine/lib/index.js"
   },
   "files": [
     "core",
