@@ -1,0 +1,192 @@
+// dsh-xykp · storage/preset-loader
+//
+// 从「一个预设一个文件夹」的目录加载人格预设：
+//   <dir>/<id>/preset.yml
+//
+// 干四件事：
+//   1. 扫目录、注册预设（文件夹名必须 = 预设 id）
+//   2. 每个预设算 sha256 指纹，记 mtime/size 到 .lock.json
+//   3. 指纹变了就往 .changelog.log 追一行（只追加，不改历史）
+//   4. 盯着目录：改完 preset.yml 自动重注册，不用重启宿主
+//      —— 已经跑着的会话留在旧版本上，新会话用新版本（跟原来 patch 热重载一个语义）
+//
+// 安全原则：
+//   - profile 里别人先声明的同名预设不抢（只记账）
+//   - 新版本装载失败 / 装载出来是 broken → 自动回滚到上一个能用的定义
+//   - 任何异常只记日志，绝不让宿主起不来
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { mkdirSync, watch as fsWatch } from 'node:fs'
+import {
+  makeYaml,
+  scanDir,
+  readLock,
+  writeLock,
+  diffLock,
+  changelogLines,
+  appendChangelog,
+  metaOf,
+  localStamp,
+} from './scan.js'
+
+export const name = 'preset-loader'
+export const inject = ['agentPresets']
+
+const PREFIX = '[preset-loader]'
+const log = (...args) => console.log(PREFIX, ...args)
+const warn = (...args) => console.warn(PREFIX, ...args)
+
+export function apply(ctx, config = {}) {
+  void boot(ctx, config).catch((err) => warn('启动失败（已忽略）：', err?.stack || err))
+}
+
+async function boot(ctx, config) {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  const dir = config.dir || join(home, 'profiles', 'web', 'presets')
+  const lockPath = config.lockPath || join(dir, '.lock.json')
+  const changelogPath = config.changelogPath || join(dir, '.changelog.log')
+  const watchEnabled = config.watch !== false
+  const debounceMs = Number.isFinite(config.debounceMs) ? config.debounceMs : 400
+
+  let yamlMod
+  try {
+    yamlMod = await import('js-yaml')
+  } catch (err) {
+    warn('找不到 js-yaml，这层跳过：', err?.message || err)
+    return
+  }
+  const yaml = makeYaml(yamlMod.default ?? yamlMod)
+
+  mkdirSync(dir, { recursive: true })
+
+  // id -> { dispose, definition, sha256 }
+  const owned = new Map()
+  let syncing = Promise.resolve()
+
+  async function registeredIds() {
+    try {
+      return new Set((await ctx.agentPresets.list()).map((preset) => preset.id))
+    } catch (err) {
+      warn('读不到已注册列表：', err?.message || err)
+      return new Set()
+    }
+  }
+
+  async function isBroken(id) {
+    try {
+      const row = (await ctx.agentPresets.list()).find((preset) => preset.id === id)
+      return row ? row.broken : undefined
+    } catch (error) {
+      return undefined
+    }
+  }
+
+  /** 注册一个定义；失败或装载成 broken 都返回 false */
+  async function register(entry) {
+    try {
+      const dispose = await ctx.agentPresets.register(entry.definition)
+      const broken = await isBroken(entry.id)
+      if (broken) {
+        warn(`${entry.id} 装载失败：${broken}`)
+        try {
+          await dispose()
+        } catch (error) {}
+        return false
+      }
+      owned.set(entry.id, { dispose, definition: entry.definition, sha256: entry.sha256 })
+      log(`已注册 ${entry.id}（${entry.rows} 行，${entry.sha256.slice(0, 12)}）`)
+      return true
+    } catch (err) {
+      warn(`注册 ${entry.id} 失败：`, err?.message || err)
+      return false
+    }
+  }
+
+  /** 改动后重注册：先卸旧的，装新的；新的不行就装回旧的 */
+  async function reload(entry, previous) {
+    try {
+      await previous.dispose()
+    } catch (error) {}
+    owned.delete(entry.id)
+    log(`检测到改动，重注册 ${entry.id}`)
+    if (await register(entry)) return
+    try {
+      const dispose = await ctx.agentPresets.register(previous.definition)
+      owned.set(entry.id, { dispose, definition: previous.definition, sha256: previous.sha256 })
+      warn(`已经回滚到上一个能用的 ${entry.id}`)
+    } catch (err) {
+      warn(`回滚 ${entry.id} 也失败：`, err?.message || err)
+    }
+  }
+
+  async function check() {
+    const entries = scanDir(yaml, dir)
+    for (const bad of entries.filter((entry) => entry.error)) warn(bad.error)
+    const good = entries.filter((entry) => !entry.error)
+    const next = {}
+    for (const entry of good) next[entry.id] = metaOf(entry)
+
+    const existing = await registeredIds()
+    for (const entry of good) {
+      const mine = owned.get(entry.id)
+      if (!mine) {
+        if (existing.has(entry.id)) {
+          log(`跳过 ${entry.id}：profile 里已经声明过（只记指纹）`)
+          continue
+        }
+        await register(entry)
+        continue
+      }
+      if (mine.sha256 !== entry.sha256) await reload(entry, mine)
+    }
+
+    for (const [id, mine] of [...owned]) {
+      if (id in next) continue
+      try {
+        await mine.dispose()
+      } catch (error) {}
+      owned.delete(id)
+      log(`已移除 ${id}`)
+    }
+
+    // 只有真变了才写锁 —— 不然锁文件自己会触发一轮监听，来回转圈
+    const lock = readLock(lockPath)
+    const diff = diffLock(lock, next)
+    if (diff.added.length || diff.changed.length || diff.removed.length) {
+      writeLock(lockPath, { version: 1, updatedAt: new Date().toISOString(), presets: next })
+      const lines = changelogLines(diff, next)
+      appendChangelog(changelogPath, lines)
+      log('预设变动已留痕：\n' + lines.join('\n'))
+    } else {
+      log(`指纹没变（${localStamp()}）`)
+    }
+    return good.length
+  }
+
+  const count = await check()
+  log(`目录 ${dir}：${count} 个可用预设`)
+
+  if (!watchEnabled) return
+  let timer
+  try {
+    const watcher = fsWatch(dir, { recursive: true }, (_event, filename) => {
+      // 锁/留痕/临时文件自己写出来的动静，不算「有人改预设」
+      if (filename && /(^|[\\/])\./.test(String(filename))) return
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        syncing = syncing
+          .then(check)
+          .catch((err) => warn('重新扫描失败：', err?.stack || err))
+      }, debounceMs)
+    })
+    ctx.on('dispose', () => {
+      clearTimeout(timer)
+      try {
+        watcher.close()
+      } catch (error) {}
+    })
+    log('目录监听已开启（改 preset.yml 会自动重注册，不用重启）')
+  } catch (err) {
+    warn('目录监听不可用（改动要重启才生效）：', err?.message || err)
+  }
+}

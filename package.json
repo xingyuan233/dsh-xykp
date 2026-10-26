@@ -12,10 +12,21 @@
   "engines": {
     "node": ">=20"
   },
+  "exports": {
+    "./storage/preset-loader": "./storage/preset-loader/index.js"
+  },
   "files": [
-    "src",
-    "presets",
+    "core",
+    "storage",
+    "chat",
+    "senses",
+    "comms",
+    "plan",
+    "observer",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "dependencies": {
+    "js-yaml": "4.3.2"
+  }
 }
