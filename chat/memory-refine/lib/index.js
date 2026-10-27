@@ -3659,17 +3659,28 @@ export function apply(ctx) {
         const c = loadCfg()
         const t = c.transferNext && c.transferNext[池名]
         if (!t || !(t.summary || t.extra)) return
-        // 已经回过话的会话不许吃（「新对话」= 还没说过话）
+        // 已经跑完过一整轮的会话不许吃（「新对话」= 还没说过一整轮话）
+        //
+        // ⚠ 2026-10-27 修（QQ 通道实测，主人问「QQ 发的能不能接转移」时查出来的）：
+        //   原来判「assistant/message > 0 就算回过」，可**第一轮里的工具调用消息本身就是
+        //   assistant/message**。而 QQ 桥的消息经常在插件挂上之前就到了（tick 是 500ms 一跳），
+        //   `agent/inbox/inserted` 那一次认领被整条漏掉，下一次认领机会就到 step2 了，
+        //   那时 assistant 已经 = 1 → 新会话永远吃不到交接 ✗
+        //   （实测：onebot-...-mvqekammv2e5 认领判定 events=22 assistant=1 回过=true，交接就这么丢了）
+        //   → 改成看有没有 `turn/end`：一轮都没跑完 = 这就是新会话的第一轮，允许认领 ✓
+        //   老会话跑过轮次 → 有过 turn/end → 照旧挡住，不会突然把旧对话灌一遍交接
         let 回过 = false
         let evCount = 0
         let assistantCount = 0
+        let turnEnds = 0
         try {
           const ev = agent.session && agent.session.snapshotEvents ? agent.session.snapshotEvents() || [] : []
           evCount = ev.length
           assistantCount = ev.filter((e) => e && ((e.type || e.kind) === 'assistant/message')).length
-          回过 = assistantCount > 0
+          turnEnds = ev.filter((e) => e && (e.type || e.kind) === 'turn/end').length
+          回过 = turnEnds > 0
         } catch (error) {}
-        diag(`  认领判定（${raw}）：events=${evCount} assistant=${assistantCount} 回过=${回过}`)
+        diag(`  认领判定（${raw}）：events=${evCount} assistant=${assistantCount} turnEnd=${turnEnds} 回过=${回过}`)
         if (回过) return
         // 已经被别的会话认领过（上一轮认领了却没来得及注入）→ 先让着，10 分钟后才允许重新认领
         const 占 = c.transferReserved && c.transferReserved[池名]
@@ -3700,25 +3711,35 @@ export function apply(ctx) {
         // ⭐ 2026-10-27（主人提的）：systemPrompt 那条路第一轮赶不上，那就**直接把交接拼进用户消息**。
         //   用户消息一定在模型请求里，拼进去稳。
         if (待注入交接) {
+          const 拼图 = { type: 'text', text: 待注入交接 + '\n\n（下面是对方真正说的话）' }
+          let 拼好了 = false
           try {
             const content = Array.isArray(msg.content) ? msg.content : null
-            if (content) {
-              content.unshift({ type: 'text', text: 待注入交接 + '\n\n（下面是对方真正说的话）' })
-              diag('  交接已拼进用户消息：' + 待注入交接.length + ' 字')
-              待注入交接 = ''
-              认领者 = ''
-              try {
-                const cc = loadCfg()
-                const 池 = String(sid).slice('preset_'.length)
-                if (cc.transferNext) delete cc.transferNext[池]
-                if (cc.transferReserved) delete cc.transferReserved[池]
-                saveCfg(cc)
-              } catch (error) {}
-            } else {
-              diag('  交接拼接失败：消息里没有 content 数组')
+            if (!content) throw new Error('消息里没有 content 数组')
+            try {
+              content.unshift(拼图)
+            } catch (e1) {
+              // ⚠ 2026-10-27：QQ 桥进来的消息是**冻结**的（数组 unshift 直接抛
+              //   「Cannot add property 1, object is not extensible」）→ 试一次整条 content 替换
+              msg.content = [拼图].concat(content)
+              if (!Array.isArray(msg.content) || msg.content[0] !== 拼图) throw new Error('content 换不掉（对象被冻结）')
             }
+            拼好了 = true
           } catch (error) {
-            diag('  交接拼接失败：' + (error && error.message))
+            // 拼不进用户消息不算失败 —— 下面 text() 那条路还会把交接注入提示词，QQ 就是靠它拿到的 ✓
+            diag('  交接拼接失败（改走提示词注入）：' + (error && error.message))
+          }
+          if (拼好了) {
+            diag('  交接已拼进用户消息：' + 待注入交接.length + ' 字')
+            待注入交接 = ''
+            认领者 = ''
+            try {
+              const cc = loadCfg()
+              const 池 = String(sid).slice('preset_'.length)
+              if (cc.transferNext) delete cc.transferNext[池]
+              if (cc.transferReserved) delete cc.transferReserved[池]
+              saveCfg(cc)
+            } catch (error) {}
           }
         }
         if (txt) {
@@ -6508,7 +6529,9 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         const 系统 =
           '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
 		  '可以详细与概括穿插，没有额外长度限制，可以很长，不会被裁剪。' +
-		  '这些输出将会作为你的记忆保留，所以将你不想忘记的东西交给下一轮对话。'
+		  '这些输出将会作为你的记忆保留，不要以长短来评判详细与简略的标准，' +
+		  '有些长的事情比较机械不重要则一句话概括即可，如果重要可以记录过程与自己的感受。' +
+		  '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。'
         // 不截断：这段对话原样全给模型（上下文通常还有几百 k，不差这几 k）
         const 回 = await 问模型(ctx, agent, 系统, 对话, 65536)
         const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
