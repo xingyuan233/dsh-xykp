@@ -854,13 +854,16 @@
           req.on('end', function () {
             var payload = {}
             try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch (e) { }
-            // ⚠⚠ 2026-10-28：**群聊 + atElement = 直接崩 native**（进程无声无息死掉、要重扫码）
-            //   实证两次：02:15 樱发「@樱 /ver」→ 崩；02:19 鲸鱼娘发同样一条 → 崩。
-            //   同一份代码里「群里发纯文本」是好的（早先几条群聊测试都发出来了），
-            //   所以先在这里拦死，别再拿壳的登录去试 ✗
-            if (Number(payload.chatType) === 2 && payload.at) {
-              w('[qq] 拒绝：群聊带 @ 的发送（会崩 native） peer=' + (payload.peerUid || payload.to))
-              reply(400, { ok: false, err: '群聊带 @ 的发送会崩 QQ 壳（已实证两次），先禁用' })
+            // ⚠⚠ 2026-10-28 夜里：**往群里发消息（sendMsg, chatType=2）会崩 native** ——
+            //   进程无声无息消失，还得重新扫码登录。实证三次：
+            //     · 02:15 樱发「@樱 /ver」（带 at）→ 崩
+            //     · 02:19 鲸鱼娘发同样一条（带 at）→ 崩
+            //     · 02:23 樱收到主人群里的「@樱 /ver」，回一句纯文本「qq-adapter default v0.2.0」→ 崩
+            //   早先在长跑的壳上「群里发纯文本」是成功的（00:0x 那几条测试），
+            //   所以可能是「冷登录的壳上群会话还没热」时 sendMsg 会崩；没查清之前一律别试 ✗
+            if (Number(payload.chatType) === 2) {
+              w('[qq] 拒绝：群聊发送（sendMsg 会崩 native） peer=' + (payload.peerUid || payload.to))
+              reply(400, { ok: false, err: '往群里发消息会崩 QQ 壳（已实证三次），暂停；私聊不受影响' })
               return
             }
             try {
