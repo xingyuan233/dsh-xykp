@@ -133,6 +133,10 @@ export function apply(ctx, config = {}) {
         description: 'qr 扫码登录 / check 检查登录状态',
       },
     },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
     async execute(args) {
       const action = String(args && args.action ? args.action : 'check').trim()
       if (action === 'check') {
