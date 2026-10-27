@@ -993,6 +993,17 @@ export async function apply(ctx, config = {}) {
         const msgId = String(evt?.msgId || '')
         if (!msgId || seenSet.has(msgId)) continue
         const key = chatKeyOf(evt)
+        // 灰条（系统提示，elementType 8，比如「谁拍了拍谁」「谁加入了群」）没有正文，
+        // 转发进会话只会变成一行 `[元素8]` 的噪音 —— 直接丢（2026-10-28 主人被这个吵到）
+        {
+          const els = Array.isArray(evt.elements) ? evt.elements : []
+          if (els.length && els.every((e) => e && Number(e.type) === 8)) {
+            seenSet.add(msgId)
+            handled++
+            log('跳过灰条（' + (key || '?') + '）')
+            continue
+          }
+        }
         // 记住「每个聊天最近一条进来的消息」——qq_reply 不传 msgId 时就用它，
         // 别去翻历史挑一条（翻出来的可能是自己刚发的）
         try {
