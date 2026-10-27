@@ -654,3 +654,44 @@ QQ 客户端「格式不支持就不显示」的根因就在这：以前发图**
   旧实例的闭包里还是旧 `ownerUids`。重启宿主即恢复；根治要把实例清理按 `instanceId` 做彻底
 - `/compact` 依赖会话里有内容；空会话会失败（memory_movctx 报「没读出内容」），属正常
 - `/new` 现在会把聊天绑到新会话，但**旧会话不会自动归档**（主人要的就是都留着，删靠 `/session N -del`）
+
+---
+
+## 17. 2026-10-28 凌晨：指令的回复被当成「对方说的话」转发进会话
+
+**症状**（主人报的）：「指令本来应该被拦下来，执行完就结束了，不应该真的转发给对方。」
+会话里出现两张卡，内容正是指令的回复：
+
+```
+[QQ私聊 u-u_BsJrCaYeH77_OZ78H5pEXA] 01:35 u_BsJrCaYeH77_OZ78H5pEXA
+部署默认模型 → deepseek-account / deepseek-flash
+```
+
+模型被叫起来看这条，只能回 `[[SILENT]]`。
+
+**链路**（不是「指令没被拦」，指令本身是拦住了）：
+
+1. 樱那个实例收到 `/model … -d` → 执行 → `replyTo()` 用 `bridge.send` 回「部署默认模型 → …」
+2. 这条自发消息又被 QQ 内核回调进 `onOneMsg()`，出现在桥的收件箱里（`senderUid` = 樱自己）
+3. **鲸鱼娘那个实例**看不懂这是自己人：`cfg.selfUid` 只认它自己（`u_wCwUu…`），
+   樱的 uid 在它眼里就是「一个陌生人」→ 当成正常消息转发进目标会话 ✗
+   （当时鲸鱼娘的 `defaultTarget` 还是 `p-alive`，active 正好是那个会话，所以卡片落在了那儿；
+   01:37 把目标钉死后落点变了，但「自己人当真用户」这层没修）
+
+**修法**（两处）：
+
+- **桥**（`bridge/qq-bridge-script.js`，`onOneMsg()`）：事件上加 `isSelf` ——
+  `String(m.senderUid) === String(S.selfUid || S.uid || '')`，自己发出去的回执直接标出来
+- **插件**（`lib/index.js`）：
+  1. 新增 `自己号集合()` / `是自己号(evt)`：`globalThis.__qqAdapterSelfUids` 存**本机所有实例**的号
+     （每个实例 mount 时把自己 `cfg.selfUid` 登记进去，两个壳共用同一个 Set）；
+     判定用 `evt.isSelf === true` 或 `senderUid ∈ 集合`（`u-` 前缀两种写法都认）
+  2. tick 循环里，**自己号发的消息在路由之前就丢掉**（`跳过自己号发的消息（…）`），
+     连 `fastUids` 也不管 —— 自己人发的东西永远不该进会话
+  3. **指令拦截挪到路由之前**：以前排在 `resolveRoute` / `resolveTarget` 后面，
+     聊天没配目标、或目标解析不到会话时，指令会被悄悄「跳过」而不执行 ✗
+     （主人这次的观感也是「没拦住」）
+
+**验证**：重启宿主后，从鲸鱼娘发 `/ver` 给樱 →
+樱正常回 `qq-adapter default v0.2.0`（它那边走指令）→
+鲸鱼娘那边的日志出现 `跳过自己号发的消息（u-u_BsJrCaYeH77_OZ78H5pEXA · 桥标了 isSelf）`，**没有**新的转发。

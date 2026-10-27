@@ -465,6 +465,9 @@
       var evt = {
         time: Date.now(), chatType: m.chatType, peerUid: m.peerUid, senderUid: m.senderUid,
         senderName: m.sendMemberName || m.sendNickName || '', msgId: m.msgId, msgSeq: m.msgSeq,
+        // ⭐ 2026-10-28：自己发出去的消息也会从内核回调里回来（回执也走一遍 onOneMsg），
+        //   标一下来源，插件那边才能干净地丢掉，别把指令回复当成「对方说的话」转发进会话 ✗
+        isSelf: !!m.senderUid && String(m.senderUid) === String(S.selfUid || S.uid || ''),
         text: (m.elements || []).filter(function (e) { return e.textElement }).map(function (e) { return e.textElement.content }).join(''),
         elements: (m.elements || []).map(function (el) {
           var o = { type: el.elementType, id: el.elementId }

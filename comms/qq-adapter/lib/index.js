@@ -714,6 +714,33 @@ export async function apply(ctx, config = {}) {
     }
   }
 
+  // ── 「自己号」判定（2026-10-28，主人：指令执行完就该结束，别把结果又当消息转发出去）──
+  // 症状：樱那边执行 /model -d，回复「部署默认模型 → …」；这条回复从桥上回来，
+  //   鲸鱼娘那个实例把它当成「陌生人发来的消息」转发进了会话，模型只好回 [[SILENT]]。
+  // 原因：两个实例互相把对方的号当普通用户。本机所有实例的号都登记进同一个全局集合，
+  //   谁发的消息只要是自己号，一律不转发（连 fastUids 也不管）。
+  function 自己号集合() {
+    const set = (globalThis.__qqAdapterSelfUids ||= new Set())
+    const add = (v) => {
+      const s = String(v || '').trim()
+      if (!s) return
+      set.add(s)
+      set.add(s.replace(/^u-/, ''))
+    }
+    try { add(cfg.selfUid) } catch { /* 没有就算了 */ }
+    return set
+  }
+  自己号集合()
+
+  function 是自己号(evt) {
+    if (!evt) return false
+    if (evt.isSelf === true) return true // 桥直接标了（自己发出去又被内核回调回来的回执）
+    const uid = String(evt.senderUid || '').trim()
+    if (!uid) return false
+    const set = 自己号集合()
+    return set.has(uid) || set.has(uid.replace(/^u-/, ''))
+  }
+
   async function tick(reason) {
     if (!cfg.enabled || running) return
     // 运行时覆盖：设置页写到 home\qq-adapter\ui-config.json 的分流配置，每轮读一次（很便宜）
@@ -748,7 +775,15 @@ export async function apply(ctx, config = {}) {
         if (handled >= cfg.maxPerTick) break
         const msgId = String(evt?.msgId || '')
         if (!msgId || seenSet.has(msgId)) continue
-        if (cfg.selfUid && String(evt.senderUid || '') === cfg.selfUid) continue
+        // 自己号发的（包括刚发出去又被内核回调回来的回执）→ 一律丢掉，不转发、不记「最近一条」
+        // 2026-10-28 主人：「指令本来应该被拦下来，执行完就结束了，不应该真的转发给对方」
+        //   樱执行 /model -d 的回复就是这么绕回鲸鱼娘会话里的，模型只好回 [[SILENT]] ✗
+        if (是自己号(evt) || (cfg.selfUid && String(evt.senderUid || '') === cfg.selfUid)) {
+          seenSet.add(msgId)
+          handled++
+          log(`跳过自己号发的消息（${chatKeyOf(evt) || '?'}${evt?.isSelf ? ' · 桥标了 isSelf' : ''}）`)
+          continue
+        }
 
         const key = chatKeyOf(evt)
         // 记住「每个聊天最近一条进来的消息」——qq_reply 不传 msgId 时就用它，
@@ -757,6 +792,18 @@ export async function apply(ctx, config = {}) {
           const box = (globalThis.__qqLastInbound ||= new Map())
           box.set(key, { msgId, msgSeq: String(evt.msgSeq ?? ''), time: Number(evt.time) || Date.now(), senderUid: String(evt.senderUid || '') })
         } catch { /* 记不住就算了 */ }
+        // 指令：以 / 开头的行由插件自己处理，不进会话。
+        // ⚠ 这一步必须排在「路由」前面 —— 指令不该因为「这个聊天没配目标」「目标解析不到会话」
+        //   就被悄悄丢掉（2026-10-28 主人：拦下来、执行完就结束，别真的转发给对方）✓
+        if (cfg.commandsEnabled !== false) {
+          const parsed = parseCommand(evt.text)
+          if (parsed) {
+            seenSet.add(msgId)
+            handled++
+            try { await runCommand(evt, key, parsed) } catch (err) { warn('指令 ' + parsed.name + ' 执行失败：', err?.message || err) }
+            continue
+          }
+        }
         const route = resolveRoute(cfg, key)
         if (!route.target) {
           log(`跳过 ${key || '?'}（${route.reason || route.via}）`)
@@ -769,16 +816,6 @@ export async function apply(ctx, config = {}) {
           continue
         }
         const text = formatIncoming(evt)
-        // 指令：以 / 开头的行由插件自己处理，不进会话
-        if (cfg.commandsEnabled !== false) {
-          const parsed = parseCommand(evt.text)
-          if (parsed) {
-            seenSet.add(msgId)
-            handled++
-            try { await runCommand(evt, key, parsed) } catch (err) { warn('指令 ' + parsed.name + ' 执行失败：', err?.message || err) }
-            continue
-          }
-        }
         // 流量控制：太频繁就先攒着，别一条一条砸进会话
         if (trafficLimited(key)) {
           queueBatch(key, evt, text)
