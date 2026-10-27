@@ -431,3 +431,66 @@ sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
   并且**单独开一个进程观察**，崩了至少能看出是哪一步。
 - 复盘要点：`getRichMediaFilePathForMobileQQSend` 对群（chatType=2）也许该换成群专用的路径函数，
   或者群图片得先走 `RichMediaService` 上传再发元素——**别把私聊那套直接套到群里**。
+- **第二次验证（23:35）**：换成 `getRichMediaFilePathForGuild` + 完整 picElement 再发，**照样崩**。
+  结论：群图必须先用 `RichMediaService` / OIDB（NapCat 的 `uploadGroupImage`：`sendOidbPacket` + Highway `upload`）
+  把图传上去，拿 `msgInfo`/`uuid` 再发元素。现在桥里直接 `throw`，**不许再崩第三次**。
+
+## 十二、干掉 NapCat：双壳架构（2026-10-27 23:50 完成）
+
+**NapCat 已经下线**：QQ2 进程 0、`3001` 没人听、NapCat 哨兵也停了。
+现在两个号都跑在我们自己编的纯 shell 上：
+
+| 号 | 目录 | 端口 | 账号 | 桥脚本实例 | 工具前缀 |
+|---|---|---|---|---|---|
+| 樱 | `D:\Program-Files\QQ-shell` | 39272 | 3793339506 (`u_BsJrCaYeH77_OZ78H5pEXA`) | 默认 | `qq_*` |
+| 鲸鱼娘 | `D:\Program-Files\QQ-shell2` | 39273 | 2909433072 (`u_wCwUuJmmlLb7g6MDEKm5Iw`) | `instanceId: whale` | `qq2_*` |
+
+两个壳共用**同一个** `qq-bridge-script.js`，靠 loader 注入的 `global.__QQ_BOOT` 区分：
+
+```js
+global.__QQ_BOOT = { port, log, cmd, res, config, qrFile, own, uin }
+```
+
+脚本里有这些开关（都能被 BOOT 覆盖）：`LOG / CMD / RES / PORT / QUICK_UIN / DATA_ROOT / OWN`
+以及 `CFG`（每个实例读自己的 `qq-config2.json`）。
+
+### 12.1 插件侧多实例
+
+- `instanceId`：隔开去重文件（`<DSH_HOME>/qq-adapter/seen-<instanceId>.json`）和内部状态
+- `toolPrefix`：工具名加前缀（第二个实例 `qq2_`），否则同一宿主里两个实例抢同名工具
+- `installShellGuard` 之外还加了防重复拉壳：
+  - **冷却 120s**
+  - 拉之前先查「这个安装目录下有没有 QQ.exe 在跑」，有就不拉
+
+### 12.2 这一夜最贵的两个教训
+
+1. **QQ.exe 是单实例的**：同一个安装目录被拉起两次，后起的会把先起的顶掉（表现为进程神秘消失、
+   `quickLogin: xxx not in list`、要重扫码）。所以 loader 里加了**单实例守卫**：
+   ```js
+   const guard = net.createServer()
+   guard.once('error', () => process.exit(0))     // 抢不到端口说明已经有一个在跑
+   guard.listen(39273, '127.0.0.1', () => { guard.close(() => run()) })
+   ```
+2. **NapCat 的哨兵会「抢号」**：它每 3 分钟把 NapCat 拉回来，NapCat 一登录就把新壳顶掉。
+   所以搬家顺序必须是：**先停哨兵 → 再停 NapCat → 最后才让新壳登录**。
+   现成脚本：`workspaces\alive-workspace\stop-napcat.ps1`（回滚命令写在文件头）。
+
+### 12.3 两个壳的保活归谁管
+
+- 桥挂了：`qq-adapter` 的 `ensureShell` 每条实例各管各的（配好 `shellBootPath`/`shellDir`）
+- 登录失效：桥自己会推二维码（`notifyTopic` 那个 ntfy 主题）；鲸鱼娘实例现在还是 `autoStartShell: false`
+  —— 因为它的壳是我们手动起的，需要自动重启时再打开（打开前先确认单实例守卫在位）
+- **NapCat 的哨兵已经停了**（`tools\sentinel\napcat-sentinel.mjs`），要保活鲸鱼娘的壳得另写一个，
+  别再把 NapCat 拉回来
+
+### 12.4 现在的主链路
+
+```
+你手机 QQ（3041632789）
+   ↕ 鲸鱼娘 2909433072 ── QQ-shell2(39273) ── qq-adapter-whale ── s-onebot-private-3793339506-…
+樱 3793339506 ── QQ-shell(39272) ── qq-adapter(default) ── s-session-b51b82c8-…
+```
+
+- 主人发鲸鱼娘的私聊 → 进「鲸鱼娘那条会话」
+- 樱收到的消息（比如那边那个我跟樱聊天）→ 进「樱那条会话」
+- 两条会话各用各的工具前缀，**别再混着调**
