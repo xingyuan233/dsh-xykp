@@ -1004,3 +1004,11 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
 
 顺手修 `createSessionFor()` 的继承：header 里没有 agentPreset 时（`/new` 建的就是空的），
 改用 `agentPresets.composedPreset(agent.ctx)` 问当前会话到底在用哪个预设 —— 否则继承永远是空 ✗
+
+### 18.17 `/new` 不继承当前会话（2026-10-28 03:58，主人纠正）
+
+主人：「`/new` 应该用设置的预设和 ws，没设置用默认的，**不需要继承**啊；会话转移才要继承，不然没法改了」
+
+- `/new`（`createSessionFor`）：`preset = 聊天偏好.preset || 目标里的 p-xxx || ''`（空 = 宿主部署默认），
+  `cwd = 聊天偏好.workspace || cfg.workspaceRoot`。**不读当前会话的 header**
+- 继承只属于「搬家」：`/compact`、`memory_movctx`（那个本来就按原会话 cwd/预设建新会话 ✓）

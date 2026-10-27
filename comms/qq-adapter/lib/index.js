@@ -367,28 +367,12 @@ export async function apply(ctx, config = {}) {
     const route = resolveRoute(cfg, key)
     const all = await chatsNow(true)
     const prefs = (all[key] && all[key].prefs) || {}
-    // 没设偏好时**跟着这个聊天当前绑的会话走**：预设、工作区都继承。
-    // ⚠ 2026-10-28 主人：`/new` 出来变成 standard + default 工作区，明显不是他要的 ✗
-    let 继承预设 = ''
-    let 继承cwd = ''
-    try {
-      const sidNow = String((all[key] && all[key].sessionId) || '')
-      const ag = sidNow ? findAgent(agentsSvc, sidNow) : null
-      const h = ag && ag.session && ag.session.header
-      if (h) {
-        继承预设 = String(h.agentPreset || h.preset || '')
-        继承cwd = String(h.cwd || '')
-      }
-      // header 里不一定有 agentPreset（`/new` 建的就是空的）——活的 agent 直接问注册表最准
-      if (!继承预设 && ag) {
-        try {
-          const presets = ctx.get('agentPresets')
-          if (presets && typeof presets.composedPreset === 'function') 继承预设 = String(presets.composedPreset(ag.ctx) || '')
-        } catch { /* 问不到就算了 */ }
-      }
-    } catch { /* 继承不到就用默认 */ }
-    const preset = prefs.preset || presetOfTarget(route.target) || 继承预设
-    const cwd = prefs.workspace || 继承cwd || cfg.workspaceRoot
+    // `/new` 用「这个聊天设置的偏好」，没设就用部署默认（预设 = agent-preset-registry 的 selectedDefault、
+    // 工作区 = workspaceRoot）。**不继承当前会话**——主人 2026-10-28 03:57：
+    //   「/new 应该用设置的预设和 ws，没设置用默认的；继承是会话转移（/compact、memory_movctx）才需要，
+    //    不然改不动了」✓
+    const preset = prefs.preset || presetOfTarget(route.target) || ''
+    const cwd = prefs.workspace || cfg.workspaceRoot
     const editor = (() => { try { return ctx.get('configEditor') } catch { return null } })()
     const overrideOf = (id) => {
       try {
