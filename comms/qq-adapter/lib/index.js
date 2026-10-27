@@ -224,6 +224,12 @@ export async function apply(ctx, config = {}) {
         if (cfg.selfUid && String(evt.senderUid || '') === cfg.selfUid) continue
 
         const key = chatKeyOf(evt)
+        // 记住「每个聊天最近一条进来的消息」——qq_reply 不传 msgId 时就用它，
+        // 别去翻历史挑一条（翻出来的可能是自己刚发的）
+        try {
+          const box = (globalThis.__qqLastInbound ||= new Map())
+          box.set(key, { msgId, msgSeq: String(evt.msgSeq ?? ''), time: Number(evt.time) || Date.now(), senderUid: String(evt.senderUid || '') })
+        } catch { /* 记不住就算了 */ }
         const route = resolveRoute(cfg, key)
         if (!route.target) {
           log(`跳过 ${key || '?'}（${route.reason || route.via}）`)
@@ -409,8 +415,11 @@ export async function apply(ctx, config = {}) {
         const isGroup = key.startsWith('g-') || key.startsWith('G-')
         const peerUid = key.replace(/^[ugUG][-_]/, '')
         if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
-        const r = await bridge.reply(isGroup ? 2 : 1, peerUid, String(args.msgId || ''), String(args.text ?? ''))
-        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+        const last = globalThis.__qqLastInbound?.get(key) || null
+        const msgId = String(args.msgId || last?.msgId || '')
+        const meta = !args.msgId && last ? { seq: last.msgSeq, time: last.time, senderUid: last.senderUid } : {}
+        const r = await bridge.reply(isGroup ? 2 : 1, peerUid, msgId, String(args.text ?? ''), meta)
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key, msgId }
       },
     }))
 

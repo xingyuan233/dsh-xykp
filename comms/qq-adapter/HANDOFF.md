@@ -375,3 +375,14 @@ sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
 | `GET /reply?peerUid=&chatType=&msgId=&text=` | 引用回复（seq/time/sender 可省） |
 
 插件工具同步加好：`qq_send_file`、`qq_send_voice`、`qq_reply`（改插件要重启宿主才出现）。
+
+### 11.6 重启后又踩的三个坑
+
+1. **路径里的空格**：`URLSearchParams` 把空格编成 `+`，桥的 `qs()` 用 `decodeURIComponent` 不认 `+`，
+   `Tencent Files` 变成 `Tencent+Files` → `ENOENT`。修法：`qs()` 里先 `.replace(/\+/g,' ')` 再 decode。
+2. **chat 填 QQ 号会发丢**：`u-3793339506` 是**樱自己的号**，当 peerUid 用当然查不到消息。
+   现在桥里加了 `toUid()`：纯数字先 `getUixConvertService().getUid(uin)` 转 uid，
+   转出来等于自己就直接抛「这是自己的号，别发给自己」。
+3. **`qq_reply` 的默认引用**不能靠「翻历史挑一条」——会挑到自己刚发的。
+   插件在 `globalThis.__qqLastInbound` 里记住**每个聊天最近一条进来的消息**（msgId/seq/time/senderUid），
+   `qq_reply` 不传 msgId 就用它，并把 seq/time/senderUid 一起带给桥。

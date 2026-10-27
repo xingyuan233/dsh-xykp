@@ -58,8 +58,12 @@ export function createBridge(baseUrl, opts = {}) {
       if (duration) q.set('duration', String(Number(duration) || 0))
       return req('/sendptt?' + q.toString())
     },
-    async reply(chatType, peerUid, msgId, text) {
+    async reply(chatType, peerUid, msgId, text, meta = {}) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), msgId: String(msgId || ''), text: String(text ?? '') })
+      if (meta?.seq) q.set('seq', String(meta.seq))
+      if (meta?.time) q.set('time', String(meta.time))
+      if (meta?.senderUid) q.set('senderUid', String(meta.senderUid))
+      if (meta?.senderUin) q.set('senderUin', String(meta.senderUin))
       return req('/reply?' + q.toString())
     },
   }

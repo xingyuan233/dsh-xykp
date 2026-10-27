@@ -598,11 +598,25 @@
       }
     }
     w('[qq] sendPicture md5=' + md5 + ' size=' + buf.length + ' dims=' + dims.w + 'x' + dims.h + ' -> ' + target)
-    return s.sendMsg('0', { chatType: chatType || 1, peerUid: peerUid, guildId: '' }, [elem], new Map())
+    return s.sendMsg('0', { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }, [elem], new Map())
   }
 
   function require_basename(p2) {
     try { return p.mainModule.require('path').basename(p2) } catch (e) { return 'image.png' }
+  }
+
+  /** 传 QQ 号（纯数字）也能用：uin → uid 转一下；顺手挡住「发给自己」 */
+  function toUid(peer) {
+    var s = String(peer || '')
+    if (/^\d{5,}$/.test(s)) {
+      try {
+        var conv = S.session && S.session.getUixConvertService()
+        var u = conv && conv.getUid(s)
+        if (u) s = String(u)
+      } catch (e) { w('[qq] toUid err ' + e.message) }
+    }
+    if (s && (s === S.selfUid || s === S.uid)) throw new Error('这是自己的号（' + s + '），别发给自己')
+    return s
   }
   /** 组一条 @ 元素（群里 @ 人用；atType 2 = 指定一个人） */
   function atElement(uid, nick, atType) {
@@ -621,7 +635,7 @@
   function sendMsgInternal(peerUid, chatType, elementsOrText, atUid, atNick) {
     var s = msgService()
     if (!s) throw new Error('no msgService')
-    var peer = { chatType: chatType || 1, peerUid: peerUid, guildId: '' }
+    var peer = { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }
     var elems = Array.isArray(elementsOrText) ? elementsOrText
       : [{ elementType: 1, elementId: '', textElement: { content: String(elementsOrText || ''), atType: 0, atUid: '', atTinyId: '', atNtUid: '' } }]
     if (atUid) elems.unshift(atElement(atUid, atNick || '', 2))
@@ -658,7 +672,8 @@
           try {
             (url.split('?')[1] || '').split('&').forEach(function (kv) {
               var a = kv.split('=')
-              if (a[0]) q[a[0]] = decodeURIComponent(a[1] || '')
+              // URLSearchParams 把空格编成 '+'，decodeURIComponent 不认 → 先换回来（路径里带空格的坑）
+              if (a[0]) q[a[0]] = decodeURIComponent((a[1] || '').replace(/\+/g, ' '))
             })
           } catch (e) { }
           return q
@@ -883,7 +898,7 @@
           var q7 = qs()
           try {
             var s11 = msgService()
-            var peer7 = { chatType: parseInt(q7.chatType || '1', 10), peerUid: q7.peerUid, guildId: '' }
+            var peer7 = { chatType: parseInt(q7.chatType || '1', 10), peerUid: toUid(q7.peerUid), guildId: '' }
             var sendReply = function (tgt) {
               var seq7 = String(q7.seq || q7.msgSeq || (tgt && tgt.msgSeq) || '0')
               var t = q7.time || (tgt && tgt.msgTime) || Math.floor(Date.now() / 1000)
@@ -904,7 +919,7 @@
               if (r11 && r11.then) r11.then(function (x) { reply(200, { ok: true, result: Js(x) }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
               else reply(200, { ok: true, result: r11 })
             }
-            if (q7.seq && q7.senderUid) return sendReply(null)
+            if (q7.seq && q7.senderUid && q7.senderUin) return sendReply(null)
             // 没给 seq/发送者 → 自己把目标消息查出来（qq_reply 工具只传 chat + msgId 就能用）
             var pr7 = q7.msgId ? s11.getMsgsByMsgId(peer7, [String(q7.msgId)])
               : s11.getAioFirstViewLatestMsgs(peer7, 20)
@@ -1030,7 +1045,7 @@
       fileElement: { fileName: name, folderId: '', filePath: target, fileSize: String(buf.length) }
     }
     w('[qq] sendFile md5=' + md5 + ' size=' + buf.length + ' -> ' + target)
-    return s.sendMsg('0', { chatType: chatType || 1, peerUid: peerUid, guildId: '' }, [elem], new Map())
+    return s.sendMsg('0', { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }, [elem], new Map())
   }
 
   /** 发语音：pttElement（FILE=4）。文件必须已经是 silk，塞进 QQ 的语音发送目录再发 */
@@ -1060,7 +1075,7 @@
       }
     }
     w('[qq] sendPtt md5=' + md5 + ' size=' + buf.length + ' dur=' + (duration || 2) + ' -> ' + target)
-    return s.sendMsg('0', { chatType: chatType || 1, peerUid: peerUid, guildId: '' }, [elem], new Map())
+    return s.sendMsg('0', { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }, [elem], new Map())
   }
 
   // ---------- 5) 命令文件（调试用） ----------
