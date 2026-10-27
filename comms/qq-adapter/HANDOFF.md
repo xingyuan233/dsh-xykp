@@ -579,3 +579,36 @@ client graph。排除过两件事：
 
 现在两个实例都是 `coalesceSeconds: 10`（见 `home\qq-adapter\ui-config.json`）。
 不想限流就设 0；某个号想直通就加进 `fastUids`。
+
+**主人的 uid 已经在 `fastUids` 里**（`u-u_VyRaaHm1qjSkW7EbGhh62w`，两个实例都加了），她发的消息直通、不被合并。
+
+## 十五、图片格式 / 群昵称缓存（2026-10-28 00:4x）
+
+### 15.1 图片格式：picType 必须和真格式对上
+
+QQ 客户端「格式不支持就不显示」的根因就在这：以前发图**一律写 `picType: 1000`（JPEG）**，
+可文件其实是 PNG/GIF，客户端就不认。NapCat 那边打过补丁，我们现在按真实扩展名给：
+
+| 扩展名 | picType |
+|---|---|
+| jpg / jpeg | 1000 |
+| png | 1001 |
+| gif | 2000 |
+| bmp | 1005 |
+| 其它（webp / avif / heic / tiff…） | 先 ffmpeg 转 **png** 再按 1001 发 |
+
+- 转换：`normalizePicture()`，临时文件写 `qq-media\conv-<ts>.png`，
+  ffmpeg 先试 `CFG.ffmpegPath`、再试 `D:\devoding\C++\pakes\ffmpeg-7.0.2\bin\ffmpeg.exe`
+- 实测：`.webp` → 转 png、`picType=1001`；`.gif` → `picType=2000`（不再被当 jpeg）
+
+### 15.2 群成员昵称缓存（照 bili_reply 的做法）
+
+- 缓存文件：`workspaces\alive-workspace\group-members\<群号>.json`，形如 `{ "u_xxx": "昵称" }`
+- 消息进来时（`onOneMsg`）：
+  1. 群消息**带名字** → 顺手写进缓存（名字变了也更新）
+  2. 不带名字 → 先从缓存补
+  3. 缓存也没有 → 异步 `refreshMembers(gid)` 拉一遍，10 分钟内不重复拉
+- `refreshMembers()` 用 `getAllMemberList(gid, false)`——**必须两个参数**，
+  少一个内核直接 `assertion (argc == 2) failed`；返回的 `result.infos` 是 **Map**，不是数组，要自己摊平
+- `GET /groupmembers?gid=` 也能拉，顺带把缓存写一遍（测试/预热用）
+- 实测：群 602173548 拉到 2 人（星鸢、樱），缓存文件已生成
