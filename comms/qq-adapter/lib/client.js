@@ -194,14 +194,14 @@ window.__ModuleLoader__.load({
       for (const spec of NAMESPACES) {
         try { window.__qqAdapterForms[spec.ns] = ctx.configForms.get(spec.ns) } catch (e) { /* 没有就算了 */ }
       }
-      const nsList = NAMESPACES.map((x) => x.ns)
-      ctx.effect(() => ctx.configForms.whileServed(nsList, () => ctx.slots.inject('plugins.item', () => ctx.slots.register({
+      // 不套 whileServed：命名空间对不上时页面也要能露出来，好让人看见「没接上」而不是整页消失
+      ctx.effect(() => ctx.slots.inject('plugins.item', () => ctx.slots.register({
         name: 'plugins.item',
         id: 'qq-adapter',
         order: 40,
         label: () => 'QQ 通道',
         inject: () => ({}),
-      }, Section))))
+      }, Section)))
     }
 
     exports.apply = apply
