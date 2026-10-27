@@ -38,7 +38,7 @@ export const COMMANDS = [
   { name: 'cfg-default', needsOwner: true, usage: '/cfg-default [p-预设|s-会话|QQ号]', group: '适配层', help: '查看/设置这个聊天的默认目标' },
   { name: 'cfg-mode', needsOwner: true, usage: '/cfg-mode [blacklist|whitelist]', group: '适配层', help: '查看/切换名单模式' },
   { name: 'cfg-list', needsOwner: true, usage: '/cfg-list [-add u-xxx|g-xxx] [-del 序号|键] [blocked|allowed|fast]', group: '适配层', help: '查看/增删名单（blocked=禁用、allowed=白名单、fast=免合并）' },
-  { name: 'cfg-table', needsOwner: true, usage: '/cfg-table [-set u-xxx target] [-del u-xxx]', group: '适配层', help: '查看/设置映射表（一个聊天 → 一个目标，键值对形式）' },
+  { name: 'cfg-table', needsOwner: true, usage: '/cfg-table [-set <chat> <target> | -add <chat>:<target>] [-del <chat>]', group: '适配层', help: '查看/设置映射表（一个聊天 → 一个目标；-set 空格写、-add 冒号写都行）' },
 
   // ── 操作 ──
   { name: 'free', needsOwner: false, usage: '/free', group: '操作', help: '看一眼这个会话是不是在跑（卡在审批/长任务时用；只读，不动它）' },
@@ -123,3 +123,4 @@ export function isOwner(senderUid, cfg) {
   const list = Array.isArray(cfg.ownerUids) ? cfg.ownerUids : []
   return list.some((x) => norm(x) === norm(uid))
 }
+
