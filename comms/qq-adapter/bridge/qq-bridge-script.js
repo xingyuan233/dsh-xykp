@@ -585,6 +585,9 @@
     var name = require_basename(filePath)
     var dims = imageDims(buf)
     var isGroup = Number(chatType) === 2
+    // ⚠ 2026-10-27 两次事故：群里直接 sendMsg 带 picElement 会让 native 崩（进程直接没，无堆栈）。
+    // 群图片得先走 RichMediaService/OIDB 上传，那条还没实现 —— 先挡住，不许再崩一次。
+    if (isGroup) throw new Error('群图片发送未实现（直接发会崩 native），私聊图片可以；群图用文件发')
     var req = {
       md5HexStr: md5, fileName: name, elementType: 2, elementSubType: 0,
       thumbSize: 0, needCreate: true, downloadType: 1, file_uuid: ''
