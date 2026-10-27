@@ -581,10 +581,25 @@ export async function apply(ctx, config = {}) {
       if (spec.name === 'cfg-table') {
         const maps = Array.isArray(mineCfg.mappings) ? mineCfg.mappings.slice() : []
         const setAt = tokens.indexOf('-set')
+        const addAt = tokens.indexOf('-add')
         const delAt = tokens.indexOf('-del')
-        if (setAt >= 0 && tokens[setAt + 1] && tokens[setAt + 2]) {
-          const chat = tokens[setAt + 1]
-          const target = tokens[setAt + 2]
+        // 2026-10-28：两种写法都认 ——
+        //   `/cfg-table -set <chat> <target>`（空格分隔）
+        //   `/cfg-table -add <chat>:<target>`（冒号分隔，主人写的就是这个）
+        const 写字 = setAt >= 0 ? setAt : addAt
+        if (写字 >= 0) {
+          let chat = ''
+          let target = ''
+          if (tokens[写字 + 1] && tokens[写字 + 2]) { chat = tokens[写字 + 1]; target = tokens[写字 + 2] }
+          else if (tokens[写字 + 1] && tokens[写字 + 1].includes(':')) {
+            const idx = tokens[写字 + 1].indexOf(':')
+            chat = tokens[写字 + 1].slice(0, idx).trim()
+            target = tokens[写字 + 1].slice(idx + 1).trim()
+          }
+          if (!chat || !target) {
+            await replyTo(key, '写法：/cfg-table -set <u-xxx|g-xxx> <p-预设|s-会话>\n或者 /cfg-table -add <chat>:<target>')
+            return
+          }
           const i = maps.findIndex((m) => m.chat === chat)
           if (i >= 0) maps[i] = { chat, target }
           else maps.push({ chat, target })
@@ -600,7 +615,7 @@ export async function apply(ctx, config = {}) {
           await replyTo(key, removed ? '删了映射 ' + removed.chat : '没找到这条映射')
           return
         }
-        await replyTo(key, '映射（' + maps.length + '）\n' + (maps.length ? maps.map((m) => m.chat + ' → ' + m.target).join('\n') : '（空）') + '\n\n/cfg-table -set u-xxx p-alive · /cfg-table -del u-xxx')
+        await replyTo(key, '映射（' + maps.length + '）\n' + (maps.length ? maps.map((m) => m.chat + ' → ' + m.target).join('\n') : '（空）') + '\n\n/cfg-table -set u-xxx p-alive · /cfg-table -add g-123:s-会话 · /cfg-table -del u-xxx')
         return
       }
     }
