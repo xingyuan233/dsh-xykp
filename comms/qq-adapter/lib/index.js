@@ -775,16 +775,6 @@ export async function apply(ctx, config = {}) {
         if (handled >= cfg.maxPerTick) break
         const msgId = String(evt?.msgId || '')
         if (!msgId || seenSet.has(msgId)) continue
-        // 自己号发的（包括刚发出去又被内核回调回来的回执）→ 一律丢掉，不转发、不记「最近一条」
-        // 2026-10-28 主人：「指令本来应该被拦下来，执行完就结束了，不应该真的转发给对方」
-        //   樱执行 /model -d 的回复就是这么绕回鲸鱼娘会话里的，模型只好回 [[SILENT]] ✗
-        if (是自己号(evt) || (cfg.selfUid && String(evt.senderUid || '') === cfg.selfUid)) {
-          seenSet.add(msgId)
-          handled++
-          log(`跳过自己号发的消息（${chatKeyOf(evt) || '?'}${evt?.isSelf ? ' · 桥标了 isSelf' : ''}）`)
-          continue
-        }
-
         const key = chatKeyOf(evt)
         // 记住「每个聊天最近一条进来的消息」——qq_reply 不传 msgId 时就用它，
         // 别去翻历史挑一条（翻出来的可能是自己刚发的）
@@ -792,9 +782,11 @@ export async function apply(ctx, config = {}) {
           const box = (globalThis.__qqLastInbound ||= new Map())
           box.set(key, { msgId, msgSeq: String(evt.msgSeq ?? ''), time: Number(evt.time) || Date.now(), senderUid: String(evt.senderUid || '') })
         } catch { /* 记不住就算了 */ }
-        // 指令：以 / 开头的行由插件自己处理，不进会话。
-        // ⚠ 这一步必须排在「路由」前面 —— 指令不该因为「这个聊天没配目标」「目标解析不到会话」
-        //   就被悄悄丢掉（2026-10-28 主人：拦下来、执行完就结束，别真的转发给对方）✓
+        // 指令：以 / 开头的行**一律**由插件自己处理，绝不透传给会话。
+        //   认识的执行、不认识的回「未知指令」——反正不进会话（主人 2026-10-28 的原话）
+        // ⚠ 这一步必须排在「路由」和「自己号过滤」前面：
+        //   · 排在路由后面时，聊天没配目标 / 目标解析不到会话 → 指令被悄悄跳过不执行 ✗
+        //   · 排在自己号后面时，从另一个号（樱 ↔ 鲸鱼娘）发来的指令会被当成「自己人」丢掉 ✗
         if (cfg.commandsEnabled !== false) {
           const parsed = parseCommand(evt.text)
           if (parsed) {
@@ -803,6 +795,15 @@ export async function apply(ctx, config = {}) {
             try { await runCommand(evt, key, parsed) } catch (err) { warn('指令 ' + parsed.name + ' 执行失败：', err?.message || err) }
             continue
           }
+        }
+        // 自己号发的**普通消息**（包括刚发出去又被内核回调回来的回执）→ 丢掉，不转发。
+        // 2026-10-28 主人：「指令执行完就结束了，不应该真的转发给对方」
+        //   樱执行 /model -d 的回复就是这么绕回鲸鱼娘会话里的，模型只好回 [[SILENT]] ✗
+        if (是自己号(evt) || (cfg.selfUid && String(evt.senderUid || '') === cfg.selfUid)) {
+          seenSet.add(msgId)
+          handled++
+          log(`跳过自己号发的消息（${key || '?'}${evt?.isSelf ? ' · 桥标了 isSelf' : ''}）`)
+          continue
         }
         const route = resolveRoute(cfg, key)
         if (!route.target) {
