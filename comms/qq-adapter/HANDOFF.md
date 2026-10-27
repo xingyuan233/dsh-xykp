@@ -779,3 +779,36 @@ ct=2 peer=602173548 from=u_VyRaa…  text="@樱 /ver"  elements=[TEXT, TEXT]
 **群里收到的消息照常转发进会话**，只是不能往回发。
 
 那个「先摸一下群会话」的办法还没试——下次动之前先确认主人方便重扫码。
+
+### 18.4 ✅ 根因找到：群聊 peer 少了「唯一的 guildId」（翻 NapCat 源码翻出来的）
+
+以前群发一按就崩 native（壳无声消失、要重扫码），三次实证。真正的差别在
+`tools\NapCat\shell\napcat.mjs` 里 `MsgApi.sendMsg()`（约 10800 行）：
+
+```js
+const i = await this.generateMsgUniqueId(e.chatType)   // ← 关键这一句
+e.guildId = i                                          // ← 塞进 peer
+await callNormalEventV2('NodeIKernelMsgService/sendMsg', ..., ['0', e, n, new Map()], ...)
+```
+
+`generateMsgUniqueId(chatType, MsfService.getServerTime())` 生成一个「本次发送的唯一 id」，
+NapCat 把它当 **guildId** 传给内核。我们原来给的是 `guildId: ''`：
+
+- 私聊：`guildId: ''` 没事 ✓
+- 群聊：**少了它内核直接崩**（不是抛错，是进程没了）✗
+
+修法（`sendMsgInternal()`）：`chatType === 2` 时先
+`peer.guildId = String(m.generateMsgUniqueId(2, msf.getServerTime()))` 再 send。
+顺手修了 `toUid()`：群号不是 uin，不做 uin→uid 转换。
+
+实测（02:32，两发都成）：
+
+```
+[8980] [qq] http send -> 602173548 text="（guildId 修复后第一次群发测试）"
+[8980] [qq] SENT-LOCAL msgId=7775633068768938524 status=1
+[8980] [qq] http send -> 602173548 text="（@ 元素 + guildId 修复后测试）"   ← 带 at 也通了
+[8980] [qq] SENT-LOCAL msgId=7775633115541326756 status=1
+```
+
+所以「群里 + @」不是 at 元素的问题，是 guildId 的问题 —— 现在群发、群 @ 都恢复了。
+（`chatType === 2` 的那道保险已经拆掉）

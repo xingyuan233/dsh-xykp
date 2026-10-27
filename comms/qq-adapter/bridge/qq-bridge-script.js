@@ -682,9 +682,10 @@
   }
 
   /** 传 QQ 号（纯数字）也能用：uin → uid 转一下；顺手挡住「发给自己」 */
-  function toUid(peer) {
+  function toUid(peer, chatType) {
     var s = String(peer || '')
-    if (/^\d{5,}$/.test(s)) {
+    // ⚠ 群号不是 uin，绝对不能拿去做 uin→uid 转换（2026-10-28）
+    if (Number(chatType) !== 2 && /^\d{5,}$/.test(s)) {
       try {
         var conv = S.session && S.session.getUixConvertService()
         var u = conv && conv.getUid(s)
@@ -711,10 +712,24 @@
   function sendMsgInternal(peerUid, chatType, elementsOrText, atUid, atNick) {
     var s = msgService()
     if (!s) throw new Error('no msgService')
-    var peer = { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }
+    var ct = Number(chatType) || 1
+    var peer = { chatType: ct, peerUid: toUid(peerUid, ct), guildId: '' }
     var elems = Array.isArray(elementsOrText) ? elementsOrText
       : [{ elementType: 1, elementId: '', textElement: { content: String(elementsOrText || ''), atType: 0, atUid: '', atTinyId: '', atNtUid: '' } }]
     if (atUid) elems.unshift(atElement(atUid, atNick || '', 2))
+    // ⭐⭐ 2026-10-28（翻 `tools\NapCat\shell\napcat.mjs` 找到的根因）：
+    //   群聊的 peer **必须带一个「唯一的 guildId」**。
+    //   NapCat 的 `MsgApi.sendMsg()` 是先
+    //     `guildId = msgService.generateMsgUniqueId(chatType, MsfService.getServerTime())`
+    //   再调 `NodeIKernelMsgService/sendMsg('0', peer, elements, new Map())`。
+    //   我们原来给的是 `guildId: ''` —— 私聊没事，**群里一发送就崩 native**（壳无声消失）✗
+    if (ct === 2) {
+      try {
+        var msf = S.session && S.session.getMSFService ? S.session.getMSFService() : null
+        var envId = s.generateMsgUniqueId(ct, msf ? msf.getServerTime() : Date.now())
+        if (envId) peer.guildId = String(envId)
+      } catch (e) { w('[qq] 群聊 guildId 生成失败：' + e.message) }
+    }
     return s.sendMsg('0', peer, elems, new Map())
   }
 
@@ -854,18 +869,9 @@
           req.on('end', function () {
             var payload = {}
             try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch (e) { }
-            // ⚠⚠ 2026-10-28 夜里：**往群里发消息（sendMsg, chatType=2）会崩 native** ——
-            //   进程无声无息消失，还得重新扫码登录。实证三次：
-            //     · 02:15 樱发「@樱 /ver」（带 at）→ 崩
-            //     · 02:19 鲸鱼娘发同样一条（带 at）→ 崩
-            //     · 02:23 樱收到主人群里的「@樱 /ver」，回一句纯文本「qq-adapter default v0.2.0」→ 崩
-            //   早先在长跑的壳上「群里发纯文本」是成功的（00:0x 那几条测试），
-            //   所以可能是「冷登录的壳上群会话还没热」时 sendMsg 会崩；没查清之前一律别试 ✗
-            if (Number(payload.chatType) === 2) {
-              w('[qq] 拒绝：群聊发送（sendMsg 会崩 native） peer=' + (payload.peerUid || payload.to))
-              reply(400, { ok: false, err: '往群里发消息会崩 QQ 壳（已实证三次），暂停；私聊不受影响' })
-              return
-            }
+            // ⚠⚠ 2026-10-28：群发崩 native 的根因找到了（见 sendMsgInternal 里的注释）——
+            //   群聊 peer 少了「唯一的 guildId」。已按 NapCat 的做法补上，所以这里不再拦。
+            //   （真出问题先看日志里的 `群聊 guildId 生成失败`）
             try {
               var r = sendMsgInternal(payload.peerUid || payload.to, payload.chatType || 1, payload.elements || payload.text, payload.at || '', payload.atNick || '')
               w('[qq] http send -> ' + (payload.peerUid || payload.to) + ' text=' + J(payload.text))

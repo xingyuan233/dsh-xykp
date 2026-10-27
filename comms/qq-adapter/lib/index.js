@@ -985,9 +985,8 @@ export async function apply(ctx, config = {}) {
         const peerUid = key.replace(/^[ugUG][-_]/, '')
         if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
         const at = String(args.at || '').replace(/^u-/, '')
-        // ⚠ 2026-10-28：往群里发消息会让 QQ 壳的 native 直接崩掉（进程无声消失、要重扫码）——
-        //   实证三次（两次带 at、一次纯文本群回复）。桥那边也拦了；这里提前报清楚 ✗
-        if (isGroup) throw new Error('往群里发消息会崩 QQ 壳（已实证三次），暂停；私聊不受影响')
+        // 2026-10-28：群里发消息以前会崩 native，根因是群聊 peer 少了唯一的 guildId（桥已修好，
+        //   见 HANDOFF 18.4）。现在群里发文字、带 @ 都通了 ✓
         const r = await bridge.send(isGroup ? 2 : 1, peerUid, String(args.text ?? ''), at, String(args.atNick || ''))
         return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
       },
