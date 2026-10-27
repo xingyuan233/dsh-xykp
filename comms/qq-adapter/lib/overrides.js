@@ -45,6 +45,8 @@ export function pickRouting(entry) {
     if (Number.isFinite(n) && n >= 0) out.coalesceSeconds = n
   }
   if (Array.isArray(entry.fastUids)) out.fastUids = entry.fastUids.map((x) => String(x)).filter(Boolean)
+  // 群聊唤醒策略（2026-10-28）：mention = 只有 @ 到我才转进会话；all = 群里每条都转
+  if (entry.groupWake === 'mention' || entry.groupWake === 'all') out.groupWake = entry.groupWake
   if (Array.isArray(entry.mappings)) {
     out.mappings = entry.mappings
       .filter((m) => m && typeof m === 'object' && m.chat && m.target)

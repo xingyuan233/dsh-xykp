@@ -59,6 +59,8 @@ export const Config = Schema.object({
   ownerUids: Schema.array(Schema.string()).default([]).description('能发管理类指令的人（写 uid 或 u-<uid> 都行）；私聊切换不需要，群聊/预设相关才要'),
   workspaceRoot: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\workspaces\\\\alive-workspace').description('新会话默认挂哪个工作区'),
   commandsEnabled: Schema.boolean().default(true).description('QQ 侧指令开关（关掉就全当普通消息）'),
+  groupWake: Schema.union([Schema.const('mention'), Schema.const('all')]).default('mention')
+    .description('群聊怎么唤醒对话：mention = 只有 @ 到自己（或 @ 完后面跟 / 指令）才转进会话；all = 群里每条都转'),
   instanceId: Schema.string().default('default').description('实例名：同一个宿主跑多个账号时用来隔开去重文件/内部状态'),
   toolPrefix: Schema.string().default('').description('工具名前缀（同一个宿主跑两个 QQ 账号时，第二个实例用 qq2_ 之类，免得多实例抢同名工具）'),
   seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen-<instanceId>.json）'),
@@ -864,14 +866,10 @@ export async function apply(ctx, config = {}) {
           const box = (globalThis.__qqLastInbound ||= new Map())
           box.set(key, { msgId, msgSeq: String(evt.msgSeq ?? ''), time: Number(evt.time) || Date.now(), senderUid: String(evt.senderUid || '') })
         } catch { /* 记不住就算了 */ }
-        // 指令：以 / 开头的行**一律**由插件自己处理，绝不透传给会话。
-        //   认识的执行、不认识的回「未知指令」——反正不进会话（主人 2026-10-28 的原话）
-        //   群聊里还要求「开头的 @ 里有自己」（见 取指令()）：@ 的是别人 → 静默忽略
-        // ⚠ 这一步必须排在「路由」和「自己号过滤」前面：
-        //   · 排在路由后面时，聊天没配目标 / 目标解析不到会话 → 指令被悄悄跳过不执行 ✗
-        //   · 排在自己号后面时，从另一个号（樱 ↔ 鲸鱼娘）发来的指令会被当成「自己人」丢掉 ✗
+        // 指令判定（私聊只看开头 /；群聊还要看开头有没有 @ 到自己）——
+        //   顺便拿到「提没提到我」，下面的群聊唤醒策略要用 ✓
+        const 意 = await 取指令(evt)
         if (cfg.commandsEnabled !== false) {
-          const 意 = await 取指令(evt)
           if (意.silent) {
             seenSet.add(msgId)
             handled++
@@ -892,6 +890,14 @@ export async function apply(ctx, config = {}) {
           seenSet.add(msgId)
           handled++
           log(`跳过自己号发的消息（${key || '?'}${evt?.isSelf ? ' · 桥标了 isSelf' : ''}）`)
+          continue
+        }
+        // 群聊唤醒策略（2026-10-28 主人要的配置）：默认 mention = 没 @ 到我就不转进会话；
+        //   设成 all 就群里每条都转（主人没加几个群，要的就是全唤醒）
+        if (Number(evt.chatType) === 2 && String(cfg.groupWake || 'mention') !== 'all' && !意.提到自己) {
+          seenSet.add(msgId)
+          handled++
+          log(`群里没 @ 我，不唤醒（${key}）：${String(evt.text || '').slice(0, 30)}`)
           continue
         }
         const route = resolveRoute(cfg, key)
