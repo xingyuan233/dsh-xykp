@@ -3680,8 +3680,16 @@ export function apply(ctx) {
           turnEnds = ev.filter((e) => e && (e.type || e.kind) === 'turn/end').length
           回过 = turnEnds > 0
         } catch (error) {}
-        diag(`  认领判定（${raw}）：events=${evCount} assistant=${assistantCount} turnEnd=${turnEnds} 回过=${回过}`)
-        if (回过) return
+        // 分支 / 种子会话（isSeeded、有 parentSession）不算「下一个新对话」，不给吃
+        // （2026-10-27：Web 里「回忆某个会话」会造一条 seeded 分支，它第一轮也没 turn/end，
+        //   光看 turn/end 会让它把交接领走）
+        let 是分支 = false
+        try {
+          const h = agent.session && agent.session.header
+          是分支 = !!(h && (h.isSeeded || h.parentSession))
+        } catch (error) {}
+        diag(`  认领判定（${raw}）：events=${evCount} assistant=${assistantCount} turnEnd=${turnEnds} 回过=${回过} 分支=${是分支}`)
+        if (回过 || 是分支) return
         // 已经被别的会话认领过（上一轮认领了却没来得及注入）→ 先让着，10 分钟后才允许重新认领
         const 占 = c.transferReserved && c.transferReserved[池名]
         if (占 && 占.sid && 占.sid !== raw) {
@@ -3691,9 +3699,12 @@ export function apply(ctx) {
         if (!c.transferReserved || typeof c.transferReserved !== 'object') c.transferReserved = {}
         c.transferReserved[池名] = { sid: raw, at: new Date().toISOString() }
         // ⭐ 2026-10-27 修（实测：交接被注入到旧会话 785935c7，新会话反倒没拿到）：
-        //   认领时就把它从 transferNext 删掉 —— 认领即占用，别的会话再也领不到。
-        //   之前是「注入成功才删」，中间那几秒里同一个池子的其他 agent 也能认领。
-        delete c.transferNext[池名]
+        //   认领即占用 —— 记进 transferReserved（sid 比对 + 10 分钟时限），别的会话领不到。
+        // ⚠ 同一天第二修（主人提醒「Web 里刚点 + 就挂上，切一下会被提前消费」）：
+        //   **不要在这里删 transferNext**。以前删了就等于「领走即没」，万一这一轮没真跑起来
+        //   （切走、中断、消息被吞），交接就凭空蒸发，而且没人能再领到。
+        //   现在保留到「真的拼进提示词」那一刻才删（见拼进用户消息 / text() 两处），
+        //   turn-stopping 里如果发现没注入成功，就把占位也放掉，下一个会话照样能领 ✓
         saveCfg(c)
         认领者 = raw
         待注入交接 =
@@ -3762,6 +3773,14 @@ export function apply(ctx) {
             diag('  这一轮结束，交接标记清空')
             待注入交接 = ''
             认领者 = ''
+            // ⚠ 2026-10-27：这一轮没把交接真注入出去的话，把占位也放掉 ——
+            //   transferNext 现在保留到注入成功才删，所以下一个新会话照样能领 ✓
+            try {
+              const cc = loadCfg()
+              const 池 = String(sid).slice('preset_'.length)
+              if (cc.transferReserved) delete cc.transferReserved[池]
+              saveCfg(cc)
+            } catch (error) {}
           }
           const ev = (agent.session && agent.session.snapshotEvents ? agent.session.snapshotEvents() : []) || []
           let 回复 = ''
@@ -3876,9 +3895,11 @@ export function apply(ctx) {
           // 一次性「转移到下一个对话」：这个预设的下一个会话开头注入一次，用完就删
           let 转移 = ''
           if (String(sid).startsWith('preset_')) {
-            // 认领发生在 agent/inbox/inserted（见上面的 认领交接）—— 那时用户的话刚到、还没开始跑
-            // 这里只负责把它拼进提示词，拼完就清掉，保证「一次性」
-            认领交接()
+            // 认领只发生在 `agent/inbox/inserted`（用户的话真的到了那一刻）——
+            // ⚠ 2026-10-27 第三修（主人提醒：Web 里刚点「+」就会 assemble，切走就白吃一份）：
+            //   这里**不再认领**。assemble 会在「空会话被打开/预览」时就跑一次，
+            //   在这儿认领等于空会话也能把交接领走，然后切一下就没了 ✗
+            //   这里只负责把**已经认领的**交接拼进提示词 ✓
             if (待注入交接) {
               const 现在 = 本会话raw()
               if (认领者 && 现在 && 现在 !== 认领者) {
