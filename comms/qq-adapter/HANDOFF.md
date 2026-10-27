@@ -131,7 +131,7 @@ login `onLoginConnected/onLoginConnecting/onLoginDisConnected/onQRCodeGetPicture
 |---|---|
 | **纯 shell 安装（现在用的）** | `D:\Program-Files\QQ-shell` |
 | QQ-dsh（带界面实验用，随便折腾） | `D:\Program-Files\QQ-dsh` |
-| 正版 QQ（别动） | `D:\Program-Files\QQ2`（NapCat 在用） |
+| 正版 QQ（别动） | `D:\Program-Files\QQ2` |
 | 启动钩子（从 NapCat onekey 拷来） | `QQ-shell\NapCatWinBootMain.exe` + `NapCatWinBootHook.dll` |
 | 我们的 loader（在 app 目录里） | `QQ-shell\versions\9.9.36-53644\resources\app\dsh-loader.js` |
 | 桥脚本（热重载） | `workspaces\alive-workspace\qq-bridge-script.js` |
@@ -869,3 +869,15 @@ NapCat 把它当 **guildId** 传给内核。我们原来给的是 `guildId: ''`�
    我们纯壳里没有这个 client，发不了 OIDB
 
 表情（`faceElement` 普通小黄脸）是**真的能用**：`qq_face` 实测发出去 QQ 里正常显示（id=13 呲牙 ✓）。
+
+### 18.8 指令系统的列表补齐（2026-10-28，主人指出「很多都没列出来」）
+
+- `/session`：**归档的不显示了**（读 `home\storages\workspace.json` 的 `global.archivedSessionIds`，
+  以前只扫 `sessions` 目录，归档的还在那儿所以照样列出来 ✗）。
+  绑预设 → 该预设池（`preset-binder.json` 的 `presets.<名>.sessions` + active）；绑会话 → 所有未归档会话
+- `/model` 不带参数 → 列**模型目录**（`ctx.get('llm').listProviders()` + `listModels(provider)`，前 20 个带序号），
+  支持 `/model <序号>`、`/model <provider> <model>`、`/model provider/model`
+- `/level` 不带参数 → 列当前模型支持的推理等级（`llm.resolveModelInfo()` 的 `reasoning.efforts`，标出默认）
+- `/preset` 不带参数 → 列所有预设（`agentPresets.list()`，标出默认/坏掉的），支持 `/preset <序号|id>`
+- `/workspace` 不带参数 → 列工作区（`storages\workspace.json` 的 `tables.workspaces`，带未归档会话数），支持序号
+- 都没有参数时**既报当前值、也列可选项**；`-d` 的语义不变（带 = 改部署默认，不带 = 存偏好下次 /new 用）

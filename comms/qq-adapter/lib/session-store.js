@@ -52,12 +52,51 @@ export function newSessionId(prefix = 'qq', randomLen = 4) {
 }
 
 /**
+ * 归档标记存在 <DSH_HOME>/storages/workspace.json 的 global.archivedSessionIds 里
+ * （session-archiver 是把会话从「工作区视图」里摘掉，不是把目录搬走）
+ * 2026-10-28 主人：/session 列会话时**归档的不显示** ✓
+ */
+export async function archivedIds() {
+  const set = new Set()
+  try {
+    const raw = await readFile(join(homeDir(), 'storages', 'workspace.json'), 'utf8')
+    const json = JSON.parse(raw)
+    const ids = json && json.global && json.global.archivedSessionIds
+    if (Array.isArray(ids)) for (const id of ids) set.add(String(id))
+  } catch { /* 读不到就当没归档 */ }
+  return set
+}
+
+/** 工作区表：id → { title, path, sessionIds } */
+export async function listWorkspaces() {
+  try {
+    const raw = await readFile(join(homeDir(), 'storages', 'workspace.json'), 'utf8')
+    const json = JSON.parse(raw)
+    const map = (json && json.tables && json.tables.workspaces) || {}
+    const archived = await archivedIds()
+    return Object.entries(map)
+      .map(([id, w]) => ({
+        id: String(id),
+        title: String((w && w.title) || ''),
+        path: String((w && w.path) || ''),
+        sessions: Array.isArray(w && w.sessionIds) ? w.sessionIds.map(String) : [],
+        live: Array.isArray(w && w.sessionIds) ? w.sessionIds.map(String).filter((s) => !archived.has(s)) : [],
+      }))
+      .sort((a, b) => (b.live.length - a.live.length) || a.title.localeCompare(b.title))
+  } catch {
+    return []
+  }
+}
+
+/**
  * 扫出所有会话（目录名就是 session id），按最后修改时间倒序。
- * 返回 [{ id, updatedAt }]
+ * **归档的会话不算**（2026-10-28 主人：归档的不显示）
+ * 返回 [{ id, workspace, updatedAt }]
  */
 export async function listSessions() {
   const root = sessionsRoot()
   const out = []
+  const archived = await archivedIds()
   let dirs = []
   try { dirs = await readdir(root, { withFileTypes: true }) } catch { return out }
   for (const d of dirs) {
@@ -67,6 +106,7 @@ export async function listSessions() {
     try { entries = await readdir(workspaceDir, { withFileTypes: true }) } catch { continue }
     for (const e of entries) {
       if (!e.isDirectory()) continue
+      if (archived.has(e.name)) continue
       const p = join(workspaceDir, e.name)
       let st
       try { st = await stat(p) } catch { continue }

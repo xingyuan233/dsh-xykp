@@ -43,8 +43,29 @@
   try { CFG = JSON.parse(fs.readFileSync(BOOT.config || (WS + '\\qq-config.json'), 'utf8') || '{}') } catch (e) { }
 
   // ---------- 常量 ----------
+  // ⚠ 2026-10-28：wrapper.node 的路径**不能写死**（QQ-shell2 改名成 QQ-shell 以后，
+  //   写死的路径让 require wrapper 直接失败、桥整个起不来）。
+  //   现在：配置里给的那份不存在，就按「QQ.exe 所在目录\versions\*\resources\app\wrapper.node」自己找 ✓
+  function 找wrapper() {
+    try {
+      var pth = p.mainModule.require('path')
+      var base = pth.join(pth.dirname(process.execPath), 'versions')
+      var names = fs.readdirSync(base)
+      for (var i = 0; i < names.length; i++) {
+        var f = pth.join(base, names[i], 'resources', 'app', 'wrapper.node')
+        if (fs.existsSync(f)) return { file: f, ver: names[i] }
+      }
+    } catch (e) { }
+    return null
+  }
   var WRAPPER = CFG.wrapperPath || 'D:\\Program-Files\\QQ-dsh\\versions\\9.9.36-53644\\resources\\app\\wrapper.node'
   var VER = '9.9.36-53644'
+  try {
+    if (!fs.existsSync(WRAPPER)) {
+      var gw = 找wrapper()
+      if (gw) { WRAPPER = gw.file; VER = gw.ver; w('[qq] wrapper 自动定位 → ' + WRAPPER) }
+    }
+  } catch (e) { }
   var APPID = 537391628
   var QUA = 'V1_WIN_NQ_9.9.36_53644_GW_B'
   var DATA_ROOT = BOOT.dataRoot || 'D:\\下载\\缓存\\qq聊天消息\\Tencent Files'

@@ -21,7 +21,7 @@ import { createBridge } from './bridge.js'
 import { toSilk, cleanupSilk } from './silk.js'
 import { readOverride, pickRouting } from './overrides.js'
 import { COMMANDS, COMMAND_INDEX, helpText, parseCommand, parseSessionArgs, isOwner } from './commands.js'
-import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ago } from './session-store.js'
+import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ago, listWorkspaces } from './session-store.js'
 
 export const name = 'qq-adapter'
 
@@ -166,6 +166,7 @@ export async function apply(ctx, config = {}) {
       if (ready) {
         if (!wasReady) { log('桥已就绪（uin=' + st.uin + '）') ; wasReady = true }
         notifyCount = 0
+        reapLaunchers()
         return
       }
       wasReady = false
@@ -192,14 +193,36 @@ export async function apply(ctx, config = {}) {
       const dir = cfg.shellDir || 'D:\\Program-Files\\QQ-shell'
       const ps = 'powershell.exe'
       const q = (s) => "'" + String(s).replace(/'/g, "''") + "'"
+      // ⚠ 2026-10-28 主人：壳起完窗口不关、越堆越多 →
+      //   现在套一层 `cmd /c`，启动器一退出那个控制台窗口就跟着关掉 ✓
       const script =
         'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ' +
-        q(boot) + '; CurrentDirectory = ' + q(dir) + ' } | Out-Null'
+        q('cmd.exe /c "' + boot + '"') + '; CurrentDirectory = ' + q(dir) + ' } | Out-Null'
       execFile(ps, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true }, (err) => {
         if (err) warn('拉起 QQ shell 失败：', err.message)
         else log('桥没在跑，已用 WMI 拉起 QQ shell：' + boot)
       })
     } catch (err) { warn('拉起 QQ shell 失败：', err?.message || err) }
+  }
+
+  // 启动器（NapCatWinBootMain.exe）起完 QQ 不会自己退，窗口就一直留着 ——
+  //   桥 ready 说明 QQ 已经起好了，这些启动器可以清掉（每 60 秒最多清一次）
+  let lastReapAt = 0
+  async function reapLaunchers() {
+    if (Date.now() - lastReapAt < 60000) return
+    lastReapAt = Date.now()
+    try {
+      const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
+      const psCmd =
+        "Get-Process -Name NapCatWinBootMain -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" +
+        dirPrefix + "*' } | ForEach-Object { $id = $_.Id; Stop-Process -Id $id -Force -ErrorAction SilentlyContinue; $id }"
+      const { execFile } = await import('node:child_process')
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { windowsHide: true }, (err, stdout) => {
+        const ids = String(stdout || '').trim().split(/\s+/).filter(Boolean)
+        if (ids.length) log('清掉 ' + ids.length + ' 个残留启动器（' + ids.join(',') + '）')
+        if (err) warn('清残留启动器失败：', err.message)
+      })
+    } catch { /* 清不掉就算了 */ }
   }
   // ── 哨兵：桥没起来就去拉；起来了但没登录就把二维码推到 ntfy ──
   let lastNotifyAt = 0
@@ -552,6 +575,7 @@ export async function apply(ctx, config = {}) {
     }
 
     // ── 配置类：直接改「部署默认」，或者先存偏好等下次 /new 用 ──
+    // 2026-10-28 主人：不加参数的时候要把可选项列出来（model / preset / level / workspace 都要）
     if (['model', 'level', 'workspace', 'preset', 'permission'].includes(spec.name)) {
       const editor = (() => { try { return ctx.get('configEditor') } catch { return null } })()
       if (!editor) { await replyTo(key, '这个宿主没给 configEditor，改不了配置'); return }
@@ -559,14 +583,58 @@ export async function apply(ctx, config = {}) {
       const wantDefault = /(^|\s)-d(\s|$)/.test(String(parsed.arg || ''))
       const body = String(parsed.arg || '').replace(/(^|\s)-d(\s|$)/g, ' ').trim()
 
+      // 模型目录：provider 列表 + 每个 provider 的模型（给 /model 列出来 / 支持序号）
+      const 模型目录 = async () => {
+        const out = []
+        const llm = (() => { try { return ctx.get('llm') } catch { return null } })()
+        if (!llm || typeof llm.listProviders !== 'function') return out
+        let providers = []
+        try { providers = llm.listProviders() || [] } catch { providers = [] }
+        for (const p of providers) {
+          const id = String((p && (p.provider || p.id)) || '')
+          if (!id) continue
+          let models = []
+          try { models = (await llm.listModels(id)) || [] } catch { models = [] }
+          for (const m of models) out.push({ provider: id, model: String((m && m.id) || ''), name: String((m && m.name) || '') })
+        }
+        return out
+      }
+      const 引擎 = () => { try { return ctx.get('llm') } catch { return null } }
+
       if (spec.name === 'model' || spec.name === 'level') {
         const cur = (() => { try { return (editor.configuration().find((r) => r.entry.options.id === 'agent-default-model') || {}).override || {} } catch { return {} } })()
         const chat = (await chatsNow(true))[key] || {}
         const pref = chat.prefs || {}
+        const curProvider = String(pref.model?.provider || cur.provider || '')
+        const curModel = String(pref.model?.model || cur.model || '')
         const show = () => replyTo(key, '当前部署默认：' + (cur.provider || '?') + ' / ' + (cur.model || '?') + (cur.reasoningEffort ? ' / ' + cur.reasoningEffort : '') +
           (pref.model ? '\n这个聊天的偏好：' + pref.model.provider + ' / ' + pref.model.model + '（下次 /new 生效）' : '') +
           (pref.level ? '\n等级偏好：' + pref.level : ''))
-        if (!body) { await show(); return }
+        if (!body) {
+          // 不带参数：列出来给人挑
+          if (spec.name === 'level') {
+            let efforts = []
+            let def = ''
+            try {
+              const llm = 引擎()
+              const info = await llm.resolveModelInfo(curProvider, curModel)
+              efforts = ((info && info.reasoning && info.reasoning.efforts) || []).map((e) => String(e.id))
+              def = String((info && info.reasoning && info.reasoning.defaultEffort) || '')
+            } catch { /* 拿不到就只报当前值 */ }
+            await show()
+            await replyTo(key, '当前模型 ' + curProvider + ' / ' + curModel + ' 支持的等级：\n' +
+              (efforts.length ? efforts.map((e, i) => (i + 1) + '. ' + e + (e === def ? '（默认）' : '')).join('\n') : '（这个模型没报等级，直接 /level <等级> 试）') +
+              '\n\n/level <等级|序号> 只存偏好（下次 /new 生效） · 加 -d 直接改部署默认')
+            return
+          }
+          const catalog = await 模型目录()
+          await show()
+          const rows = catalog.slice(0, 20)
+          await replyTo(key, '可选模型（共 ' + catalog.length + (catalog.length > 20 ? '，只列前 20' : '') + '）：\n' +
+            (rows.length ? rows.map((c, i) => (i + 1) + '. ' + c.provider + ' / ' + c.model + (c.name && c.name !== c.model ? '  ' + c.name : '') + (c.provider === curProvider && c.model === curModel ? '  ← 当前' : '')).join('\n') : '（宿主没给模型目录）') +
+            '\n\n/model <序号> 或 /model <provider> <model>；加 -d 改部署默认，不带只存偏好')
+          return
+        }
         if (spec.name === 'level') {
           if (wantDefault) {
             const entry = entryOf('agent-default-model')
@@ -581,10 +649,20 @@ export async function apply(ctx, config = {}) {
           }
           return
         }
-        const parts = body.split(/\s+/).filter(Boolean)
-        if (parts.length < 2 && !parts[0]?.includes('/')) { await replyTo(key, '用法 /model <provider> <model> [-d]\n（或者 /model 看当前）'); return }
-        const provider = parts[0]
-        const model = parts[1] || parts[0]
+        // /model：先认序号，再认 provider model / provider/model
+        const catalog = await 模型目录()
+        let provider = ''
+        let model = ''
+        if (/^\d+$/.test(body)) {
+          const pick = catalog[Number(body) - 1]
+          if (!pick) { await replyTo(key, '序号越界：模型目录里一共 ' + catalog.length + ' 个，发 /model 看列表'); return }
+          provider = pick.provider; model = pick.model
+        } else {
+          const parts = body.split(/\s+/).filter(Boolean)
+          if (parts.length === 1 && parts[0].includes('/')) { provider = parts[0].split('/')[0]; model = parts[0].split('/').slice(1).join('/') }
+          else { provider = parts[0]; model = parts[1] || '' }
+        }
+        if (!provider || !model) { await replyTo(key, '用法 /model（看列表和当前） · /model <序号> · /model <provider> <model>\n加 -d 改部署默认，不带只存偏好'); return }
         if (wantDefault) {
           const entry = entryOf('agent-default-model')
           if (!entry) { await replyTo(key, '找不到 agent-default-model'); return }
@@ -601,44 +679,67 @@ export async function apply(ctx, config = {}) {
 
       if (spec.name === 'preset') {
         const reg = (() => { try { return (editor.configuration().find((r) => r.entry.options.id === 'agent-preset-registry') || {}).override || {} } catch { return {} } })()
+        const chat = (await chatsNow(true))[key] || {}
         if (!body) {
-          const chat = (await chatsNow(true))[key] || {}
+          let rows = []
+          try { rows = await ctx.get('agentPresets').list() } catch { rows = [] }
           await replyTo(key, '部署默认预设：' + (reg.selectedDefault || reg.default || '?') +
-            (chat.prefs && chat.prefs.preset ? '\n这个聊天的偏好：' + chat.prefs.preset + '（下次 /new 生效）' : ''))
+            (chat.prefs && chat.prefs.preset ? '\n这个聊天的偏好：' + chat.prefs.preset + '（下次 /new 生效）' : '') +
+            '\n\n可选预设（' + rows.length + '）：\n' +
+            (rows.length ? rows.map((r, i) => (i + 1) + '. ' + r.id + (r.name && r.name !== r.id ? '  ' + r.name : '') + (r.id === (reg.selectedDefault || reg.default) ? '  ← 默认' : '') + (r.broken ? '  ⚠ 坏了' : '')).join('\n') : '（宿主没列出来）') +
+            '\n\n/preset <序号|id>；加 -d 改部署默认，不带只存偏好')
           return
+        }
+        let chosen = body
+        if (/^\d+$/.test(body)) {
+          let rows = []
+          try { rows = await ctx.get('agentPresets').list() } catch { rows = [] }
+          const pick = rows[Number(body) - 1]
+          if (!pick) { await replyTo(key, '序号越界：预设共 ' + rows.length + ' 个，发 /preset 看列表'); return }
+          chosen = pick.id
         }
         if (wantDefault) {
           const entry = entryOf('agent-preset-registry')
           if (!entry) { await replyTo(key, '找不到 agent-preset-registry'); return }
-          await editor.edit(entry, (c) => ({ ...(c || {}), selectedDefault: body }))
-          await replyTo(key, '部署默认预设 → ' + body)
+          await editor.edit(entry, (c) => ({ ...(c || {}), selectedDefault: chosen }))
+          await replyTo(key, '部署默认预设 → ' + chosen)
         } else {
           const all = await chatsNow(true)
-          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), preset: body } }
+          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), preset: chosen } }
           await writeChats(all); chatCache.data = all
-          await replyTo(key, '记下了：下次 /new 用预设 ' + body)
+          await replyTo(key, '记下了：下次 /new 用预设 ' + chosen)
         }
         return
       }
 
       if (spec.name === 'workspace') {
         const chat = (await chatsNow(true))[key] || {}
+        const spaces = await listWorkspaces()
         if (!body) {
           await replyTo(key, '部署工作区根：' + cfg.workspaceRoot +
-            (chat.prefs && chat.prefs.workspace ? '\n这个聊天的偏好：' + chat.prefs.workspace : ''))
+            (chat.prefs && chat.prefs.workspace ? '\n这个聊天的偏好：' + chat.prefs.workspace : '') +
+            '\n\n已有工作区（' + spaces.length + '）：\n' +
+            (spaces.length ? spaces.map((w, i) => (i + 1) + '. ' + (w.title || w.path) + '（' + w.live.length + ' 个未归档会话）\n   ' + w.path).join('\n') : '（还没有工作区）') +
+            '\n\n/workspace <序号|路径>；加 -d 改部署工作区根，不带只存偏好')
           return
+        }
+        let target = body
+        if (/^\d+$/.test(body)) {
+          const pick = spaces[Number(body) - 1]
+          if (!pick) { await replyTo(key, '序号越界：工作区共 ' + spaces.length + ' 个，发 /workspace 看列表'); return }
+          target = pick.path
         }
         if (wantDefault) {
           const entry = entryOf('workspace-controller')
           if (!entry) { await replyTo(key, '找不到 workspace-controller'); return }
-          await editor.edit(entry, (c) => ({ ...(c || {}), documentsDirectory: body }))
-          cfg.workspaceRoot = body
-          await replyTo(key, '部署工作区根 → ' + body)
+          await editor.edit(entry, (c) => ({ ...(c || {}), documentsDirectory: target }))
+          cfg.workspaceRoot = target
+          await replyTo(key, '部署工作区根 → ' + target)
         } else {
           const all = await chatsNow(true)
-          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), workspace: body } }
+          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), workspace: target } }
           await writeChats(all); chatCache.data = all
-          await replyTo(key, '记下了：下次 /new 在这个工作区开\n' + body)
+          await replyTo(key, '记下了：下次 /new 在这个工作区开\n' + target)
         }
         return
       }
