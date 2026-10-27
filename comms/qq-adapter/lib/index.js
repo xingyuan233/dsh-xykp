@@ -276,16 +276,69 @@ export async function apply(ctx, config = {}) {
     return ref.kind === 'preset' ? ref.value : ''
   }
 
+  /** 建会话：先按聊天偏好临时改部署默认（模型/等级/预设），建完立刻改回去 */
   async function createSessionFor(key) {
     const route = resolveRoute(cfg, key)
-    const preset = route.target ? presetOfTarget(route.target) : ''
-    const id = newSessionId('qq')
-    const meta = { cwd: cfg.workspaceRoot }
-    if (preset) meta.agentPreset = preset
-    const handle = await agentsSvc.create({ sessionId: id, meta })
-    const real = handle?.agent?.session?.id || id
-    await setChatSession(key, real, { preset })
-    return { id: real, preset }
+    const all = await chatsNow(true)
+    const prefs = (all[key] && all[key].prefs) || {}
+    const preset = prefs.preset || (route.target ? presetOfTarget(route.target) : '')
+    const cwd = prefs.workspace || cfg.workspaceRoot
+    const editor = (() => { try { return ctx.get('configEditor') } catch { return null } })()
+    const overrideOf = (id) => {
+      try {
+        const row = editor.configuration().find((r) => r.entry.options.id === id)
+        return row ? { ...(row.override || {}) } : null
+      } catch { return null }
+    }
+    const entryOf = (id) => {
+      try { return editor.entries().find((e) => e.options.id === id) } catch { return null }
+    }
+    const saved = {}
+    let patched = false
+    try {
+      if (editor && prefs.model) {
+        const entry = entryOf('agent-default-model')
+        const orig = overrideOf('agent-default-model')
+        if (entry && orig) {
+          saved.model = orig
+          await editor.edit(entry, (c) => ({
+            ...(c || {}), provider: prefs.model.provider, model: prefs.model.model,
+            ...(prefs.level ? { reasoningEffort: prefs.level } : {}),
+          }))
+          patched = true
+        }
+      }
+      if (editor && prefs.preset) {
+        const entry = entryOf('agent-preset-registry')
+        const orig = overrideOf('agent-preset-registry')
+        if (entry && orig) {
+          saved.preset = orig
+          await editor.edit(entry, (c) => ({ ...(c || {}), selectedDefault: prefs.preset }))
+          patched = true
+        }
+      }
+      const id = newSessionId('qq')
+      const meta = { cwd }
+      if (preset) meta.agentPreset = preset
+      const handle = await agentsSvc.create({ sessionId: id, meta })
+      const real = handle?.agent?.session?.id || id
+      await setChatSession(key, real, { preset })
+      return { id: real, preset }
+    } finally {
+      // 临时改的部署默认，不管建没建成都改回去
+      if (patched) {
+        try {
+          if (saved.model) {
+            const entry = entryOf('agent-default-model')
+            if (entry) await editor.edit(entry, () => saved.model)
+          }
+          if (saved.preset) {
+            const entry = entryOf('agent-preset-registry')
+            if (entry) await editor.edit(entry, () => saved.preset)
+          }
+        } catch (err) { warn('恢复部署默认失败：', err?.message || err) }
+      }
+    }
   }
 
   async function runCommand(evt, key, parsed) {
@@ -309,11 +362,8 @@ export async function apply(ctx, config = {}) {
 
     if (spec.name === 'help') { await replyTo(key, helpText()); return }
     if (spec.name === 'ver') {
-      let st = null
-      try { st = await bridge.status() } catch { st = null }
-      const ok = st && st.ok && st.ms
-      await replyTo(key, 'qq-adapter ' + INST + ' · v' + (PKG_VERSION || '0.1.0') +
-        '\n桥 ' + cfg.bridgeUrl + '：' + (ok ? '活着（uin=' + st.uin + '）' : '没就绪' + (st ? '（stage=' + st.stage + '）' : '（连不上）')))
+      // 能收到回复就说明插件活着，多余的状态不啰嗦
+      await replyTo(key, 'qq-adapter ' + INST + ' v' + PKG_VERSION)
       return
     }
     if (spec.name === 'status') {
@@ -387,11 +437,32 @@ export async function apply(ctx, config = {}) {
       return
     }
     if (spec.name === 'compact') {
+      // 走 memory-refine 自带的 memory_movctx：它自己把对话压成交接、开新对话接着聊
+      // （同一份逻辑宿主里早就有了，别自己再造一遍）
       const old = await chatSessionId(key)
-      const made = await createSessionFor(key)
-      const handoff = '（交接：上一个会话是 ' + (old || '无') + '。请先了解上下文再继续，主人要求压缩后接着干。）'
-      try { await deliver(agentsSvc, made.id, handoff, cfg.deliverMode) } catch (err) { warn('compact 交接失败：', err?.message || err) }
-      await replyTo(key, '压缩完成，新会话：' + made.id + (old ? '\n旧会话还在：' + old : ''))
+      const agent = old ? findAgent(agentsSvc, old) : null
+      if (!agent) { await replyTo(key, '这个聊天没有活着的会话，没法压缩'); return }
+      const before = new Set((await listSessions()).map((s) => s.id))
+      const say = '（系统指令）请调用 memory_movctx 工具：把我和你这段对话压成交接摘要、开一个新对话接着聊，extra 不用填。做完回我一句「已交接」。'
+      try { await deliver(agentsSvc, old, say, cfg.deliverMode) } catch (err) { await replyTo(key, '叫不动它：' + (err?.message || err)); return }
+      await replyTo(key, '已让它自己压缩并开新对话（memory_movctx），我盯着新会话切绑定…')
+      // 盯 60 秒，看有没有新会话冒出来，有就把这个聊天绑过去
+      let hits = 0
+      const timer = setInterval(async () => {
+        hits++
+        try {
+          const now = await listSessions()
+          const fresh = now.find((s) => !before.has(s.id))
+          if (fresh) {
+            clearInterval(timer)
+            await setChatSession(key, fresh.id, { preset: '' })
+            await replyTo(key, '新会话接上了：' + fresh.id + '\n这个聊天已经绑过去')
+            return
+          }
+        } catch { /* 继续等 */ }
+        if (hits > 20) { clearInterval(timer); warn('compact 没等到新会话（' + key + '）') }
+      }, 3000)
+      if (typeof timer.unref === 'function') timer.unref()
       return
     }
 
@@ -467,11 +538,102 @@ export async function apply(ctx, config = {}) {
       }
     }
 
-    // 配置类（model/level/workspace/preset/permission）先给个明确的「还没接」，
-    // 免得指令静默失败
+    // ── 配置类：直接改「部署默认」，或者先存偏好等下次 /new 用 ──
     if (['model', 'level', 'workspace', 'preset', 'permission'].includes(spec.name)) {
-      await replyTo(key, '/' + spec.name + ' 还在接（这条是占位回复），先别依赖它')
-      return
+      const editor = (() => { try { return ctx.get('configEditor') } catch { return null } })()
+      if (!editor) { await replyTo(key, '这个宿主没给 configEditor，改不了配置'); return }
+      const entryOf = (id) => { try { return editor.entries().find((e) => e.options.id === id) } catch { return null } }
+      const wantDefault = /(^|\s)-d(\s|$)/.test(String(parsed.arg || ''))
+      const body = String(parsed.arg || '').replace(/(^|\s)-d(\s|$)/g, ' ').trim()
+
+      if (spec.name === 'model' || spec.name === 'level') {
+        const cur = (() => { try { return (editor.configuration().find((r) => r.entry.options.id === 'agent-default-model') || {}).override || {} } catch { return {} } })()
+        const chat = (await chatsNow(true))[key] || {}
+        const pref = chat.prefs || {}
+        const show = () => replyTo(key, '当前部署默认：' + (cur.provider || '?') + ' / ' + (cur.model || '?') + (cur.reasoningEffort ? ' / ' + cur.reasoningEffort : '') +
+          (pref.model ? '\n这个聊天的偏好：' + pref.model.provider + ' / ' + pref.model.model + '（下次 /new 生效）' : '') +
+          (pref.level ? '\n等级偏好：' + pref.level : ''))
+        if (!body) { await show(); return }
+        if (spec.name === 'level') {
+          if (wantDefault) {
+            const entry = entryOf('agent-default-model')
+            if (!entry) { await replyTo(key, '找不到 agent-default-model'); return }
+            await editor.edit(entry, (c) => ({ ...(c || {}), reasoningEffort: body }))
+            await replyTo(key, '部署默认推理等级 → ' + body)
+          } else {
+            const all = await chatsNow(true)
+            all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), level: body } }
+            await writeChats(all); chatCache.data = all
+            await replyTo(key, '记下了：下次 /new 用 ' + body + ' 等级')
+          }
+          return
+        }
+        const parts = body.split(/\s+/).filter(Boolean)
+        if (parts.length < 2 && !parts[0]?.includes('/')) { await replyTo(key, '用法 /model <provider> <model> [-d]\n（或者 /model 看当前）'); return }
+        const provider = parts[0]
+        const model = parts[1] || parts[0]
+        if (wantDefault) {
+          const entry = entryOf('agent-default-model')
+          if (!entry) { await replyTo(key, '找不到 agent-default-model'); return }
+          await editor.edit(entry, (c) => ({ ...(c || {}), provider, model }))
+          await replyTo(key, '部署默认模型 → ' + provider + ' / ' + model)
+        } else {
+          const all = await chatsNow(true)
+          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), model: { provider, model } } }
+          await writeChats(all); chatCache.data = all
+          await replyTo(key, '记下了：下次 /new 用 ' + provider + ' / ' + model)
+        }
+        return
+      }
+
+      if (spec.name === 'preset') {
+        const reg = (() => { try { return (editor.configuration().find((r) => r.entry.options.id === 'agent-preset-registry') || {}).override || {} } catch { return {} } })()
+        if (!body) {
+          const chat = (await chatsNow(true))[key] || {}
+          await replyTo(key, '部署默认预设：' + (reg.selectedDefault || reg.default || '?') +
+            (chat.prefs && chat.prefs.preset ? '\n这个聊天的偏好：' + chat.prefs.preset + '（下次 /new 生效）' : ''))
+          return
+        }
+        if (wantDefault) {
+          const entry = entryOf('agent-preset-registry')
+          if (!entry) { await replyTo(key, '找不到 agent-preset-registry'); return }
+          await editor.edit(entry, (c) => ({ ...(c || {}), selectedDefault: body }))
+          await replyTo(key, '部署默认预设 → ' + body)
+        } else {
+          const all = await chatsNow(true)
+          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), preset: body } }
+          await writeChats(all); chatCache.data = all
+          await replyTo(key, '记下了：下次 /new 用预设 ' + body)
+        }
+        return
+      }
+
+      if (spec.name === 'workspace') {
+        const chat = (await chatsNow(true))[key] || {}
+        if (!body) {
+          await replyTo(key, '部署工作区根：' + cfg.workspaceRoot +
+            (chat.prefs && chat.prefs.workspace ? '\n这个聊天的偏好：' + chat.prefs.workspace : ''))
+          return
+        }
+        if (wantDefault) {
+          const entry = entryOf('workspace-controller')
+          if (!entry) { await replyTo(key, '找不到 workspace-controller'); return }
+          await editor.edit(entry, (c) => ({ ...(c || {}), documentsDirectory: body }))
+          cfg.workspaceRoot = body
+          await replyTo(key, '部署工作区根 → ' + body)
+        } else {
+          const all = await chatsNow(true)
+          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), workspace: body } }
+          await writeChats(all); chatCache.data = all
+          await replyTo(key, '记下了：下次 /new 在这个工作区开\n' + body)
+        }
+        return
+      }
+
+      if (spec.name === 'permission') {
+        await replyTo(key, '/permission 还在接（权限预设那条 entry 我还没定位到），先别依赖它')
+        return
+      }
     }
     await replyTo(key, '这条指令还没实现：/' + spec.name)
   }
