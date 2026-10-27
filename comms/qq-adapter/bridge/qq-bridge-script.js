@@ -881,8 +881,39 @@
           })
           return
         }
-        if (url.indexOf('/ptt') === 0) {
-          var qq3 = qs()
+        // 发 QQ 自带表情 / 拍一拍（2026-10-28）
+        //   face：{ elementType: 6, faceElement: { faceIndex, faceType, faceText, ... } }
+        //         faceType：1 = 普通小黄脸，2 = 大表情（id >= 222），3 = 动态表情
+        //         拍一拍在内核里就是 faceElement(faceType=5, pokeType=1) —— 收到时 NapCat 就是这么解的
+        if (url.indexOf('/face') === 0) {
+          var qf = qs()
+          try {
+            var ctF = parseInt(qf.chatType || '1', 10)
+            if (!qf.peerUid) return reply(400, { ok: false, err: '缺 peerUid' })
+            var fid = parseInt(qf.id || '0', 10)
+            var isPoke = String(qf.kind || '') === 'poke'
+            var faceEl
+            if (isPoke) {
+              faceEl = { elementType: 6, elementId: '', faceElement: { faceIndex: 1, faceType: 5, pokeType: parseInt(qf.pokeType || '1', 10), sourceType: 1, resultId: '', chainCount: 0 } }
+            } else {
+              if (!fid) return reply(400, { ok: false, err: '缺 id（表情 id）' })
+              faceEl = {
+                elementType: 6, elementId: '', faceElement: {
+                  faceIndex: fid, faceType: fid >= 222 ? 2 : 1,
+                  faceText: String(qf.text || ''),
+                  stickerId: '', stickerType: 0, packId: '',
+                  sourceType: 1, resultId: '', chainCount: 0
+                }
+              }
+            }
+            var rF = sendMsgInternal(qf.peerUid, ctF, [faceEl], '', '')
+            w('[qq] http face kind=' + (isPoke ? 'poke' : 'face:' + fid) + ' -> ' + qf.peerUid)
+            if (rF && rF.then) rF.then(function (x) { reply(200, { ok: true, result: x }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+            else reply(200, { ok: true, result: rF })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }
+        if (url.indexOf('/ptt') === 0) {          var qq3 = qs()
           var peer3 = { chatType: parseInt(qq3.chatType || '1', 10), peerUid: qq3.peerUid, guildId: '' }
           try {
             var s7 = msgService()
@@ -1107,12 +1138,22 @@
             var svcMap = {
               richmedia: 'getRichMediaService', group: 'getGroupService', buddy: 'getBuddyService',
               recent: 'getRecentContactService', profile: 'getProfileService', avatar: 'getAvatarService',
-              file: 'getFileAssistantService', msf: 'getMSFService', setting: 'getSettingService'
+              file: 'getFileAssistantService', msf: 'getMSFService', setting: 'getSettingService',
+              msg: 'getMsgService'
             }
             var fn = svcMap[which]
             var o = fn ? S.session[fn]() : null
             if (!o) return reply(404, { ok: false, err: 'no service ' + which })
-            return reply(200, { ok: true, which: which, methods: Object.getOwnPropertyNames(Object.getPrototypeOf(o)) })
+            var wantFn = qs().fn
+            var extra = {}
+            if (wantFn) {
+              var f = o[wantFn]
+              if (typeof f === 'function') {
+                extra.arity = f.length
+                extra.src = String(f).slice(0, 600)
+              } else extra.err = 'no such fn'
+            }
+            return reply(200, { ok: true, which: which, extra: extra, methods: Object.getOwnPropertyNames(Object.getPrototypeOf(o)) })
           } catch (e) { return reply(500, { ok: false, err: e.message }) }
         }
         // ---------- 设置页（分流覆盖配置） ----------

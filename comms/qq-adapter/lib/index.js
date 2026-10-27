@@ -998,6 +998,50 @@ export async function apply(ctx, config = {}) {
       },
     }))
 
+    // QQ 自带表情（小黄脸）：id 就是 QQ 表情的 faceIndex（14 = 微笑，13 = 呲牙…）
+    ctx.tools.register(defineTool({
+      name: TP('qq_face'),
+      description: '发一个 QQ 自带的黄脸表情（不是图片）。id 是 QQ 表情序号：14=微笑、13=呲牙、12=调皮、9=笑哭、5=大哭、109=抱抱…；也可传 text 当兜底文字。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+        id: { type: 'number', description: 'QQ 表情序号（faceIndex）', required: true },
+        text: { type: 'string', description: '可选：兜底文字，像 [微笑]' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.face(isGroup ? 2 : 1, peerUid, { id: Number(args.id) || 0, text: args.text })
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key, id: Number(args.id) || 0 }
+      },
+    }))
+
+    // 拍一拍：内核里就是 faceElement(faceType=5, pokeType=1)
+    ctx.tools.register(defineTool({
+      name: TP('qq_poke'),
+      description: '拍一拍对方（私聊拍对方；群里拍的是一条带 poke 元素的消息）。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.face(isGroup ? 2 : 1, peerUid, { kind: 'poke' })
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+      },
+    }))
+
     ctx.tools.register(defineTool({
       name: TP('qq_history'),
       description: '翻聊天记录（私聊和群聊都行）。chat 写成 u-<uid> 或 g-<群号>，count 最多 100；seq 可选，从某条消息往前翻。',

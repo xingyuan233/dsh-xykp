@@ -823,3 +823,33 @@ NapCat 把它当 **guildId** 传给内核。我们原来给的是 `guildId: ''`�
 - 可以写在 `home\qq-adapter\ui-config.json` 里（`default` / `whale` 各一份），**改完下一轮 tick 生效，不用重启**
 - 设置页那张卡也是改这份文件
 - 判定顺序：**指令（永远拦）→ 自己号过滤 → 群聊唤醒策略 → 路由/转发**
+
+### 18.6 自带表情（小黄脸）和拍一拍（2026-10-28）
+
+两条都走**同一条** sendMsg 路子，只是元素是 `faceElement`（elementType 6）：
+
+```js
+// 表情
+{ elementType: 6, elementId: '', faceElement: {
+    faceIndex: 14,                 // QQ 表情序号：14=微笑 13=呲牙 12=调皮 9=笑哭 5=大哭 …
+    faceType: 14 >= 222 ? 2 : 1,   // 1 普通小黄脸 / 2 大表情（222 以后）/ 3 动态表情
+    faceText: '[微笑]',            // 兜底文字（老客户端显示这个）
+    stickerId: '', stickerType: 0, packId: '',
+    sourceType: 1, resultId: '', chainCount: 0 } }
+
+// 拍一拍：内核里就是 faceType = 5 (Poke)
+{ elementType: 6, elementId: '', faceElement: {
+    faceIndex: 1, faceType: 5, pokeType: 1, sourceType: 1, resultId: '', chainCount: 0 } }
+```
+
+依据：`tools\NapCat\shell\napcat.mjs` 的入站转换器里
+`faceElement` → `e.faceType === zs.Poke(5)` 就当成 poke 段（约 73647 行），
+`zs` 枚举是 `Normal=1, AniSticke=3, Lottie=4, Poke=5`。
+
+桥加了 `GET /face?chatType=&peerUid=&id=&text=` 和 `kind=poke`；工具是 `qq_face` / `qq_poke`。
+实测（02:42）：`/face ... id=14` → `result: 0` + `SENT-LOCAL`，**壳活着**；
+`kind=poke` → `result: 0`，紧接着收到一条 `types=[8]` 的回执（QQ 里那条「拍了拍」灰条）。
+
+⚠ 另一条路：`getMsgService()` 里其实有 `sendNudge / recallNudge`（`/svc?which=msg` 能看到），
+但它是 native 且 arity=0，签名全靠试；NapCat 自己走的是 OIDB（`pkt.operation.SendPoke`），
+我们拿不到那个 packet client，所以先用「faceElement(faceType=5)」这条已经验证的路 ✓

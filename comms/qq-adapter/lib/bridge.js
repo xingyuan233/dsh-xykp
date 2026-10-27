@@ -69,6 +69,14 @@ export function createBridge(baseUrl, opts = {}) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
       return req('/sendfile?' + q.toString(), undefined, sendTimeoutMs)
     },
+    // QQ 自带表情 / 拍一拍（2026-10-28）：kind=poke 就是拍一拍，否则按 id 发表情
+    async face(chatType, peerUid, opts = {}) {
+      const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || '') })
+      if (opts.kind) q.set('kind', String(opts.kind))
+      if (opts.id !== undefined && opts.id !== null) q.set('id', String(opts.id))
+      if (opts.text) q.set('text', String(opts.text))
+      return req('/face?' + q.toString(), undefined, sendTimeoutMs)
+    },
     async sendVoice(chatType, peerUid, filePath, duration = 0) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
       if (duration) q.set('duration', String(Number(duration) || 0))
