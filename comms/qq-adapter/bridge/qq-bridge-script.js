@@ -6,6 +6,7 @@
   var fs = p.mainModule.require('fs')
   var path = p.mainModule.require('path')
   var os = p.mainModule.require('os')
+  var CP = p.mainModule.require('child_process')
   var WS = 'D:\\AI\\DeepseekHarness\\workspaces\\alive-workspace'
   // 多实例：loader 可以在 eval 之前塞 global.__QQ_BOOT = { port, tag, log, cmd, res, uin }
   // 这样同一个脚本能跑第二个账号（不同端口、不同日志），互不打架。
@@ -491,6 +492,23 @@
           return o
         })
       }
+      // 群里的昵称缓存：有名字就顺手存，没名字就从缓存补，缓存也没有就异步刷一遍
+      if (evt.chatType === 2 && evt.senderUid) {
+        try {
+          var mc = loadMemberCache(evt.peerUid)
+          if (evt.senderName) {
+            if (mc[evt.senderUid] !== evt.senderName) { mc[evt.senderUid] = evt.senderName; saveMemberCache(evt.peerUid, mc) }
+          } else if (mc[evt.senderUid]) {
+            evt.senderName = mc[evt.senderUid]
+          } else {
+            S.memberRefreshAt = S.memberRefreshAt || {}
+            if (!S.memberRefreshAt[evt.peerUid] || Date.now() - S.memberRefreshAt[evt.peerUid] > 600000) {
+              S.memberRefreshAt[evt.peerUid] = Date.now()
+              refreshMembers(evt.peerUid)
+            }
+          }
+        } catch (e) { }
+      }
       // 同一条消息会多次回调（元素逐步补全）：按 msgId 覆盖，保留最后一份
       var dup = -1
       for (var i = S.inbox.length - 1; i >= 0; i--) { if (S.inbox[i].msgId === m.msgId) { dup = i; break } }
@@ -576,12 +594,42 @@
     return { w: 0, h: 0 }
   }
 
+  /** 图片格式 → QQ 的 picType（照 NapCat 的 Kp 枚举：jpeg 1000 / png 1001 / gif 2000 / bmp 1005）
+   *  QQ 客户端「格式不支持就不显示」多半就是因为 picType 和真格式对不上 */
+  function picTypeOf(name) {
+    var ext = (String(name).match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase()
+    if (ext === 'gif') return 2000
+    if (ext === 'png') return 1001
+    if (ext === 'bmp') return 1005
+    if (ext === 'jpg' || ext === 'jpeg') return 1000
+    return 0
+  }
+
+  /** QQ 不认的图片格式（webp/avif/heic/tiff…）先本地转成 png 再发 */
+  function normalizePicture(filePath) {
+    var ext = (String(filePath).match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase()
+    if (picTypeOf('x.' + ext)) return filePath
+    var out = WS + '\\qq-media\\conv-' + Date.now() + '.png'
+    try { fs.mkdirSync(WS + '\\qq-media', { recursive: true }) } catch (e) { }
+    var ff = CFG.ffmpegPath || 'ffmpeg'
+    var tried = [ff, 'D:\\devoding\\C++\\pakes\\ffmpeg-7.0.2\\bin\\ffmpeg.exe']
+    for (var i = 0; i < tried.length; i++) {
+      try {
+        CP.execFileSync(tried[i], ['-hide_banner', '-loglevel', 'error', '-y', '-i', filePath, out], { timeout: 30000 })
+        if (fs.existsSync(out) && fs.statSync(out).size > 0) { w('[qq] 图片转换成 png：' + filePath + ' -> ' + out); return out }
+      } catch (e) { /* 试下一个 */ }
+    }
+    w('[qq] 图片格式转换失败，按原样发：' + filePath)
+    return filePath
+  }
+
   /** 发本地图片：把文件塞进 QQ 的发送目录，再按 picElement 发出去
    *  ⚠ 群（chatType=2）和私聊不是一条路：2026-10-27 23:28 拿私聊那套发群，QQ 直接崩了。
    *  群这边改用 getRichMediaFilePathForGuild + 不带 thumbPath 的完整字段，先当实验。 */
   function sendPictureInternal(peerUid, chatType, filePath) {
     var s = msgService()
     if (!s) throw new Error('no msgService')
+    filePath = normalizePicture(filePath)
     var crypto = p.mainModule.require('crypto')
     var buf = fs.readFileSync(filePath)
     var md5 = crypto.createHash('md5').update(buf).digest('hex')
@@ -607,12 +655,12 @@
       fileSize: String(buf.length), fileName: name, sourcePath: target,
       original: true, picWidth: dims.w, picHeight: dims.h,
       md5HexStr: md5, fileUuid: '', fileSubId: '', summary: '[图片]',
-      picType: 1000, fileSubId2: '', originImageMd5: '',
+      picType: picTypeOf(name) || 1000, fileSubId2: '', originImageMd5: '',
       picSubType: 0, thumbFileSize: 0
     }
     var elem = { elementType: 2, elementId: '', elementGroupId: 0, picElement: pic }
     if (!isGroup) pic.thumbPath = new Map()
-    w('[qq] sendPicture ' + (isGroup ? 'GROUP' : 'C2C') + ' md5=' + md5 + ' size=' + buf.length + ' dims=' + dims.w + 'x' + dims.h + ' -> ' + target)
+    w('[qq] sendPicture ' + (isGroup ? 'GROUP' : 'C2C') + ' md5=' + md5 + ' size=' + buf.length + ' dims=' + dims.w + 'x' + dims.h + ' picType=' + pic.picType + ' -> ' + target)
     return s.sendMsg('0', { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }, [elem], new Map())
   }
 
@@ -962,8 +1010,22 @@
           var qg = qs()
           try {
             var gs = S.session.getGroupService()
-            gs.getGroupMemberList(String(qg.gid || ''), false).then(function (x) {
-              var infos = (x && x.result && (x.result.infos || x.result.memberList)) || (x && x.infos) || []
+            var gid0 = String(qg.gid || '')
+            var call = null
+            try { if (typeof gs.getAllMemberList === 'function') call = gs.getAllMemberList(gid0, false) } catch (e) { w('[qq] getAllMemberList threw ' + e.message) }
+            if (!call) { try { if (typeof gs.getAllMemberListV2 === 'function') call = gs.getAllMemberListV2(gid0) } catch (e) { } }
+            if (!call) return reply(500, { ok: false, err: '群服务上没有 getAllMemberList' })
+            Promise.resolve(call).then(function (x) {
+              var raw = (x && x.result && (x.result.infos || x.result.memberList)) || (x && x.infos) || x
+              var infos = []
+              if (raw instanceof Map) raw.forEach(function (v) { infos.push(v) })
+              else if (Array.isArray(raw)) infos = raw
+              else if (raw && typeof raw === 'object') infos = Object.keys(raw).map(function (k) { return raw[k] })
+              try {
+                var mcSeed = loadMemberCache(gid0)
+                infos.forEach(function (m) { var u = m && (m.uid || m.memberUid); if (u) mcSeed[u] = m.cardName || m.card || m.nick || m.nickName || mcSeed[u] || '' })
+                saveMemberCache(gid0, mcSeed)
+              } catch (e) { }
               reply(200, {
                 ok: true, count: infos.length,
                 members: infos.slice(0, 50).map(function (m) {
@@ -1068,6 +1130,41 @@
         return reply(404, { ok: false, err: 'not found ' + url })
   }
 
+  // ---------- 群成员昵称缓存（Q号 → 昵称/群名片） ----------
+  // 参考 bili_reply 的缓存做法：落到本地 json，读到就补；缺了才去问内核。
+  function memberCachePath(gid) { return WS + '\\group-members\\' + String(gid) + '.json' }
+  function loadMemberCache(gid) {
+    try { return JSON.parse(fs.readFileSync(memberCachePath(gid), 'utf8') || '{}') } catch (e) { return {} }
+  }
+  function saveMemberCache(gid, map) {
+    try {
+      fs.mkdirSync(WS + '\\group-members', { recursive: true })
+      fs.writeFileSync(memberCachePath(gid), JSON.stringify(map, null, 2), 'utf8')
+    } catch (e) { w('[qq] 写群成员缓存失败 ' + e.message) }
+  }
+  function refreshMembers(gid) {
+    try {
+      var gs = S.session.getGroupService()
+      if (!gs || typeof gs.getAllMemberList !== 'function') return
+      Promise.resolve(gs.getAllMemberList(String(gid), false)).then(function (x) {
+        var raw = (x && x.result && (x.result.infos || x.result.memberList)) || (x && x.infos) || x
+        var list = []
+        if (raw instanceof Map) raw.forEach(function (v) { list.push(v) })
+        else if (Array.isArray(raw)) list = raw
+        else if (raw && typeof raw === 'object') list = Object.keys(raw).map(function (k) { return raw[k] })
+        var map = loadMemberCache(gid)
+        list.forEach(function (m) {
+          var uid = m && (m.uid || m.memberUid)
+          if (!uid) return
+          map[uid] = m.cardName || m.card || m.nick || m.nickName || map[uid] || ''
+        })
+        saveMemberCache(gid, map)
+        w('[qq] 群成员缓存更新 gid=' + gid + ' 共 ' + Object.keys(map).length + ' 人')
+        // 顺手补一下收件箱里没名字的
+        S.inbox.forEach(function (e) { if (e.chatType === 2 && String(e.peerUid) === String(gid) && !e.senderName && map[e.senderUid]) e.senderName = map[e.senderUid] })
+      }).catch(function (e) { w('[qq] 刷新群成员失败 ' + e.message) })
+    } catch (e) { w('[qq] refreshMembers err ' + e.message) }
+  }
   /** 把内核对象转成能看懂的 JSON（Map / BigInt / 循环引用都处理掉） */
   function Js(o) {
     var seen = []
