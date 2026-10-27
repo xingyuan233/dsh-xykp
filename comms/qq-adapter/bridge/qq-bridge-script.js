@@ -438,7 +438,8 @@
         try { fs.mkdirSync(dir0, { recursive: true }) } catch (e) { }
         var ext0 = (String(el.pic.fileName || '').match(/\.[a-z0-9]+$/i) || ['.png'])[0]
         var out0 = dir0 + '\\' + evt.msgId + '_' + (el.id || '0') + ext0
-        if (el.pic.sourcePath) {
+        // sourcePath 可能是个「说好了但还没下」的路径（群图常见），得确认真的存在
+        if (el.pic.sourcePath && fs.existsSync(el.pic.sourcePath)) {
           try { fs.copyFileSync(el.pic.sourcePath, out0); el.pic.localPath = out0 } catch (e) { el.pic.localPath = el.pic.sourcePath }
           return
         }
@@ -948,6 +949,26 @@
             w('[qq] http sendptt -> ' + (qt.peerUid || qt.to) + ' ' + qt.path)
             if (r7 && r7.then) r7.then(function (x) { reply(200, { ok: true, result: Js(x) }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
             else reply(200, { ok: true, result: r7 })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }        if (url.indexOf('/groupmembers') === 0) {
+          // 群成员列表（@ 人时查 uid 用）
+          var qg = qs()
+          try {
+            var gs = S.session.getGroupService()
+            gs.getGroupMemberList(String(qg.gid || ''), false).then(function (x) {
+              var infos = (x && x.result && (x.result.infos || x.result.memberList)) || (x && x.infos) || []
+              reply(200, {
+                ok: true, count: infos.length,
+                members: infos.slice(0, 50).map(function (m) {
+                  return {
+                    uid: m.uid, uin: m.uin, nick: m.nick || m.nickName, card: m.cardName || m.card,
+                    isSelf: String(m.uid) === String(S.selfUid || S.uid || '')
+                  }
+                }),
+                rawKeys: x && x.result ? Object.keys(x.result) : (x ? Object.keys(x) : [])
+              })
+            }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
           } catch (e) { reply(500, { ok: false, err: e.message }) }
           return
         }        if (url.indexOf('/download') === 0) {
