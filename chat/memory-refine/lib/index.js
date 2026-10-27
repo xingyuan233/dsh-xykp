@@ -4129,6 +4129,23 @@ export function apply(ctx) {
   }
 
   tick()
+  // ⚠ 2026-10-27：**新建 agent 立刻挂**，不等 500ms 那一跳。
+  //   实测（QQ 转移那次）：消息 16:18:34.67 就到了，tick 在 .87 才挂上，
+  //   而 step1 的 assemble 在 .70 已经跑完 → 第一个请求里既没记忆也没有交接，
+  //   模型只能说「我是新会话，没有上下文」；交接一路拖到 step2（16:18:45）才进去 ✗
+  //   `agent/created` 是 serial、而且在「放行排队工作之前」被 await 的，
+  //   在这里挂上就一定赶在第一条消息被消费之前 —— 交接才可能进第一个请求 ✓
+  try {
+    ctx.on('agent/created', () => {
+      try {
+        tick()
+      } catch (error) {
+        diag('  agent/created 里挂钩失败：' + (error && error.message))
+      }
+    })
+  } catch (error) {
+    diag('agent/created 钩子挂不上：' + (error && error.message))
+  }
   // 定时器不可用时也不能让 DSH 起不来
   try {
     // ⚠️ 2026-10-25：3 秒 → **0.5 秒**。
