@@ -927,7 +927,7 @@
               var list = (x && (x.msgList || x.msg_list)) || (Array.isArray(x) ? x : [])
               var tgt = null
               if (q7.msgId) { for (var i = 0; i < list.length; i++) if (String(list[i].msgId) === String(q7.msgId)) { tgt = list[i]; break } }
-              else { for (var j = list.length - 1; j >= 0; j--) { if (String(list[j].senderUid) !== String(S.selfUid || '')) { tgt = list[j]; break } } }
+              else { var selfId = String(S.selfUid || S.uid || ''); for (var j = list.length - 1; j >= 0; j--) { if (String(list[j].senderUid) !== selfId) { tgt = list[j]; break } } }
               if (!tgt) return reply(404, { ok: false, err: '找不到要引用的那条消息' })
               sendReply(tgt)
             }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
