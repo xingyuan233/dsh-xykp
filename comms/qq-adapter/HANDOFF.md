@@ -350,6 +350,12 @@ sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
   （`ffmpeg -i in.wav -ac 1 -ar 24000 -c:a ntsilk_s16le out.silk`），本机 ffmpeg 7.0.2 **没这个编码器**；
   `silk-wasm` 3.7.1 被 gate 扫成 **BLOCK**（wasm loader 里有 `new Function` 混淆），别绕过。
   目前能发的是「已经是 silk 的文件」＝ 收到的语音原样转发。
+- **试过 amr：不行**。用 Windows SAPI 合成 wav → ffmpeg `libopencore_amrnb` 转 amr（8000Hz/12.2k）→ 发出去
+  `result: 0`、`transferStatus: 2`（上传成功、能收下），但服务器转写返回**空**：
+  QQ 只认 silk，amr 收得进、读不出字。
+- 顺带查到：NapCat 的 `convertToNTSilkTct` 是调**系统 ffmpeg** 的 `ntsilk_s16le` 编码器
+  （`process.env.FFMPEG_PATH || 'ffmpeg'`），本机 ffmpeg 7.0.2 没这个编码器 →
+  **这条它也不比我们强**，谁先搞到 silk 编码器谁就赢。
 
 ### 11.4 顺手修掉的炸弹：旧监听器被僵尸定时器反复注册
 
