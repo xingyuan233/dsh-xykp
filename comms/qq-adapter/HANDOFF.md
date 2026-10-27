@@ -612,3 +612,45 @@ QQ 客户端「格式不支持就不显示」的根因就在这：以前发图**
   少一个内核直接 `assertion (argc == 2) failed`；返回的 `result.infos` 是 **Map**，不是数组，要自己摊平
 - `GET /groupmembers?gid=` 也能拉，顺带把缓存写一遍（测试/预热用）
 - 实测：群 602173548 拉到 2 人（星鸢、樱），缓存文件已生成
+
+## 十六、QQ 指令系统（2026-10-28 01:4x）
+
+主人定的规矩（原文精神，别自己加戏）：
+
+- **全英文**，不要中文别名；**伪群组全砍**；不做「管理员替别人切会话」，永远只管当前对话
+- **一个会话就是一个会话**，id 自己起：`qq-<yyyyMMdd>-<4位>`；不再「隐藏旧会话」再翻出来
+- 配置类都支持 `-d`：**带 `-d` 直接改部署默认**；不带就把值存成「这个聊天的偏好」，
+  `/new` 时**临时改部署默认 → 建会话 → 立刻改回原值**
+- 权限只有一条线：**私聊切绑定放行**；群聊、以及所有「会改状态」的指令要主人在 `ownerUids` 里
+
+### 16.1 落地的文件
+
+| 文件 | 干什么 |
+|---|---|
+| `lib/commands.js` | 指令表 + `/help` 文案 + `parseCommand` / `parseSessionArgs` / `isOwner`（纯函数，好测） |
+| `lib/session-store.js` | `chats.json`（聊天→会话绑定）、`newSessionId()`、扫 `home/sessions` 列会话、删会话目录 |
+| `lib/index.js` | `runCommand()`：权限、分发、回复；`createSessionFor()`：按偏好临时改默认再建会话 |
+
+`/new` 建会话用的是 `ctx.agents.create({ sessionId, meta: { cwd, agentPreset } })` —— 和 onebot 插件一个套路，
+**sessionId 是我们自己传的**，所以名字由我们定。
+
+### 16.2 已实现
+
+`/help` `/ver`（只回版本号，能收到就是活着） `/status` `/free`（只读，看 running/idle）
+`/stop`（`agent.cancel('user')`） `/new` `/session [-[[offset,]n]] [-del]` `/compact`
+`/model` `/level` `/preset` `/workspace`（都支持 `-d`）
+`/cfg-default` `/cfg-mode` `/cfg-list` `/cfg-table`（改 `ui-config.json`，下一轮生效）
+
+`/session` 的列法：**绑预设** → 读 `preset-binder.json` 列该预设池；**绑会话** → 列全部会话。
+`-10` = 最新 10 条，`-10,5` = 从第 10 条起 5 条，默认最新 6 条。
+
+`/compact` 不自己实现摘要，**让当前会话自己调 `memory_movctx`**（memory-refine 里现成的：
+压交接 → 用同一预设开新对话 → 接着聊），适配层在旁边盯 60 秒，看到新会话就把聊天绑过去。
+
+### 16.3 没做完 / 已知坑
+
+- **`/permission` 还是占位**：权限预设那条 config entry 我还没定位到（不在 `agent-preset-registry` 里）
+- **热重载会留旧实例**：改 `cordis.patch.yml` 后偶发「同一条指令一会儿放行一会儿被拒」——
+  旧实例的闭包里还是旧 `ownerUids`。重启宿主即恢复；根治要把实例清理按 `instanceId` 做彻底
+- `/compact` 依赖会话里有内容；空会话会失败（memory_movctx 报「没读出内容」），属正常
+- `/new` 现在会把聊天绑到新会话，但**旧会话不会自动归档**（主人要的就是都留着，删靠 `/session N -del`）

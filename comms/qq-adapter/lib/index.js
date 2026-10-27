@@ -352,7 +352,7 @@ export async function apply(ctx, config = {}) {
     // 权限：群聊里所有「会改状态」的指令要主人；私聊里只放行 会话类
     const stateChanging = ['model', 'level', 'workspace', 'preset', 'permission', 'cfg-default', 'cfg-mode', 'cfg-list', 'cfg-table', 'stop'].includes(spec.name)
     if (stateChanging && !owner) {
-      await replyTo(key, '这条指令只有主人能用' + (chatType === 2 ? '（群里）' : '') + ' [debug sender=' + String(evt.senderUid || '') + ' owners=' + JSON.stringify(cfg.ownerUids || []) + ']')
+      await replyTo(key, '这条指令只有主人能用' + (chatType === 2 ? '（群里）' : ''))
       return
     }
     if (chatType === 2 && ['new', 'session', 'compact'].includes(spec.name) && !owner) {
