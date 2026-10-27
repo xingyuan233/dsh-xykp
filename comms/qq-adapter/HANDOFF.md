@@ -1,159 +1,167 @@
-# QQ 自研适配层 · 交接（2026-10-27 20:20 更新）
+# QQ 自研适配层 · 交接（2026-10-27 21:20 更新）
 
 > 目标：在 `comms/qq-adapter` 里自己实现 QQ 通道，**不用 NapCat、不用 OneBot**。
-> 依赖 QQ 客户端本体（NTQQ 的 native 协议库），用「DLL 注入 + 执行自己的 JS」的方式拿接口。
+> 依赖 QQ 客户端本体（NTQQ 的 native 协议库），用「DLL 注入 / 纯 shell 加载 + 执行自己的 JS」拿接口。
 > 主人要求：接口可以抄（照 NapCat 的调用方式），实现自己写；不做跨平台通用，只做能用的最小集。
 
-## 〇、当前状态（一句话）
+## 〇、当前状态：纯 shell 模式「登录 + 收 + 发」全通
 
-**收 / 发 双向打通了。** 在注入的 QQ 主进程里自己 init 出 session，`getMsgService()` 可用，
-C2C 文本发送成功（`result:0`），对方回复能通过 `onRecvMsg` 收到。
+现在跑的是**纯 shell**（没有 QQ 界面），实例：`D:\Program-Files\QQ-shell`，进程里只有我们的 loader + wrapper.node。
 
-已验证：
-- `engine.initWithDeskTopConfig(...)`
-- `login.initConfig(...)` → `login.connect()` → `getQRCodePicture()`
-- 扫码登录（樱 3793339506）
-- `startup.create()` → `session.init(sessionInfo, msfL, dispL, sessL)` → `startup.start()`
-- 回调：`onNTSessionCreate` → `onOpentelemetryInit{is_init:true}` → `onSessionInitComplete 0`
-- `session.getMsgService()` 立刻可用（完整 300+ 方法）
-- `ms.addKernelMsgListener({onRecvMsg, onAddSendMsg, onMsgInfoListUpdate})` 收到真实消息
-- `ms.sendMsg('0', {chatType:1, peerUid, guildId:''}, [{elementType:1, elementId:'', textElement:{content, atType:0, atUid:'', atTinyId:'', atNtUid:''}}], new Map())` 发送成功
+实测通过：
 
-## 一、跑通的完整启动顺序（重要，照这个来）
+- 扫码登录（樱 3793339506）→ `onQRCodeLoginSucceed`
+- `session.init(...)` + `startup.start()` → `onMSFStatusChange` → `onNTSessionCreate` →
+  `onOpentelemetryInit` → **`onSessionInitComplete 0`** → `stage=ready`
+- `getMsgService()` 可用
+- 收：`onRecvMsg` 收到真实消息
+- 发：`sendMsg` 返回 `{result:0}`，手机能收到
 
-在 QQ 主进程里（注入后拿到的 `napi_env` 里跑 JS）：
+HTTP 调试接口（`127.0.0.1:39272`）：`/status` `/events` `/send` `/qr` `/loginlist` `/boot` `/reboot`
+`/diag` `/win` `/buddy` `/recent` `/download`。命令文件 `qq-cmd.json` 也还能用。
+
+## 一、纯 shell 怎么搭的（重要）
+
+1. `robocopy QQ-dsh QQ-shell /E`（1.2GB，别改原来的 QQ-dsh）
+2. 在 `QQ-shell\versions\9.9.36-53644\resources\app`：
+   - `package.json` 的 `main` 改成 `./dsh-loader.js`（原值备份成 `package.json.shell-backup`）
+   - 放一个 `dsh-loader.js`：打印环境 → `eval(读 workspaces\alive-workspace\qq-bridge-script.js)`
+     → 每 1.5s 看 mtime 重新 eval（热重载）
+   - 其它文件（wrapper.node / major.node / application.asar）**一个都别动**
+3. 把 `NapCatWinBootMain.exe` + `NapCatWinBootHook.dll`（来自 `tools\NapCat\onekey\bootmain`）
+   拷到 `QQ-shell\` 根目录（和 QQ.exe 同级），然后跑：
+
+```powershell
+cd D:\Program-Files\QQ-shell; .\NapCatWinBootMain.exe     # 会自己拉起 QQ.exe 并跳过文件签名校验
+```
+
+签名清单在 `resources\app\application.json`（application.asar / wrapper.node / major.node / package.json
+各一个 256 字节 RSA 签名），改了 package.json 没有这个钩子就是「文件已损坏」。
+
+## 二、跑通的完整启动顺序（纯 shell，照这个来）
 
 ```js
-// 0) 拿 wrapper（process.mainModule 在 run_script 环境里可用）
-var wmod = process.mainModule.require('D:\\Program-Files\\QQ-dsh\\versions\\9.9.36-53644\\resources\\app\\wrapper.node');
-
-// 1) 引擎初始化（返回 false 也不代表失败，NapCat 同样忽略返回值）
-var eng = wmod.NodeIQQNTWrapperEngine.get();
-eng.initWithDeskTopConfig({
-  base_path_prefix: '',
-  platform_type: 3,               // KWINDOWS
-  app_type: 4,
-  app_version: '9.9.36-53644',
-  os_version: os.release(),
-  use_xlog: false,
-  qua: 'V1_WIN_NQ_9.9.36_53644_GW_B',
-  global_path_config: { desktopGlobalPath: <自己的 global 目录> },
-  thumb_config: { maxSide: 324, minSide: 48, longLimit: 6, density: 2 }
-}, { onLog(){}, onGetSrvCalTime(){return 0}, onShowErrUITips(){}, fixPicImgType(){},
-     getAppSetting(){return '{"maxSide":324,"minSide":48,"longLimit":6,"density":2}'},
-     onInstallFinished(){}, onUpdateGeneralFlag(){}, onGetOfflineMsg(){} });
-
-// 2) 登录服务配置
+var wmod = require('<install>\\versions\\9.9.36-53644\\resources\\app\\wrapper.node');
+var eng   = wmod.NodeIQQNTWrapperEngine.get();
 var login = wmod.NodeIKernelLoginService.get();
+
+// 1) 引擎
+eng.initWithDeskTopConfig({ base_path_prefix:'', platform_type:3, app_type:4,
+  app_version:'9.9.36-53644', os_version: os.release(), use_xlog:false,
+  qua:'V1_WIN_NQ_9.9.36_53644_GW_B',
+  global_path_config:{ desktopGlobalPath: <自己的 global 目录> },
+  thumb_config:{ maxSide:324, minSide:48, longLimit:6, density:2 } }, engineListener);
+
+// 2) 登录服务
 login.initConfig({ machineId:'', appid:537391628, platVer: os.release(),
-                   commonPath: <自己的 global 目录>, clientVer:'9.9.36-53644',
-                   hostName: os.hostname(), externalVersion:false });
+  commonPath: <自己的 global 目录>, clientVer:'9.9.36-53644',
+  hostName: os.hostname(), externalVersion:false });
 
-// 3) 登录（二维码）——监听器实现 onQRCodeGetPicture / onQRCodeLoginSucceed 等
-login.addKernelLoginListener(L);
-login.connect();
-setTimeout(() => login.getQRCodePicture(), 1500);   // 回调里给 qrcodeUrl + pngBase64QrcodeData
-
-// 4) 登录成功回调里：init session
-var session = wmod.NodeIQQNTWrapperSession.getNTWrapperSession('nt_1');  // 登录后才有
-session.init(sessionInfo, msfListener, dispatchListener, sessionListener);
+// 3) ★ 关键顺序：先建 startup wrapper，再拿 session 壳 ★
 var startup = wmod.NodeIQQNTStartupSessionWrapper.create();
-startup.start();       // → onNTSessionCreate / onSessionInitComplete
+var session = wmod.NodeIQQNTWrapperSession.getNTWrapperSession('nt_1');   // 这一步要能拿到对象
 
-// 5) 用
-var ms = session.getMsgService();
+// 4) 扫码登录（listener: onQRCodeGetPicture / onQRCodeSessionUserScaned / onQRCodeLoginSucceed）
+login.addKernelLoginListener(L); login.connect(); login.getQRCodePicture();
+
+// 5) 登录成功回调里
+session.init(sessionInfo, msfListener, dispatchListener, sessionListener);
+startup.start();     // → onNTSessionCreate / onOpentelemetryInit / onSessionInitComplete
 ```
 
-`sessionInfo`（照 NapCat `xse()` 的结构，字段都是真名）：
+**反了就永远卡住**：`getNTWrapperSession('nt_1')` 必须在 `StartupSessionWrapper.create()` **之后**，
+在登录**之前**拿到壳（否则 init 完没有 onSessionInitComplete，`getMsgService()` 也拿不到）。
+
+`sessionInfo`（和上一版一致）：
 
 ```js
-{
-  selfUin: '3793339506', selfUid: 'u_BsJrCaYeH77_OZ78H5pEXA',
-  desktopPathConfig: { account_path: '<Tencent Files>/<uin>' },
-  clientVer: '9.9.36-53644',
-  a2:'', d2:'', d2Key:'', machineId:'',
-  platform: 3, platVer: os.release(), appid: 537391628,
-  rdeliveryConfig: { appKey:'', systemId:0, appId:'', logicEnvironment:'', platform:3,
-    language:'', sdkVersion:'', userId:'', appVersion:'', osVersion:'', bundleId:'',
-    serverUrl:'', fixedAfterHitKeys:[''] },
-  defaultFileDownloadPath: <临时目录>,
-  deviceInfo: { guid: login.getMachineGuid(), buildVer:'9.9.36-53644', localId:2052,
-    devName: os.hostname(), devType: os.type(), vendorName:'', osVer: os.release(),
-    vendorOsName: os.type(), setMute:false, vendorType:0 },
-  deviceConfig: '{"appearance":{"isSplitViewMode":true},"msg":{}}'
-}
+{ selfUin, selfUid: 'u_BsJrCaYeH77_OZ78H5pEXA',
+  desktopPathConfig: { account_path: '<Tencent Files>/<uin>' },   // uin 模式
+  clientVer:'9.9.36-53644', a2:'', d2:'', d2Key:'', machineId:'',
+  platform:3, platVer: os.release(), appid:537391628,
+  rdeliveryConfig:{...全空, platform:3, fixedAfterHitKeys:['']},
+  defaultFileDownloadPath: <temp>,
+  deviceInfo:{ guid: login.getMachineGuid(), buildVer, localId:2052, devName: os.hostname(),
+    devType: os.type(), vendorName:'', osVer: os.release(), vendorOsName: os.type(),
+    setMute:false, vendorType:0 },
+  deviceConfig:'{"appearance":{"isSplitViewMode":true},"msg":{}}' }
 ```
 
-三个监听器只要方法名齐了就行（空实现也能跑）：
+监听器方法名（空实现也能跑）：msf `onMSFStatusChange/onMSFSsoError/getGroupCode`；
+dispatch `dispatchRequest/dispatchCall/dispatchCallWithJson`；
+session `onNTSessionCreate/onGProSessionCreate/onSessionInitComplete/onOpentelemetryInit/onUserOnlineResult/onGetSelfTinyId`；
+engine `onLog/onGetSrvCalTime/onShowErrUITips/fixPicImgType/getAppSetting/onInstallFinished/onUpdateGeneralFlag/onGetOfflineMsg`；
+login `onLoginConnected/onLoginConnecting/onLoginDisConnected/onQRCodeGetPicture/onQRCodeLoginPollingStarted/onQRCodeSessionUserScaned/onQRCodeLoginSucceed/onQRCodeSessionFailed/onUserLoggedIn/onLogoutSucceed/onLoginFailed`。
 
-- msf：`onMSFStatusChange` / `onMSFSsoError` / `getGroupCode`
-- dispatch：`dispatchRequest` / `dispatchCall` / `dispatchCallWithJson`
-- session：`onNTSessionCreate` / `onGProSessionCreate` / `onSessionInitComplete` /
-  `onOpentelemetryInit` / `onUserOnlineResult` / `onGetSelfTinyId`
-- engine：`onLog` / `onGetSrvCalTime` / `onShowErrUITests`(实际名 `onShowErrUITips`) /
-  `fixPicImgType` / `getAppSetting` / `onInstallFinished` / `onUpdateGeneralFlag` / `onGetOfflineMsg`
-- login：`onLoginConnected` / `onLoginConnecting` / `onLoginDisConnected` /
-  `onQRCodeGetPicture` / `onQRCodeLoginPollingStarted` / `onQRCodeSessionUserScaned` /
-  `onQRCodeLoginSucceed` / `onUserLoggedIn` / `onLogoutSucceed`
+## 三、踩过的坑（都是真金白银）
 
-## 二、关键结论：QQ 的 app 和 wrapper 是两套栈
+### 登录/二维码
+- **QQ 返回的二维码图只有 96~147px 的 JPEG，扫不动**。要自己按 URL 重编码：
+  `python make-qr.py <url> qq-qr-fresh.png`（`qrcode` 库已装）
+- **每调一次 `getQRCodePicture()` 会把上一张作废**，多调一次就让人扫到一张死码
+- 码的有效期很短（约 1 分钟），所以搞了「qr keeper」：每 10s 检查，码龄 > 45s 就换新；
+  页面 `qq-qr.html` 每 2s 刷新图片并显示倒计时（绿/黄/红），人看着扫就行
+- 带界面的进程里，**QQ 自己的窗口也在申请二维码**，会跟我们互相顶掉 → 这就是一直「已过期」的原因
 
-- QQ 自己的 UI（`application.asar/app_launcher` + `major.node`）**完全不用** `NodeIQQNTWrapperSession`。
-  实测：app 正常登录着，`getNTWrapperSession('nt_1')` 返回空壳，`getMsgService()` undefined，
-  `engine.getDeviceInfo()` 全空。
-- 所以想用 wrapper 这条门，必须**自己 init**（上面那套），等于「在 QQ 进程里跑一个 NapCat Shell」。
-- 两套栈可以同进程共存：独立实例里 app 停登录页、我们的 session 自己扫码登录、收发正常。
-- 数据要隔离：`global_path_config.desktopGlobalPath` 和 `login.initConfig.commonPath` 都指到
-  自己的目录（现在是 `workspaces\alive-workspace\qq-nt\global`），别跟 app 抢同一份 msf 状态。
+### 带界面（注入）模式为什么放弃
+- app 登录着的时候 `getNTWrapperSession` 是空壳、`getMsgService()` undefined：**app 根本不用 wrapper 的 session**
+- 我们借 app 的登录态 init：能拿到 msService 但 session 永远不上线（发消息卡 status=1）
+- 两边同时登同一个号 → `onUserLoggedIn` 刷屏 → 进程崩过一次
+- 结论：**要么 app 不登录，要么纯 shell**。选纯 shell，一了百了
 
-## 三、文件与路径
+### 收发
+- **uid 抄错一个字母**就发不出去：正确的星鸢 uid 是 `u_VyRaaHm1qjSkW7Eb**Ghh**62w`
+  （`...EbHh62w` 是错的，之前凭 loginlist 记的，其实 loginlist 里那个也是错的）
+  → 用 `getBuddyService().getBuddyListV2('0', true, 0)` 拿真 uid
+- 发错 uid 时 `sendMsg` 返回的 Promise **永远不 resolve**（本地回显停在 `status=1 sending`）
+- PowerShell 发中文要显式 UTF-8：
+  `[Text.Encoding]::UTF8.GetBytes($json)` + `-ContentType 'application/json; charset=utf-8'`，
+  否则手机收到一串 `????`
+- 收消息的 `onRecvMsg` 同一条会回调多次（元素逐步补全），要按 `msgId` 覆盖去重
+
+### 脚本/热重载
+- 每个 JS 版本里注册的 listener 是**旧闭包**：改回调后必须 bump 版本号（`LISTENER_VER` / `loginListenerVer`）
+  才会重新注册，不然新代码不生效
+- eval 会叠加定时器：状态放 `global.__qqState`，定时器也按版本号重建
+- 脚本必须整体 try/catch，不然 QQ 弹「A JavaScript error occurred in the main process」
+
+## 四、文件与路径
 
 | 东西 | 路径 |
 |---|---|
-| QQ 副本（随便折腾） | `D:\Program-Files\QQ-dsh`（9.9.36-53644） |
+| **纯 shell 安装（现在用的）** | `D:\Program-Files\QQ-shell` |
+| QQ-dsh（带界面实验用，随便折腾） | `D:\Program-Files\QQ-dsh` |
 | 正版 QQ（别动） | `D:\Program-Files\QQ2`（NapCat 在用） |
-| 桥 DLL / 注入器源码 | `plugins\comms\qq-adapter\bridge\{qqbridge.cpp,injector.cpp,build.ps1}` |
-| 当前桥脚本（热重载） | `workspaces\alive-workspace\qq-bridge-script.js` |
-| 日志 | `workspaces\alive-workspace\qq-bridge.log`（每行前缀 `[pid]`） |
-| 命令文件 / 结果 | `workspaces\alive-workspace\qq-cmd.json` / `qq-cmd-result.json` |
-| 独立实例 user-data-dir | `workspaces\alive-workspace\qq-inst2` |
-| 我们自己的 NT global | `workspaces\alive-workspace\qq-nt` |
+| 启动钩子（从 NapCat onekey 拷来） | `QQ-shell\NapCatWinBootMain.exe` + `NapCatWinBootHook.dll` |
+| 我们的 loader（在 app 目录里） | `QQ-shell\versions\9.9.36-53644\resources\app\dsh-loader.js` |
+| 桥脚本（热重载） | `workspaces\alive-workspace\qq-bridge-script.js` |
+| 配置 | `workspaces\alive-workspace\qq-config.json` |
+| 日志 | `qq-bridge.log`（桥）/ `qq-shell.log`（loader） |
+| 二维码页面 | `workspaces\alive-workspace\qq-qr.html` |
+| 二维码重编码脚本 | `make-qr.py`（`qrcode`）/ `decode-qr.py`（`cv2` 校验） |
+| 注入器源码（带界面模式留着） | `plugins\comms\qq-adapter\bridge\{qqbridge.cpp,injector.cpp,build.ps1}` |
 | NapCat 参考 | `tools\NapCat\shell\napcat.mjs`（`FL()`≈83290、`n2e()`≈83256、`xse()`≈33027） |
-
-跑法：
-
-```powershell
-# 起一个独立实例（不动主人日常那个 QQ-dsh）
-cd D:\AI\DeepseekHarness\plugins\comms\qq-adapter\bridge
-& .\injector.exe "D:\Program-Files\QQ-dsh\QQ.exe" "$PWD\qqbridge.dll" "--no-sandbox" "--user-data-dir=D:\AI\DeepseekHarness\workspaces\alive-workspace\qq-inst2"
-```
-
-## 四、调试机制（踩过坑，记住）
-
-- **DLL 的 hot-reload 是「被动」的**：它挂在 `napi_create_string_utf8` 上，QQ 主进程安静时根本
-  不触发。所以脚本里**必须自带 JS 自热重载定时器**（`fs.statSync(SELF).mtimeMs` + `eval`），
-  改文件 1.5s 生效。第一版只有 DLL 那层，「改完没反应」浪费时间。
-- **eval 会叠加闭包**：上个版本创建的 `setInterval` 里的回调还是旧代码。状态要放
-  `global.__qqState` 并给定时器加版本号（`S.cmdVer !== 'v6c'` 时先 `clearInterval` 再重建）。
-- 脚本必须整体 try/catch，否则 QQ 弹「A JavaScript error occurred in the main process」。
-- 不能用裸 `require`，用 `process.mainModule.require(...)`。
-- 登录后 `getNTWrapperSession('nt_1')` 才返回对象；登录前是 `undefined`。
-- `getRecentContactListSnapShot(n)` / `getBuddyListV2('0', true, 0)` 是能用的取列表方式
-  （`getRecentContactList()` 要 0 个参数，别乱传）。
 
 ## 五、已经排除的路（别再试）
 
-1. 改 `resources/app/package.json` → QQ 报「文件已损坏」（256 字节签名清单）。
-2. `--inspect` / `--remote-debugging-port` → fuse 关了，端口不开。
-3. `--app-path=` → 启动器忽略。
-4. C++ 独立进程 `LoadLibrary(wrapper.node)` → 能加载，但拿不到 JS 层接口。
-5. hook `qq_magic_napi_register` 替换 `nm_register_func` → 「Module did not self-register」。
-6. 指望 app 登录后白嫖它的 session → 不存在（见第二节）。
+1. 改 `resources/app/package.json` 但不带启动钩子 → 「文件已损坏，请重新安装」
+2. `--inspect` / `--remote-debugging-port` → fuse 关了
+3. `--app-path=` → 启动器忽略
+4. C++ 独立进程 `LoadLibrary(wrapper.node)` → 能加载但拿不到 JS 接口
+5. hook `qq_magic_napi_register` 替换 `nm_register_func` → 「Module did not self-register」
+6. 指望 app 登录后白嫖它的 session → 不存在
+7. `session.startNT()` 兜底 → 我们这个版本的 session 壳上没有这个方法
 
 ## 六、下一步
 
-1. 群消息收发（`chatType: 2`，`peerUid` 是群号）
-2. 图片发送（`elementType: 2`，`picElement` 的字段要试）
-3. @ 别人（`atType/atUid/atNtUid` 组合）
-4. 断线重连 / 掉线重扫 / 进程守护
-5. 把这套搬进 `plugins\comms\qq-adapter` 的正式结构（dsh 工具 + 事件转发）
+1. 群消息收发（`chatType: 2`，`peerUid` 用群号；樱 目前不在任何群，需要拉进一个测试群）
+2. 图片发送（`elementType: 2` + `picElement`，要走 `RichMediaService` 上传）
+3. 图片接收落盘（`ms.downloadRichMedia` 我们调了没回调，改试
+   `RichMediaService.downloadFileForFileUuid` / `downloadFileByModelId`；语音 `.amr` 是自动下载的）
+4. @ 别人（`atType/atUid/atNtUid`）
+5. 断线重连、掉线自动重扫码、进程守护
+6. 把这个 shell 的启动/保活做成脚本，`qq-adapter` 插件里做成 dsh 工具（收消息 → 叫醒会话）
+
+## 七、当前 profile pin（插件仓库）
+
+最后一次 install 是 `abb1386`；之后 `febb819`（只改 README）没有 install。
