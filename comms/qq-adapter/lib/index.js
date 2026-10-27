@@ -43,6 +43,8 @@ export const Config = Schema.object({
     chat: Schema.string().description('u-<uid> 或 g-<群号>'),
     target: Schema.string().description('p-<预设名> 或 s-<会话id>'),
   })).default([]).description('自定义映射（优先于名单）'),
+  deliverMode: Schema.union([Schema.const('steer'), Schema.const('followup')]).default('steer')
+    .description('转发方式：steer=插队（这轮就能看到）/ followup=排队（下轮才看到）'),
   pollMs: Schema.number().default(1500).description('轮询间隔（毫秒）'),
   maxPerTick: Schema.number().default(10).description('一次最多转发几条'),
   seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen.json）'),
@@ -98,13 +100,17 @@ function findAgent(agents, sessionId) {
   return null
 }
 
-async function deliver(agentsSvc, sessionId, text) {
+async function deliver(agentsSvc, sessionId, text, mode = 'steer') {
   const agent = findAgent(agentsSvc, sessionId)
   if (!agent) throw new Error('会话 ' + sessionId + ' 找不到了（可能被归档/删了）')
   const message = createUserMessage({
     content: [{ type: 'text', text }],
     source: { kind: SOURCE_KIND },
   })
+  if (mode === 'steer' && typeof agent.steer === 'function') {
+    await agent.steer(message)
+    return { delivered: true, via: 'steer' }
+  }
   await agent.followup(message)
   return { delivered: true, via: 'followup' }
 }
@@ -231,7 +237,7 @@ export async function apply(ctx, config = {}) {
         }
         const text = formatIncoming(evt)
         try {
-          await deliver(agentsSvc, target.sessionId, text)
+          await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
           seenSet.add(msgId)
           handled++
           log(`转发 ${key} → ${target.sessionId}（${route.via}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
