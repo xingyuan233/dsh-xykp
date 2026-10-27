@@ -448,8 +448,10 @@ export async function apply(ctx, config = {}) {
       const current = await chatSessionId(key)
       const all = await listSessions()
       // 2026-10-28 主人：看「这个私聊/群聊**现在**绑的是什么」——
-      //   · 绑预设（聊天偏好里的 preset / 目标 p-xxx / 绑定的会话正好在某个预设池里）→ 只列该预设的会话
-      //   · 绑会话 → 列全部**未归档**会话
+      //   · 明确绑了会话（chats.json 的 sessionId / 映射或默认目标写成 s-xxx）→ 列全部**未归档**会话
+      //   · 绑的是预设（聊天偏好 preset / 目标 p-xxx）→ 只列该预设池里的会话
+      // ⚠ 以前还加过一条「绑的会话正好在某个预设池里就当预设」的猜测 —— 主人 03:31 明确否掉了：
+      //   他特意映射成 s-xxx，结果 /session 还报预设，就是因为那条猜测 ✗ 已删掉。
       const pools = await presetPools()
       const chatRec = (await chatsNow())[key] || {}
       const routeNow = resolveRoute(cfg, key)
@@ -459,14 +461,6 @@ export async function apply(ctx, config = {}) {
       const prefPreset = String((chatRec.prefs && chatRec.prefs.preset) || '')
       if (prefPreset) { presetName = prefPreset; howBound = '预设（聊天偏好）' }
       else if (refNow.kind === 'preset') { presetName = String(refNow.value); howBound = '预设（配置/映射）' }
-      else {
-        const sidNow = String(current || '')
-        if (sidNow) {
-          for (const [name, ids] of pools) {
-            if (ids.has(sidNow)) { presetName = name; howBound = '预设（' + name + '，当前会话在这个池里）'; break }
-          }
-        }
-      }
       let mine = all
       if (presetName) {
         const ids = pools.get(presetName)
