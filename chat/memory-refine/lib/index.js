@@ -575,7 +575,7 @@ function makeMovCtxTool(ctx) {
   return defineTool({
     name: 'memory_movctx',
     description:
-      '把当前这段对话压成一份「上下文交接」，然后用**同一个预设 / 模型 / 工作区**开一个新对话，并让它接着聊。' +
+      '把当前这段对话压成一份「上下文交接」，然后用**同一个预设 / 模型 / 工作区 / 权限预设**开一个新对话，并让它接着聊。' +
       '上下文用掉一半左右、或者觉得注意力开始散、或者要换个大话题时用它 —— 新对话第一轮会注入这份交接（一份只注入一次）。' +
       '原来的对话原样留着，随时能回去看；这一条主要在预设绑了记忆的时候效果最好（交接是按预设排队的）。',
     parameters: {
@@ -686,6 +686,30 @@ function makeMovCtxTool(ctx) {
         return { ok: false, message: '新对话建不起来：' + ((error && error.message) || error) }
       }
 
+      // 4.5) 权限预设也带过去（2026-10-27 主人指出：同预设 / 同模型还不够 ——
+      //   ta 中途切过的 c/w/f 也得跟到新对话，不然新对话一回默认就又变成「要审批」的了）
+      //   官方 setter 就是「用户点一下权限」那一下：写 permission/preset + 两个 knob 事件，立即生效 ✓
+      let 权限说明 = ''
+      try {
+        const pp = ctx.get && ctx.get('permissionPresets')
+        if (pp && typeof pp.current === 'function' && typeof pp.set === 'function') {
+          const 名 = String(pp.current(sess) || '')
+          if (!名) {
+            权限说明 = '（读不出当前权限预设，新对话用默认值）'
+          } else if (名 === 'custom') {
+            权限说明 = '（当前是自定义权限组合，没法整包复制，新对话用默认值）'
+          } else {
+            pp.set(handle.agent.session, 名)
+            权限说明 = '（权限也带上了：' + 名 + '）'
+          }
+        } else {
+          权限说明 = '（宿主没挂 permissionPresets，权限没复制）'
+        }
+      } catch (error) {
+        权限说明 = '（权限复制失败：' + ((error && error.message) || error) + '）'
+        diag('memory_movctx：权限复制失败：' + ((error && error.message) || error))
+      }
+
       // 5) 挂到同一个工作区（Web 侧才会出现在工作区分组里，而不是「未分组」）
       try {
         const ws = ctx.get && ctx.get('workspaceRegistry')
@@ -714,7 +738,11 @@ function makeMovCtxTool(ctx) {
             ok: true,
             session: 新id,
             chars: 概.summary.length,
-            message: '新对话建好了，但没能自动开跑：' + ((error && error.message) || error) + '。交接还排着队，等它第一句话来了会注入。',
+            message:
+              '新对话建好了，但没能自动开跑：' +
+              ((error && error.message) || error) +
+              '。交接还排着队，等它第一句话来了会注入。' +
+              权限说明,
           }
         }
       }
@@ -723,7 +751,7 @@ function makeMovCtxTool(ctx) {
         ok: true,
         session: 新id,
         chars: 概.summary.length,
-        message: '交接会在它第一轮开头注入一次；原来的对话还在，随时能回去看。',
+        message: '交接会在它第一轮开头注入一次；原来的对话还在，随时能回去看。' + 权限说明,
       }
     },
   })
