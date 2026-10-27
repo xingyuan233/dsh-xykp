@@ -1,23 +1,9 @@
-# dsh-qq-adapter — bundle patch layer.
+# dsh-qq-adapter — bundle patch layer（2026-10-28 起**故意留空**）
 #
-# Profile-bundle patches compose over an EMPTY entry list, so this patch is an
-# `insert` appending one composition row.
+# 为什么空了：这里原来 insert 了一份 `id: qq-adapter` 的配置，
+# 而 profile 的 `cordis.patch.yml` 里**也** insert 了一份同 id 的 —— 两处 insert 被当成两个实例挂上，
+# 结果同一条 QQ 消息被处理两次、每条指令回复都发两遍 ✗
 #
-# 分流规则就在下面的 config 里；这一层是「默认值」，
-# Web 设置页（设置 → 插件 → qq-adapter）改的是同一份 profile 里的人配置，
-# 改完 live 生效，不用重启宿主。
-- insert:
-    - id: qq-adapter
-      name: 'dsh-qq-adapter'
-      config:
-        enabled: true
-        bridgeUrl: 'http://127.0.0.1:39272'
-        selfUid: 'u_BsJrCaYeH77_OZ78H5pEXA'
-        defaultTarget: 'p-alive'
-        mode: blacklist
-        blocked: []
-        allowed: []
-        mappings: []
-        pollMs: 1500
-        maxPerTick: 10
-        seenPath: ''
+# 现在装配只由 profile 那一份 `cordis.patch.yml` 决定（那才是「人的意图」的所在）。
+# 这一层保留成空文件，是为了 package.json 里 dsh.bundle.patch 还能指到它。
+[]

@@ -21,7 +21,7 @@ import { createBridge } from './bridge.js'
 import { toSilk, cleanupSilk } from './silk.js'
 import { readOverride, pickRouting } from './overrides.js'
 import { COMMANDS, COMMAND_INDEX, helpText, parseCommand, parseSessionArgs, isOwner } from './commands.js'
-import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ago, listWorkspaces } from './session-store.js'
+import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ago, listWorkspaces, presetPools } from './session-store.js'
 
 export const name = 'qq-adapter'
 
@@ -147,6 +147,17 @@ export async function apply(ctx, config = {}) {
   const seenSet = new Set(seen.ids)
   let cursor = Number(seen.cursor) || 0
   let started = false
+
+  // 2026-10-28：插件被挂了两份（bundle patch 和 profile insert 各一条）→
+  //   同一条 QQ 消息被处理两次、每条回复发两遍 ✗
+  //   兜住：**同一个桥只允许一个实例轮询**（后来的接管，先来的只挂工具不轮询）
+  const 桥主表 = (globalThis.__qqAdapterBridgeOwners ||= new Map())
+  const 桥键 = String(cfg.bridgeUrl || '')
+  const 本键 = 桥键 + '|' + INST
+  const 前主 = 桥主表.get(桥键)
+  if (前主 && 前主 !== 本键) warn('桥 ' + 桥键 + ' 已被另一个实例接管（' + 前主 + '），这个实例只挂工具、不轮询')
+  桥主表.set(桥键, 本键)
+  const 是桥主 = () => 桥主表.get(桥键) === 本键
   let running = false
 
   async function saveSeen() {
@@ -436,20 +447,37 @@ export async function apply(ctx, config = {}) {
       if (args.bad) { await replyTo(key, '看不懂这个参数：' + args.bad + '\n用法 /session [-[[offset,]n]] [-del]'); return }
       const current = await chatSessionId(key)
       const all = await listSessions()
-      // 绑预设 → 看这个预设池里的会话；绑会话 → 全都列出来（主人 2026-10-28 的规矩）
+      // 2026-10-28 主人：看「这个私聊/群聊**现在**绑的是什么」——
+      //   · 绑预设（聊天偏好里的 preset / 目标 p-xxx / 绑定的会话正好在某个预设池里）→ 只列该预设的会话
+      //   · 绑会话 → 列全部**未归档**会话
+      const pools = await presetPools()
+      const chatRec = (await chatsNow())[key] || {}
       const routeNow = resolveRoute(cfg, key)
       const refNow = parseTargetRef(routeNow.target)
-      let mine = all
-      if (refNow.kind === 'preset') {
-        try {
-          const binder = await readJson(join(home(), 'storages', 'preset-binder.json'), null)
-          const pool = binder && binder.presets && binder.presets[refNow.value]
-          const ids = new Set(Object.keys((pool && pool.sessions) || {}))
-          if (pool && pool.active) ids.add(String(pool.active))
-          if (ids.size) mine = all.filter((s) => ids.has(s.id))
-        } catch { /* 拿不到池子就都列出来 */ }
+      let presetName = ''
+      let howBound = chatRec.sessionId ? '会话（chats.json）' : '会话（配置/映射）'
+      const prefPreset = String((chatRec.prefs && chatRec.prefs.preset) || '')
+      if (prefPreset) { presetName = prefPreset; howBound = '预设（聊天偏好）' }
+      else if (refNow.kind === 'preset') { presetName = String(refNow.value); howBound = '预设（配置/映射）' }
+      else {
+        const sidNow = String(current || '')
+        if (sidNow) {
+          for (const [name, ids] of pools) {
+            if (ids.has(sidNow)) { presetName = name; howBound = '预设（' + name + '，当前会话在这个池里）'; break }
+          }
+        }
       }
-      if (!mine.length) { await replyTo(key, '还没有自己的会话，发 /new 开一个'); return }
+      let mine = all
+      if (presetName) {
+        const ids = pools.get(presetName)
+        mine = ids && ids.size ? all.filter((s) => ids.has(s.id)) : []
+      }
+      const 绑头 = '当前绑定：' + (presetName ? '预设 ' + presetName : '会话 ' + (current || '（没有）')) + ' · ' + howBound
+      if (presetName && !mine.length) {
+        await replyTo(key, 绑头 + '\n这个预设下面还没有会话（发 /new 在这个预设里开一个）')
+        return
+      }
+      if (!mine.length) { await replyTo(key, 绑头 + '\n还没有自己的会话，发 /new 开一个'); return }
       if (args.index !== null) {
         const rows = mine.slice(args.offset, args.offset + args.count)
         const picked = rows[args.index - 1]
@@ -471,7 +499,7 @@ export async function apply(ctx, config = {}) {
       }
       const rows = mine.slice(args.offset, args.offset + args.count)
       const lines = rows.map((s, i) => (i + 1) + '. ' + s.id + (s.id === current ? '  ← 当前' : '') + '  ' + ago(s.updatedAt))
-      await replyTo(key, '会话（共 ' + mine.length + '，从第 ' + (args.offset + 1) + ' 条起 ' + rows.length + ' 条）\n' +
+      await replyTo(key, 绑头 + '\n会话（共 ' + mine.length + '，从第 ' + (args.offset + 1) + ' 条起 ' + rows.length + ' 条）\n' +
         lines.join('\n') + '\n\n/session <序号> 切换 · /session <序号> -del 删除')
       return
     }
@@ -931,6 +959,7 @@ export async function apply(ctx, config = {}) {
 
   async function tick(reason) {
     if (!cfg.enabled || running) return
+    if (!是桥主()) return // 同一个桥已经有别的实例在轮询了（重复挂载时只让一份干活）
     // 运行时覆盖：设置页写到 home\qq-adapter\ui-config.json 的分流配置，每轮读一次（很便宜）
     try { Object.assign(cfg, pickRouting((await readOverride())[INST] || {})) } catch { /* 读不到就用原配置 */ }
     // 名单/映射/白名单里允许写 QQ 号，统一换成 uid 再比（幂等，转换结果会缓存）

@@ -881,3 +881,27 @@ NapCat 把它当 **guildId** 传给内核。我们原来给的是 `guildId: ''`�
 - `/preset` 不带参数 → 列所有预设（`agentPresets.list()`，标出默认/坏掉的），支持 `/preset <序号|id>`
 - `/workspace` 不带参数 → 列工作区（`storages\workspace.json` 的 `tables.workspaces`，带未归档会话数），支持序号
 - 都没有参数时**既报当前值、也列可选项**；`-d` 的语义不变（带 = 改部署默认，不带 = 存偏好下次 /new 用）
+
+### 18.9 指令回复「发两遍」：插件被挂了两份（2026-10-28 03:15）
+
+现象：`/model`、`/preset`、`/preser` 的回复**每条都发两次**，桥日志 `http send ->` 也是两行
+（说明是插件发了两遍，不是 QQ 渲染两遍）。
+
+根因：装配有两处 insert 都挂了 `id: qq-adapter` 的同一份配置 ——
+包里的 `cordis.patch.yml`（`dsh.bundle.patch`）一份，profile 的 `cordis.patch.yml` 一份。
+**两处 insert = 两个实例**，各自轮询同一个桥、各自处理同一条消息 → 各自回一次 ✗
+
+修法：
+1. 包里的 `cordis.patch.yml` 清成 `[]`（只留注释说明），装配只由 profile 那份决定
+2. 插件里加兜底：`globalThis.__qqAdapterBridgeOwners` 记「桥 URL → 实例键」，
+   **同一个桥只允许一个实例轮询**（后来的接管，先来的只挂工具），改配置重复挂载也不会再双发
+
+### 18.10 `/session` 看的是「这个聊天现在绑的是什么」
+
+| 绑的是什么 | 列什么 |
+|---|---|
+| 预设（聊天偏好 `prefs.preset` / 目标 `p-xxx` / **绑定的会话正好在某个预设池里**） | 只列该预设池里的会话 |
+| 会话（chats.json 的 sessionId，或配置/映射指向 `s-xxx`） | 全部**未归档**会话 |
+
+列表第一行会写清楚：`当前绑定：预设 alive · 预设（alive，当前会话在这个池里）` 这种。
+归档判定 = `storages\workspace.json` 的 `global.archivedSessionIds`（session-archiver 是摘视图，不搬目录）。

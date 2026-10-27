@@ -67,6 +67,22 @@ export async function archivedIds() {
   return set
 }
 
+/** 预设池：预设名 → Set(会话 id)（preset-binder 的 presets.<名>.sessions + active） */
+export async function presetPools() {
+  const out = new Map()
+  try {
+    const raw = await readFile(join(homeDir(), 'storages', 'preset-binder.json'), 'utf8')
+    const json = JSON.parse(raw)
+    const presets = (json && json.presets) || {}
+    for (const [name, pool] of Object.entries(presets)) {
+      const ids = new Set(Object.keys((pool && pool.sessions) || {}))
+      if (pool && pool.active) ids.add(String(pool.active))
+      out.set(String(name), ids)
+    }
+  } catch { /* 没有就不管 */ }
+  return out
+}
+
 /** 工作区表：id → { title, path, sessionIds } */
 export async function listWorkspaces() {
   try {
