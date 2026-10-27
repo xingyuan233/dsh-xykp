@@ -16,10 +16,11 @@
 // 出任何错只记日志，绝不拖死宿主。
 import net from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
-import { closeSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'dsh-prosecutor'
@@ -32,7 +33,7 @@ const warn = (...a) => console.warn(PREFIX, ...a)
 export const DEFAULTS = {
   // prosecutor 的锁端口
   port: 39997,
-  // prosecutor.mjs 的位置，空 = <DSH_HOME>/../tools/prosecutor/prosecutor.mjs
+  // prosecutor.mjs 的位置，空 = 插件包内的 prosecutor.mjs
   scriptPath: '',
   // node 可执行文件，空 = 当前进程的 execPath
   nodePath: '',
@@ -45,21 +46,25 @@ export const DEFAULTS = {
   // ⭐ 2026-10-27 新加：
   // 每隔多少分钟检查 DSH 是否存活（0 = 不主动检查，只在收到 /check /notify 时看）
   checkIntervalMinutes: 0,
-  // ntfy 频道（默认空 = 用 tools/prosecutor/config.json 里的 topic）
+  // ntfy 频道（默认空 = 用包里 config.json 的 topic）
   ntfyTopic: '',
   // 机器标识（默认空）。指令后面跟标识时，必须跟这个一样才执行
   machineId: '',
   // DSH 的端口（检查存活用）
   dshPort: 3080,
-  // 哈希文件，空 = <scriptDir>/.prosecutor-hash
+  // 哈希文件，空 = <DSH_HOME>/prosecutor/.prosecutor-hash
   hashPath: '',
   dryRun: false,
 }
 
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
 
+// ⭐ 2026-10-27：prosecutor 主程序跟着插件包走（observer/dsh-prosecutor/prosecutor.mjs），
+// 不再依赖 <DSH_HOME>/../tools/prosecutor —— tools 里那份只当参考
+const 包目录 = fileURLToPath(new URL('../', import.meta.url))
+
 export function defaultScriptPath() {
-  return join(home(), '..', 'tools', 'prosecutor', 'prosecutor.mjs')
+  return join(包目录, 'prosecutor.mjs')
 }
 
 /** 探端口：有人在听 = 进程活着 */
@@ -123,6 +128,7 @@ export async function ensureRunning(cfg = {}, deps = {}) {
 /** 把 cordis 里的关键配置通过环境变量传给 prosecutor 进程（prosecutor 以它为准） */
 export function envFor(cfg = {}) {
   const env = { ...process.env }
+  env.DSH_HOME = process.env.DSH_HOME || home()
   if (cfg.machineId) env.DSH_PROSECUTOR_MACHINE_ID = String(cfg.machineId)
   if (cfg.ntfyTopic) env.DSH_PROSECUTOR_TOPIC = String(cfg.ntfyTopic)
   env.DSH_PROSECUTOR_CHECK_INTERVAL_MINUTES = String(Number(cfg.checkIntervalMinutes) || 0)
@@ -134,7 +140,14 @@ export function envFor(cfg = {}) {
 export function spawnDetached(opts) {
   const script = opts.scriptPath || defaultScriptPath()
   const node = opts.nodePath || process.execPath
-  const logPath = join(script, '..', 'prosecutor.out.log')
+  // 日志写到 <DSH_HOME>/prosecutor/，不往 node_modules 包里写
+  const logDir = join(home(), 'prosecutor')
+  try {
+    mkdirSync(logDir, { recursive: true })
+  } catch {
+    /* 无所谓 */
+  }
+  const logPath = join(logDir, 'prosecutor.out.log')
   let fd
   try {
     fd = openSync(logPath, 'a')
@@ -161,7 +174,7 @@ export function spawnDetached(opts) {
 
 // ---------- 哈希（脚本 + config.json + 关键配置）----------
 function hashPathOf(cfg, script) {
-  return cfg.hashPath || join(script, '..', '.prosecutor-hash')
+  return cfg.hashPath || join(home(), 'prosecutor', '.prosecutor-hash')
 }
 
 export function hashOf(cfg = {}, scriptPath = '') {
