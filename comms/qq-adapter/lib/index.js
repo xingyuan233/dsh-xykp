@@ -48,7 +48,9 @@ export const Config = Schema.object({
     .description('转发方式：steer=插队（这轮就能看到）/ followup=排队（下轮才看到）'),
   pollMs: Schema.number().default(1500).description('轮询间隔（毫秒）'),
   maxPerTick: Schema.number().default(10).description('一次最多转发几条'),
-  seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen.json）'),
+  instanceId: Schema.string().default('default').description('实例名：同一个宿主跑多个账号时用来隔开去重文件/内部状态'),
+  toolPrefix: Schema.string().default('').description('工具名前缀（同一个宿主跑两个 QQ 账号时，第二个实例用 qq2_ 之类，免得多实例抢同名工具）'),
+  seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen-<instanceId>.json）'),
   skipBacklog: Schema.boolean().default(true).description('启动时不补发桥里积压的旧消息'),
   notifyTopic: Schema.string().default('whale-qq-shell-channel').description('登录失效时把二维码推到哪个 ntfy 主题（空 = 不推）'),
   notifyEveryMinutes: Schema.number().default(3).description('两次推码之间至少隔几分钟'),
@@ -123,7 +125,9 @@ export async function apply(ctx, config = {}) {
   const bridge = createBridge(cfg.bridgeUrl, { timeoutMs: 4000 })
   // 在 apply（还活着）的时候就把 agents 抓住，定时器里不再碰 ctx
   const agentsSvc = ctx.agents
-  const seenFile = () => cfg.seenPath || join(home(), 'qq-adapter', 'seen.json')
+  const INST = String(cfg.instanceId || 'default')
+  const TP = (n) => String(cfg.toolPrefix || '') + n
+  const seenFile = () => cfg.seenPath || join(home(), 'qq-adapter', 'seen-' + INST + '.json')
 
   let seen = await readJson(seenFile(), { ids: [], cursor: 0 })
   if (!Array.isArray(seen.ids)) seen.ids = []
@@ -139,6 +143,7 @@ export async function apply(ctx, config = {}) {
   }
 
   /** 桥没在跑就把 QQ shell 拉起来（DSH 重启后 shell 会跟着死，这条兜住） */
+  let lastSpawnAt = 0
   async function ensureShell() {
     // 先看桥：活着就看登录态，挂了才去拉
     let st = null
@@ -155,6 +160,18 @@ export async function apply(ctx, config = {}) {
       return
     }
     if (cfg.autoStartShell === false) return
+    // 冷却：壳正在启动时 /status 还没起来，别每 15 秒又拉一个（两个实例会互相踢登录）
+    if (Date.now() - lastSpawnAt < 120000) return
+    // 同一套安装目录里只要有 QQ.exe 在跑，就绝不能再拉一个：
+    // QQ.exe 是单实例的，后来的那个会把先跑的顶掉（2026-10-27 半夜就这么把樱和鲸鱼娘各顶掉一次）
+    try {
+      const { execFileSync } = await import('node:child_process')
+      const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
+      const psCmd = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Select-Object -First 1 -ExpandProperty Id"
+      const alive = String(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { encoding: 'utf8', windowsHide: true }) || '').trim()
+      if (alive) { log('壳的 QQ 进程还在（pid=' + alive + '），不重复拉'); return }
+    } catch { /* 查不到就按原来的走 */ }
+    lastSpawnAt = Date.now()
     try {
       // 用 WMI 拉，进程挂在 WmiPrvSE 下面 —— 这样宿主重启（杀进程树）不会把 QQ shell 一起带走
       const { execFile } = await import('node:child_process')
@@ -278,7 +295,7 @@ export async function apply(ctx, config = {}) {
 
   try {
     const cleanup = () => { clearInterval(timer); clearInterval(shellTimer) }
-    g.__qqAdapterCleanup = cleanup
+    g[cleanupKey] = cleanup
     ctx.on('dispose', cleanup)
   } catch { /* 收摊失败无所谓 */ }
 
@@ -292,7 +309,7 @@ export async function apply(ctx, config = {}) {
   try {
   if (ctx.tools && typeof ctx.tools.register === 'function') {
     ctx.tools.register(defineTool({
-      name: 'qq_send',
+      name: TP('qq_send'),
       description: '用自己 QQ 号发一条消息。chat 写成 u-<uid> 或 g-<群号>（和自己号发的消息用同一个标识）。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
@@ -316,7 +333,7 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
-      name: 'qq_history',
+      name: TP('qq_history'),
       description: '翻聊天记录（私聊和群聊都行）。chat 写成 u-<uid> 或 g-<群号>，count 最多 100；seq 可选，从某条消息往前翻。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
@@ -338,7 +355,7 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
-      name: 'qq_send_image',
+      name: TP('qq_send_image'),
       description: '用自己 QQ 号发一张本地图片。chat 写成 u-<uid> 或 g-<群号>，path 是本地图片绝对路径。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
@@ -359,7 +376,7 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
-      name: 'qq_send_file',
+      name: TP('qq_send_file'),
       description: '用自己 QQ 号发一个本地文件。chat 写成 u-<uid> 或 g-<群号>，path 是本地文件绝对路径。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
@@ -380,7 +397,7 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
-      name: 'qq_send_voice',
+      name: TP('qq_send_voice'),
       description: '用自己 QQ 号发一条语音。chat 写成 u-<uid> 或 g-<群号>；path 可以是任意音频（wav/mp3/amr/silk），不是 silk 会先本地编码；duration 不填就按音频长度算。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
@@ -409,7 +426,7 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
-      name: 'qq_reply',
+      name: TP('qq_reply'),
       description: '用自己 QQ 号引用某条消息回复。chat 写成 u-<uid> 或 g-<群号>；msgId 是那条消息的 msgId（可以不填，默认引用对方最近一条）；text 是要说的话。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
@@ -434,7 +451,7 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
-      name: 'qq_status',
+      name: TP('qq_status'),
       description: '看 QQ 桥的状态：登录没登录、session/msgService 好没好、收件箱里排了几条。',
       parameters: {},
       output: {

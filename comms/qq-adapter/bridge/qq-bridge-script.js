@@ -7,10 +7,13 @@
   var path = p.mainModule.require('path')
   var os = p.mainModule.require('os')
   var WS = 'D:\\AI\\DeepseekHarness\\workspaces\\alive-workspace'
-  var LOG = WS + '\\qq-bridge.log'
+  // 多实例：loader 可以在 eval 之前塞 global.__QQ_BOOT = { port, tag, log, cmd, res, uin }
+  // 这样同一个脚本能跑第二个账号（不同端口、不同日志），互不打架。
+  var BOOT = (typeof global !== 'undefined' && global.__QQ_BOOT) || {}
+  var LOG = BOOT.log || (WS + '\\qq-bridge.log')
   var SELF = WS + '\\qq-bridge-script.js'
-  var CMD = WS + '\\qq-cmd.json'
-  var RES = WS + '\\qq-cmd-result.json'
+  var CMD = BOOT.cmd || (WS + '\\qq-cmd.json')
+  var RES = BOOT.res || (WS + '\\qq-cmd-result.json')
   var TAG = '[' + p.pid + ']'
   function w(s) { try { fs.appendFileSync(LOG, TAG + ' ' + s + '\n') } catch (e) { } }
   function J(o) { try { var s = JSON.stringify(o); return s === undefined ? String(o) : s } catch (e) { return 'ERR ' + e } }
@@ -36,18 +39,18 @@
 
   // ---------- 配置 ----------
   var CFG = {}
-  try { CFG = JSON.parse(fs.readFileSync(WS + '\\qq-config.json', 'utf8') || '{}') } catch (e) { }
+  try { CFG = JSON.parse(fs.readFileSync(BOOT.config || (WS + '\\qq-config.json'), 'utf8') || '{}') } catch (e) { }
 
   // ---------- 常量 ----------
   var WRAPPER = CFG.wrapperPath || 'D:\\Program-Files\\QQ-dsh\\versions\\9.9.36-53644\\resources\\app\\wrapper.node'
   var VER = '9.9.36-53644'
   var APPID = 537391628
   var QUA = 'V1_WIN_NQ_9.9.36_53644_GW_B'
-  var DATA_ROOT = 'D:\\下载\\缓存\\qq聊天消息\\Tencent Files'
-  var OWN = WS + '\\qq-nt'
+  var DATA_ROOT = BOOT.dataRoot || 'D:\\下载\\缓存\\qq聊天消息\\Tencent Files'
+  var OWN = BOOT.own || (WS + '\\qq-nt')
   var GLOBAL_PATH = OWN + '\\global'
-  var PORT = 39272
-  var QUICK_UIN = '3793339506'
+  var PORT = Number(BOOT.port) || 39272
+  var QUICK_UIN = String(BOOT.uin || '3793339506')
   var LISTENER_VER = 'v17'
   var HTTP_VER = 'v11'
   var CMD_VER = 'v10'
@@ -252,7 +255,7 @@
             try {
               var cp = p.mainModule.require('child_process')
               fs.writeFileSync(WS + '\\qq-qr-url.txt', String(url || ''))
-              cp.execFile('python', [WS + '\\make-qr.py', String(url || ''), WS + '\\qq-qr-fresh.png'], function (err) {
+              cp.execFile('python', [WS + '\\make-qr.py', String(url || ''), BOOT.qrFile || (WS + '\\qq-qr-fresh.png')], function (err) {
                 if (err) w('[qq] render qr err ' + err.message)
                 else w('[qq] QR rendered (crisp) ' + (Date.now() - S.qrAt) + 'ms')
               })
@@ -1135,4 +1138,4 @@
 
 // touch 20:52:42
 
-// touch 21:13:07
+// touch 21:13:07// touch 23:42:46
