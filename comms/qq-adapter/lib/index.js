@@ -731,14 +731,50 @@ export async function apply(ctx, config = {}) {
     return set
   }
   自己号集合()
+  // 自己的 QQ 号（uin）也算「自己」：群里 @ 人时元素里给的是 atUid / atNtUid / atTinyId
+  try {
+    bridge.status().then((s) => {
+      const uin = String((s && s.uin) || '')
+      if (uin) 自己号集合().add(uin)
+    }).catch(() => {})
+  } catch { /* 桥还没起就算了 */ }
+
+  function 是自己Uid(v) {
+    const s = String(v || '').trim()
+    if (!s) return false
+    const set = 自己号集合()
+    return set.has(s) || set.has(s.replace(/^u-/, ''))
+  }
 
   function 是自己号(evt) {
     if (!evt) return false
     if (evt.isSelf === true) return true // 桥直接标了（自己发出去又被内核回调回来的回执）
-    const uid = String(evt.senderUid || '').trim()
-    if (!uid) return false
-    const set = 自己号集合()
-    return set.has(uid) || set.has(uid.replace(/^u-/, ''))
+    return 是自己Uid(evt.senderUid)
+  }
+
+  // ── 指令判定（主人 2026-10-28 定的规矩）──
+  // 私聊：以 `/` 开头就是指令
+  // 群聊：没 @ 的时候跟私聊一样；
+  //       开头一连串 @ 里**只要有自己**，就把 @ 后面那段当指令；
+  //       开头 @ 的是别人、后面却跟着一条指令 → **静默忽略**（不执行、不转发、不回话）
+  function 取指令(evt) {
+    const 文本 = String((evt && evt.text) || '')
+    if (Number(evt && evt.chatType) !== 2) return { cmd: parseCommand(文本), 提到自己: false }
+    const els = Array.isArray(evt.elements) ? evt.elements : []
+    let 开头有at = false
+    let 提到自己 = false
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i]
+      if (!el || !el.at) break // 只认「开头连着的那几个 @」，中间夹了别的东西就不算
+      开头有at = true
+      const at = el.at || {}
+      if (是自己Uid(at.atUid) || 是自己Uid(at.atNtUid) || 是自己Uid(at.atTinyId)) 提到自己 = true
+    }
+    if (!开头有at) return { cmd: parseCommand(文本), 提到自己: false }
+    // ⚠ @ 是单独的 element，不在 evt.text 里 —— 所以「@ 完之后的正文」就是 evt.text ✓
+    if (!文本.trim().startsWith('/')) return { cmd: null, 提到自己 } // @ 了人但说的不是指令 → 照常转发
+    if (!提到自己) return { cmd: null, 提到自己: false, silent: true }
+    return { cmd: parseCommand(文本), 提到自己: true }
   }
 
   async function tick(reason) {
@@ -784,15 +820,22 @@ export async function apply(ctx, config = {}) {
         } catch { /* 记不住就算了 */ }
         // 指令：以 / 开头的行**一律**由插件自己处理，绝不透传给会话。
         //   认识的执行、不认识的回「未知指令」——反正不进会话（主人 2026-10-28 的原话）
+        //   群聊里还要求「开头的 @ 里有自己」（见 取指令()）：@ 的是别人 → 静默忽略
         // ⚠ 这一步必须排在「路由」和「自己号过滤」前面：
         //   · 排在路由后面时，聊天没配目标 / 目标解析不到会话 → 指令被悄悄跳过不执行 ✗
         //   · 排在自己号后面时，从另一个号（樱 ↔ 鲸鱼娘）发来的指令会被当成「自己人」丢掉 ✗
         if (cfg.commandsEnabled !== false) {
-          const parsed = parseCommand(evt.text)
-          if (parsed) {
+          const 意 = 取指令(evt)
+          if (意.silent) {
             seenSet.add(msgId)
             handled++
-            try { await runCommand(evt, key, parsed) } catch (err) { warn('指令 ' + parsed.name + ' 执行失败：', err?.message || err) }
+            log(`群里 @ 的是别人，指令静默忽略（${key}）：${String(evt.text || '').slice(0, 40)}`)
+            continue
+          }
+          if (意.cmd) {
+            seenSet.add(msgId)
+            handled++
+            try { await runCommand(evt, key, 意.cmd) } catch (err) { warn('指令 ' + 意.cmd.name + ' 执行失败：', err?.message || err) }
             continue
           }
         }
