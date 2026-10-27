@@ -1005,6 +1005,16 @@
             else reply(200, { ok: true, result: r7 })
           } catch (e) { reply(500, { ok: false, err: e.message }) }
           return
+        }        if (url.indexOf('/uid') === 0) {
+          // QQ号(uin) → uid：设置页里可以直接写 u-3041632789，插件拿这个转
+          var qu = qs()
+          var uin0 = String(qu.uin || '').replace(/\D/g, '')
+          if (!uin0) return reply(400, { ok: false, err: '给了个空 uin' })
+          try {
+            var conv = S.session.getUixConvertService()
+            var uid0 = conv.getUid(uin0)
+            return reply(200, { ok: !!uid0, uin: uin0, uid: uid0 || '' })
+          } catch (e) { return reply(500, { ok: false, err: e.message }) }
         }        if (url.indexOf('/groupmembers') === 0) {
           // 群成员列表（@ 人时查 uid 用）
           var qg = qs()

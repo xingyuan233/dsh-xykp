@@ -219,6 +219,19 @@ export async function apply(ctx, config = {}) {
       log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）HTTP ' + res.status + ' · uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
     } catch (err) { warn('推二维码到 ntfy 失败：', err?.message || err) }
   }
+  // ── 允许配置里直接写 QQ 号（u-3041632789），这里统一换成内核用的 uid ──
+  const uinCache = new Map()
+  async function normChatKey(key) {
+    const s = String(key || '').trim()
+    if (!/^u-\d{5,}$/.test(s)) return s
+    if (uinCache.has(s)) return uinCache.get(s)
+    try {
+      const r = await bridge.uid(s.slice(2))
+      if (r && r.ok && r.uid) { const v = 'u-' + r.uid; uinCache.set(s, v); return v }
+    } catch { /* 转不了就按原样，最多匹配不上 */ }
+    return s
+  }
+
   // ── 流量控制：同一个聊天太频繁就暂存，攒够「静默窗口」再合并成一条发 ──
   // 主人定的语义（2026-10-28）：只用一个数 `coalesceSeconds`。
   //   · 同一个聊天里的消息，谁先来就先攒着，每次攒到新的就重新计时
@@ -276,6 +289,13 @@ export async function apply(ctx, config = {}) {
     if (!cfg.enabled || running) return
     // 运行时覆盖：设置页写到 home\qq-adapter\ui-config.json 的分流配置，每轮读一次（很便宜）
     try { Object.assign(cfg, pickRouting((await readOverride())[INST] || {})) } catch { /* 读不到就用原配置 */ }
+    // 名单/映射/白名单里允许写 QQ 号，统一换成 uid 再比（幂等，转换结果会缓存）
+    try {
+      cfg.blocked = await Promise.all((cfg.blocked || []).map(normChatKey))
+      cfg.allowed = await Promise.all((cfg.allowed || []).map(normChatKey))
+      cfg.fastUids = await Promise.all((cfg.fastUids || []).map(normChatKey))
+      cfg.mappings = await Promise.all((cfg.mappings || []).map(async (m) => ({ ...m, chat: await normChatKey(m.chat) })))
+    } catch { /* 转不了就按原样 */ }
     running = true
     try {
       const r = await bridge.events(cursor)

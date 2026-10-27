@@ -33,6 +33,8 @@ export function createBridge(baseUrl, opts = {}) {
     base,
     status: () => req('/status'),
     events: (since = 0) => req('/events?since=' + (Number(since) || 0)),
+    // QQ号(uin) → uid：设置页里可以直接写 u-3041632789
+    uid: (uin) => req('/uid?uin=' + encodeURIComponent(String(uin || ''))),
     async history(chatType, peerUid, count = 20, seq = '') {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), count: String(Number(count) || 20) })
       if (seq) q.set('seq', String(seq))
