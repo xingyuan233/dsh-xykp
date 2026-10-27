@@ -11,10 +11,12 @@
 export function createBridge(baseUrl, opts = {}) {
   const base = String(baseUrl || 'http://127.0.0.1:39272').replace(/\/+$/, '')
   const timeoutMs = Math.max(500, Number(opts.timeoutMs) || 5000)
+  // 发送类操作要等 native 把消息真正送出去，4~5 秒不够（超了就是 This operation was aborted）
+  const sendTimeoutMs = Math.max(timeoutMs, Number(opts.sendTimeoutMs) || 25000)
 
-  async function req(path, init) {
+  async function req(path, init, tmo) {
     const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), timeoutMs)
+    const timer = setTimeout(() => ctl.abort(), Math.max(500, Number(tmo) || timeoutMs))
     try {
       const res = await fetch(base + path, { ...init, signal: ctl.signal })
       const text = await res.text()
@@ -38,7 +40,7 @@ export function createBridge(baseUrl, opts = {}) {
     },
     async sendImage(chatType, peerUid, filePath) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
-      return req('/sendpic?' + q.toString())
+      return req('/sendpic?' + q.toString(), undefined, sendTimeoutMs)
     },
     async send(chatType, peerUid, text, at = '', atNick = '') {
       const body = JSON.stringify({ chatType: Number(chatType) || 1, peerUid: String(peerUid || ''), text: String(text ?? ''), at: String(at || ''), atNick: String(atNick || '') })
@@ -46,17 +48,17 @@ export function createBridge(baseUrl, opts = {}) {
         method: 'POST',
         headers: { 'content-type': 'application/json; charset=utf-8' },
         body,
-      })
+      }, sendTimeoutMs)
       return r
     },
     async sendFile(chatType, peerUid, filePath) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
-      return req('/sendfile?' + q.toString())
+      return req('/sendfile?' + q.toString(), undefined, sendTimeoutMs)
     },
     async sendVoice(chatType, peerUid, filePath, duration = 0) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
       if (duration) q.set('duration', String(Number(duration) || 0))
-      return req('/sendptt?' + q.toString())
+      return req('/sendptt?' + q.toString(), undefined, sendTimeoutMs)
     },
     async reply(chatType, peerUid, msgId, text, meta = {}) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), msgId: String(msgId || ''), text: String(text ?? '') })
@@ -64,7 +66,7 @@ export function createBridge(baseUrl, opts = {}) {
       if (meta?.time) q.set('time', String(meta.time))
       if (meta?.senderUid) q.set('senderUid', String(meta.senderUid))
       if (meta?.senderUin) q.set('senderUin', String(meta.senderUin))
-      return req('/reply?' + q.toString())
+      return req('/reply?' + q.toString(), undefined, sendTimeoutMs)
     },
   }
 }
