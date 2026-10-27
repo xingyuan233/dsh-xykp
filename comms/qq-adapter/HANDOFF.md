@@ -480,8 +480,11 @@ global.__QQ_BOOT = { port, log, cmd, res, config, qrFile, own, uin }
 - 桥挂了：`qq-adapter` 的 `ensureShell` 每条实例各管各的（配好 `shellBootPath`/`shellDir`）
 - 登录失效：桥自己会推二维码（`notifyTopic` 那个 ntfy 主题）；鲸鱼娘实例现在还是 `autoStartShell: false`
   —— 因为它的壳是我们手动起的，需要自动重启时再打开（打开前先确认单实例守卫在位）
-- **NapCat 的哨兵已经停了**（`tools\sentinel\napcat-sentinel.mjs`），要保活鲸鱼娘的壳得另写一个，
-  别再把 NapCat 拉回来
+- **NapCat 的哨兵已经退役**：脚本搬到 `tools\_retired\napcat-sentinel\`（带 README），
+  开机启动里的 `NapCatSentinel.vbs`（→ `start-sentinel.cmd`）和 `NapCat-QQBot.lnk`
+  （→ `start-napcat.cmd`）也摘掉了，备份在 `patches\backups\startup-retired-2026-10-27\`。
+  NapCat 本体还留在 `tools\NapCat` 当参考，**但不会自启动**——它一登录就会把我们的壳顶下线。
+  要给鲸鱼娘的壳做保活，得另写一个哨兵（探 39273，掉了用 WMI 拉 `QQ-shell2`）。
 
 ### 12.4 现在的主链路
 
