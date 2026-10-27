@@ -304,6 +304,28 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
+      name: 'qq_history',
+      description: '翻聊天记录（私聊和群聊都行）。chat 写成 u-<uid> 或 g-<群号>，count 最多 100；seq 可选，从某条消息往前翻。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+        count: { type: 'number', description: '拉多少条（默认 20，最多 100）' },
+        seq: { type: 'string', description: '可选：从这条消息序号往前翻' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.history(isGroup ? 2 : 1, peerUid, args.count ?? 20, args.seq ?? '')
+        return { ok: r?.ok === true, count: r?.count ?? 0, messages: r?.messages ?? [], err: r?.err ?? null }
+      },
+    }))
+
+    ctx.tools.register(defineTool({
       name: 'qq_send_image',
       description: '用自己 QQ 号发一张本地图片。chat 写成 u-<uid> 或 g-<群号>，path 是本地图片绝对路径。',
       parameters: {

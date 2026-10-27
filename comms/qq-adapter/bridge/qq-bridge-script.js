@@ -677,7 +677,35 @@
           })
           return
         }
-        if (url.indexOf('/sendpic') === 0) {
+        if (url.indexOf('/history') === 0) {
+          var qh = qs()
+          var peer = { chatType: parseInt(qh.chatType || '1', 10), peerUid: qh.peerUid, guildId: '' }
+          var cnt = Math.min(100, Math.max(1, parseInt(qh.count || '20', 10)))
+          try {
+            var s6 = msgService()
+            var pr
+            if (qh.seq) {
+              pr = s6.getMsgsBySeqAndCount(peer, String(qh.seq), cnt, true, true)
+            } else if (qh.api === 'latest') {
+              pr = s6.getLatestDbMsgs(peer, cnt)
+            } else {
+              pr = s6.getAioFirstViewLatestMsgs(peer, cnt)
+            }
+            pr.then(function (x) {
+              var list = (x && (x.msgList || x.msg_list)) || []
+              var brief = list.map(function (m) {
+                return {
+                  msgId: m.msgId, msgSeq: m.msgSeq, time: Number(m.msgTime) * 1000,
+                  senderUid: m.senderUid, senderName: m.sendMemberName || m.sendNickName || '',
+                  text: (m.elements || []).filter(function (e) { return e.textElement }).map(function (e) { return e.textElement.content }).join(''),
+                  types: (m.elements || []).map(function (e) { return e.elementType })
+                }
+              })
+              reply(200, { ok: true, count: brief.length, messages: brief })
+            }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }        if (url.indexOf('/sendpic') === 0) {
           var qp = qs()
           try {
             var r5 = sendPictureInternal(qp.peerUid || qp.to, parseInt(qp.chatType || '1', 10), qp.path)

@@ -54,3 +54,25 @@ QQ 自研适配层（不用 NapCat、不用 OneBot）：在 QQ 客户端主进�
 ```powershell
 node test/router-test.mjs     # 15 条分流用例
 ```
+## 图片 / 历史（2026-10-27 23:0x）
+
+| 能力 | 桥接口 | 插件工具 |
+|---|---|---|
+| 发图片 | `GET /sendpic?chatType=&peerUid=&path=` | `qq_send_image { chat, path }` |
+| 收图片 | 桥收到图会自动落盘到 `workspace\qq-media\<msgId>_<elementId>.png`，事件里带 `pic.localPath` | —（消息里直接带路径） |
+| 翻历史 | `GET /history?chatType=&peerUid=&count=&seq=` | `qq_history { chat, count?, seq? }` |
+
+历史是**私聊和群聊都能查**的（之前 NapCat 那条只能查群）：
+
+- 私聊：`getAioFirstViewLatestMsgs(peer, count)`（带 senderName，很好用）
+- 群聊：同一个接口也行；`seq` 给定就用 `getMsgsBySeqAndCount(peer, seq, count, true, true)` 往前翻
+
+发图片的实现（不抄 NapCat 的 highway）：
+把文件按 md5 塞进 `ms.getRichMediaFilePathForMobileQQSend({...needCreate:true})` 给的路径，
+再发一个 `picElement{ sourcePath, md5HexStr, fileSize, picWidth, picHeight }`，客户端自己上传
+（尺寸从 PNG/JPEG 头直接读，读不到给 0 也能发）。
+
+## 转发方式：steer / followup
+
+`deliverMode` 配置项：`steer`（默认，插队，正在跑的这一轮也能看到）或 `followup`（排队，等这轮结束）。
+宿主 agent 有 `agent.steer()`，NapCat 那条通道默认也是 steer，所以这里跟它对齐。

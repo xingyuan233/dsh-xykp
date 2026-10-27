@@ -31,6 +31,11 @@ export function createBridge(baseUrl, opts = {}) {
     base,
     status: () => req('/status'),
     events: (since = 0) => req('/events?since=' + (Number(since) || 0)),
+    async history(chatType, peerUid, count = 20, seq = '') {
+      const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), count: String(Number(count) || 20) })
+      if (seq) q.set('seq', String(seq))
+      return req('/history?' + q.toString())
+    },
     async sendImage(chatType, peerUid, filePath) {
       const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
       return req('/sendpic?' + q.toString())
