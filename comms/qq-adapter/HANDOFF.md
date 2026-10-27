@@ -545,3 +545,37 @@ client graph。排除过两件事：
 或者更省事：**以后并进 `dsh-xykp/client.js`**（主人也是这么想的：UI 都进公共 client），
 那边本来就是 pnpm 装的、bundle 路由是通的，只要在那个 bundle 里加一页，
 取数直接 `fetch('/adapter-config')` 或 `ctx.configForms` 都行。
+
+## 十四、流量控制（2026-10-28 00:28）
+
+主人要的语义：**同一个聊天两条消息之间至少隔 N 秒；中间来的先攒着，静默几秒后合并成一条发出去；
+白名单里的聊天不受限（来一条转一条）**。
+
+三个开关（Config 里有默认值，设置页也能改，改完下一轮生效）：
+
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `minIntervalSeconds` | `0`（关） | 同一个 `u-<uid>` / `g-<群号>` 两条消息最短间隔 |
+| `flushSeconds` | `4` | 攒着的那几条**静默**多少秒后一次性发出 |
+| `fastUids` | `[]` | 不受限的聊天（`u-…` / `g-…`），这些走「来一条转一条」 |
+
+实现（`lib/index.js`）：
+
+- `trafficLimited(key)`：`minIntervalSeconds > 0` 且 key 不在 `fastUids` 里才限流
+- `queueBatch(key, evt, text)`：攒进 `pendingBatch`，重设定时器，
+  等待时长 = `max(flushSeconds, minIntervalSeconds - 距上次投递的时间, 0.5s)`
+  —— 既保证「静默 N 秒」，也保证「离上一条够久了」
+- `flushBatch(key)`：合并成一条，多条时前缀 `（N 条连着来的，合并成一条）`，
+  每条带 `[发送者]`；只投递一次，投递后记 `lastDeliveredAt`
+- 插件被重新 apply 时，`cleanup()` 会把 pending 的定时器全清掉
+
+**实测**（00:27）：设 5s/3s，连发三条给樱 → 会话里只收到一条：
+
+```
+（3 条连着来的，合并成一条）
+[u_wCwUuJmmlLb7g6MDEKm5Iw] [QQ私聊 …] 00:27 … 合并测试 1/3：第一条
+… 2/3 … 3/3
+```
+
+之后两个实例都设成 **6s / 3s**（见 `home\qq-adapter\ui-config.json`）。
+不想限流就把 `minIntervalSeconds` 改回 0；某个号想直通就加进 `fastUids`。
