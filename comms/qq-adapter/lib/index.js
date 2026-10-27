@@ -18,6 +18,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { chatKeyOf, resolveRoute, parseTargetRef, formatIncoming, DEFAULTS as ROUTER_DEFAULTS } from './router.js'
 import { createBridge } from './bridge.js'
+import { toSilk, cleanupSilk } from './silk.js'
 
 export const name = 'qq-adapter'
 
@@ -56,6 +57,8 @@ export const Config = Schema.object({
   autoStartShell: Schema.boolean().default(true).description('桥没在跑时自动拉起 QQ shell'),
   shellBootPath: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell\\\\NapCatWinBootMain.exe').description('shell 启动器路径'),
   shellDir: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell').description('shell 工作目录'),
+  ffmpegPath: Schema.string().default('ffmpeg').description('发语音时转 PCM 用的 ffmpeg（PATH 里没有就给绝对路径）'),
+  silkEncoderPath: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\tools\\\\silk\\\\silk_encode.exe').description('silk 编码器路径（自编的 silk_encode.exe）'),
 })
 
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -378,11 +381,11 @@ export async function apply(ctx, config = {}) {
 
     ctx.tools.register(defineTool({
       name: 'qq_send_voice',
-      description: '用自己 QQ 号发一条语音。chat 写成 u-<uid> 或 g-<群号>，path 是 silk 语音文件（.amr 那种），duration 是秒数。',
+      description: '用自己 QQ 号发一条语音。chat 写成 u-<uid> 或 g-<群号>；path 可以是任意音频（wav/mp3/amr/silk），不是 silk 会先本地编码；duration 不填就按音频长度算。',
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
-        path: { type: 'string', description: 'silk 语音文件绝对路径', required: true },
-        duration: { type: 'number', description: '时长（秒）' },
+        path: { type: 'string', description: '音频文件绝对路径（wav/mp3/amr/silk 都行）', required: true },
+        duration: { type: 'number', description: '可选：时长（秒），不填自动算' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -393,8 +396,15 @@ export async function apply(ctx, config = {}) {
         const isGroup = key.startsWith('g-') || key.startsWith('G-')
         const peerUid = key.replace(/^[ugUG][-_]/, '')
         if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
-        const r = await bridge.sendVoice(isGroup ? 2 : 1, peerUid, String(args.path || ''), args.duration ?? 0)
-        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+        const src = String(args.path || '')
+        const silk = await toSilk(src, { ffmpegPath: cfg.ffmpegPath, silkEncoderPath: cfg.silkEncoderPath })
+        const duration = Number(args.duration) || silk.duration || 0
+        const r = await bridge.sendVoice(isGroup ? 2 : 1, peerUid, silk.silkPath, duration)
+        await cleanupSilk(silk)
+        return {
+          ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key,
+          converted: silk.converted, duration, silkPath: silk.silkPath,
+        }
       },
     }))
 

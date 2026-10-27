@@ -364,6 +364,26 @@ sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
   但都要 node-gyp + MSVC 编译，没试）。
 - 现在的分工：**对端用 silk-wasm 编好 → 丢 `workspaces\...\silk-drop\` → 这边 `qq_send_voice` 绝对路径发**。
   想彻底自主，下一步是给桥加「wav + 外部编码命令（`silkEncoderCmd`）」这条路，谁编都行，桥只负责送。
+- **已经自主了（2026-10-27 23:25）**：见 11.7。
+
+### 11.7 本地 silk 编码：自己编了个编码器，不再求人
+
+- 源码 <https://github.com/kn007/silk-v3-decoder>（Skype SILK SDK，MIT），克隆在 `tools\silk-v3\`
+- **用 MinGW gcc 现编**（不下载别人的 exe、不碰 wasm）：
+  ```powershell
+  cd tools\silk-v3\silk
+  $srcs = (Get-ChildItem src -Filter '*.c' | % { "src/$($_.Name)" }) -join ' '
+  & 'D:\Program-Files\CodeBlocks\MinGW\bin\gcc.exe' -O2 -w -Iinterface -Isrc -o silk_encode.exe test/Encoder.c $srcs
+  ```
+  产物 → `tools\silk\silk_encode.exe`（287KB），说明写在 `tools\silk\README.md`
+- 编码链路（编码器吃**裸 PCM**）：
+  `ffmpeg -i in.<any> -f s16le -ac 1 -ar 16000 -acodec pcm_s16le in.pcm`
+  → `silk_encode.exe in.pcm out.silk -Fs_API 16000 -tencent`（**必须 `-tencent`**，文件头要 `#!SILK_V3`）
+- 插件侧：`lib/silk.js` 的 `toSilk(path, {ffmpegPath, silkEncoderPath})` + `cleanupSilk(res)`；
+  `qq_send_voice` 现在**直接吃 wav/mp3/amr/silk**，不是 silk 就先本地转，duration 自动按 PCM 长度算。
+  配置项：`ffmpegPath`（默认 `ffmpeg`，PATH 里有）、`silkEncoderPath`（默认 `tools\silk\silk_encode.exe`）
+- **实测**：SAPI 合成「你好，我是樱，这是本地编码的语音测试」→ 12440 字节 silk → 发出 →
+  服务器转写回来「你好，我是英，这是本地编码的语音测试。」（英＝樱，ASR 老毛病）—— 完全自立。
 
 ### 11.4 顺手修掉的炸弹：旧监听器被僵尸定时器反复注册
 
