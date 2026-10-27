@@ -120,7 +120,7 @@ function findAgent(agents, sessionId) {
   return null
 }
 
-async function deliver(agentsSvc, sessionId, text, mode = 'steer') {
+async function deliver(agentsSvc, sessionId, text, mode = 'steer', ctx = null) {
   let agent = findAgent(agentsSvc, sessionId)
   if (!agent) {
     // 宿主重启后，`/new` 建的那些会话没有活着的 agent —— 按 id resume 回来再投
@@ -128,6 +128,18 @@ async function deliver(agentsSvc, sessionId, text, mode = 'steer') {
     try {
       const h = await agentsSvc.resume({ resumeSessionId: sessionId })
       agent = (h && h.agent) || findAgent(agentsSvc, sessionId)
+      // ⚠ resume 出来的 agent **没有挂预设** → 消息进去了但这一轮根本跑不起来
+      //   （实测：qq-20261028-ry86 的会话文件一直停在创建那一刻，不涨）
+      try {
+        const presets = ctx && typeof ctx.get === 'function' ? ctx.get('agentPresets') : null
+        const header = agent && agent.session && agent.session.header
+        const want = String((header && (header.agentPreset || header.preset)) || '')
+        const has = presets && typeof presets.composedPreset === 'function' ? presets.composedPreset(agent.ctx) : ''
+        if (presets && want && !has && typeof presets.mount === 'function') {
+          await presets.mount(agent.ctx, want)
+          log('resume 后补挂预设：' + want + '（' + sessionId + '）')
+        }
+      } catch (err) { warn('resume 后补挂预设失败：', err?.message || err) }
     } catch (err) {
       warn('resume ' + sessionId + ' 失败：', err?.message || err)
     }
@@ -137,6 +149,7 @@ async function deliver(agentsSvc, sessionId, text, mode = 'steer') {
     content: [{ type: 'text', text }],
     source: { kind: SOURCE_KIND },
   })
+  // 空闲的 agent 用 steer 也能唤醒（send 的 wakeup=true），但 running 的时候用 steer 才不打断
   if (mode === 'steer' && typeof agent.steer === 'function') {
     await agent.steer(message)
     return { delivered: true, via: 'steer' }
@@ -366,6 +379,13 @@ export async function apply(ctx, config = {}) {
         继承预设 = String(h.agentPreset || h.preset || '')
         继承cwd = String(h.cwd || '')
       }
+      // header 里不一定有 agentPreset（`/new` 建的就是空的）——活的 agent 直接问注册表最准
+      if (!继承预设 && ag) {
+        try {
+          const presets = ctx.get('agentPresets')
+          if (presets && typeof presets.composedPreset === 'function') 继承预设 = String(presets.composedPreset(ag.ctx) || '')
+        } catch { /* 问不到就算了 */ }
+      }
     } catch { /* 继承不到就用默认 */ }
     const preset = prefs.preset || presetOfTarget(route.target) || 继承预设
     const cwd = prefs.workspace || 继承cwd || cfg.workspaceRoot
@@ -552,7 +572,7 @@ export async function apply(ctx, config = {}) {
       if (!agent) { await replyTo(key, '这个聊天没有活着的会话，没法压缩'); return }
       const before = new Set((await listSessions()).map((s) => s.id))
       const say = '（系统指令）请调用 memory_movctx 工具：把我和你这段对话压成交接摘要、开一个新对话接着聊，extra 不用填。做完回我一句「已交接」。'
-      try { await deliver(agentsSvc, old, say, cfg.deliverMode) } catch (err) { await replyTo(key, '叫不动它：' + (err?.message || err)); return }
+      try { await deliver(agentsSvc, old, say, cfg.deliverMode, ctx) } catch (err) { await replyTo(key, '叫不动它：' + (err?.message || err)); return }
       await replyTo(key, '已让它自己压缩并开新对话（memory_movctx），我盯着新会话切绑定…')
       // 盯 60 秒，看有没有新会话冒出来，有就把这个聊天绑过去
       let hits = 0
@@ -944,7 +964,7 @@ export async function apply(ctx, config = {}) {
       ? parts[0].text
       : `（${parts.length} 条连着来的，合并成一条）\n` + parts.map((p) => (p.sender ? `[${p.sender}] ` : '') + p.text).join('\n')
     try {
-      await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
+      await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode, ctx)
       待回发.set(target.sessionId, { key, at: Date.now() })
       lastDeliveredAt.set(key, Date.now())
       log(`转发${parts.length > 1 ? `(${parts.length} 条合并)` : ''} ${key} → ${target.sessionId}`)
@@ -1175,7 +1195,7 @@ export async function apply(ctx, config = {}) {
           continue
         }
         try {
-          await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
+          await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode, ctx)
           待回发.set(target.sessionId, { key, at: Date.now() })
           seenSet.add(msgId)
           handled++
@@ -1445,5 +1465,6 @@ export async function apply(ctx, config = {}) {
 }
 
 export const _internal = { resolveTarget, deliver, SOURCE_KIND }
+
 
 

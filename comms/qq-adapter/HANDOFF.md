@@ -987,3 +987,20 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
    这一轮已经用 `qq_send`/`qq_reply` 发过一模一样的文本（`近发文本` 比对 60 秒窗口）、文本为空
 
 所以现在群里说话 = 真的会被回话；要安静就回 `[[SILENT]]`。
+
+### 18.16 resume 出来的 agent「没挂预设」→ 消息进去了却不跑（2026-10-28 03:57）
+
+现象：`/new` 建的 `qq-20261028-ry86`，投递日志写着「转发 → qq-20261028-ry86」，
+但会话文件一直停在创建那一刻（2806 字节、时间不动），没有任何 turn 跑起来，也就没有回复可回发。
+
+原因：`agentsSvc.resume({ resumeSessionId })` 恢复出来的 agent **没有挂 preset**，
+这一轮没有指令/工具/模型配置，== 消息躺在 inbox 里不动。
+
+修法（`deliver()` 里 resume 之后）：
+- 读 `agent.session.header.agentPreset`（或 `.preset`），
+- 用 `agentPresets.composedPreset(agent.ctx)` 看现在有没有挂上，
+- 没挂就 `agentPresets.mount(agent.ctx, presetId)` 补上（日志：`resume 后补挂预设：alive（session-…）`）
+- `deliver()` 现在要传 `ctx`（三处调用都加了）
+
+顺手修 `createSessionFor()` 的继承：header 里没有 agentPreset 时（`/new` 建的就是空的），
+改用 `agentPresets.composedPreset(agent.ctx)` 问当前会话到底在用哪个预设 —— 否则继承永远是空 ✗
