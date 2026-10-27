@@ -219,3 +219,22 @@ login `onLoginConnected/onLoginConnecting/onLoginDisConnected/onQRCodeGetPicture
 
 `defaultTarget: s-session-525f1840-a15d-40d6-a176-0d020f9c1b65`（当时那个对话）；
 换对话就把它改成新的 `s-<会话id>`，或者用 `p-<预设名>` 跟着预设走。
+
+## 九、这一轮又补上的能力（2026-10-27 23:05）
+
+| 能力 | 实现 | 备注 |
+|---|---|---|
+| 语音转文字 | 桥收到语音后自动调 `translatePtt2Text`，轮询等 `pttElement.text`，再补一条 `（语音转写）…` 进收件箱 | 这个转写是**异步**的：第一次调返回空，过 1~2 秒才有字；实测第二次就有「嗯。」 |
+| 群聊 @ 人 | `POST /send` 带 `at`（uid）+ `atNick`，桥在前面插一条 `textElement{atType:2, atNtUid}` | 插件侧 `qq_send { chat, text, at, atNick }` |
+| 翻历史（私聊+群聊） | `GET /history?chatType=&peerUid=&count=&seq=` | 靠 `getAioFirstViewLatestMsgs`（带 senderName），给 `seq` 就用 `getMsgsBySeqAndCount` |
+| 插队转发 | `deliverMode: steer`（默认）/ `followup` | 宿主 `agent.steer()`；NapCat 那条通道默认也是 steer |
+
+### 这一轮踩的坑
+
+- **eval 热重载只换代码、不换闭包**：`onRecvMsg` 这类监听器保存的是「注册那一刻」的函数引用。
+  改了收消息逻辑不 bump `LISTENER_VER` 就永远走旧代码；而旧的 `ensure` 定时器又会用旧版本号把旧监听器重新注册回来
+  → 现在 `ensure` 定时器改成调用 `global.__qqEnsureMsgListener`（每次 eval 覆盖），永远用最新实现。
+- `translatePtt2Text` 不是同步返回文本的，要回头再读消息上的 `pttElement.text`。
+- 发图片不需要自己实现 highway：把文件按 md5 复制到 `getRichMediaFilePathForMobileQQSend` 给的路径，
+  发 `picElement{sourcePath, md5HexStr, fileSize, picWidth, picHeight}` 就行，客户端自己上传。
+- PowerShell 里往 JS 文件塞代码要小心：`@"..."@` 会插值（`$s9` 直接变空），一律改成「写片段文件 + node 拼接」。
