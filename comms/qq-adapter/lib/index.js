@@ -310,6 +310,22 @@ export async function apply(ctx, config = {}) {
     return t.sessionId || ''
   }
 
+  // 真正的投递目标：**先看这个聊天在 chats.json 里绑的会话**（/new、/session 切换都写这里），
+  // 没有绑定才走 mappings / defaultTarget。
+  // ⚠ 2026-10-28 主人：「我明明 /new 了，为什么消息还到那边去」—— 因为以前只有指令读 chats.json，
+  //   真正的转发只看 mappings/defaultTarget，`/new` 等于白绑 ✗
+  async function 投递目标(key) {
+    try {
+      const chats = await chatsNow()
+      const bound = String((chats[key] && chats[key].sessionId) || '')
+      if (bound) return { sessionId: bound, via: 'chats.json' }
+    } catch { /* 读不到就按路由走 */ }
+    const route = resolveRoute(cfg, key)
+    if (!route.target) return { sessionId: '', reason: route.reason || route.via, route: null }
+    const t = await resolveTarget(route.target)
+    return { ...t, routeTarget: route.target, via: 'route' }
+  }
+
   function presetOfTarget(target) {
     const ref = parseTargetRef(target)
     return ref.kind === 'preset' ? ref.value : ''
@@ -320,8 +336,21 @@ export async function apply(ctx, config = {}) {
     const route = resolveRoute(cfg, key)
     const all = await chatsNow(true)
     const prefs = (all[key] && all[key].prefs) || {}
-    const preset = prefs.preset || (route.target ? presetOfTarget(route.target) : '')
-    const cwd = prefs.workspace || cfg.workspaceRoot
+    // 没设偏好时**跟着这个聊天当前绑的会话走**：预设、工作区都继承。
+    // ⚠ 2026-10-28 主人：`/new` 出来变成 standard + default 工作区，明显不是他要的 ✗
+    let 继承预设 = ''
+    let 继承cwd = ''
+    try {
+      const sidNow = String((all[key] && all[key].sessionId) || '')
+      const ag = sidNow ? findAgent(agentsSvc, sidNow) : null
+      const h = ag && ag.session && ag.session.header
+      if (h) {
+        继承预设 = String(h.agentPreset || h.preset || '')
+        继承cwd = String(h.cwd || '')
+      }
+    } catch { /* 继承不到就用默认 */ }
+    const preset = prefs.preset || presetOfTarget(route.target) || 继承预设
+    const cwd = prefs.workspace || 继承cwd || cfg.workspaceRoot
     const editor = (() => { try { return ctx.get('configEditor') } catch { return null } })()
     const overrideOf = (id) => {
       try {
@@ -841,10 +870,11 @@ export async function apply(ctx, config = {}) {
     if (!st || !st.parts.length) return
     pendingBatch.delete(key)
     const parts = st.parts
-    const route = resolveRoute(cfg, key)
-    if (!route.target) { log(`合并的 ${parts.length} 条丢了：${key} 没有目标（${route.reason || route.via}）`); return }
-    const target = await resolveTarget(route.target)
-    if (!target.sessionId) { warn(`合并的 ${parts.length} 条留在原地：目标 ${route.target} 解析不到会话`); return }
+    const target = await 投递目标(key)
+    if (!target.sessionId) {
+      log(`合并的 ${parts.length} 条丢了：${key} 没有可用目标（${target.reason || (target.routeTarget || '')}）`)
+      return
+    }
     const text = parts.length === 1
       ? parts[0].text
       : `（${parts.length} 条连着来的，合并成一条）\n` + parts.map((p) => (p.sender ? `[${p.sender}] ` : '') + p.text).join('\n')
@@ -1059,15 +1089,14 @@ export async function apply(ctx, config = {}) {
           log(`群里没 @ 我，不唤醒（${key}）：${String(evt.text || '').slice(0, 30)}`)
           continue
         }
-        const route = resolveRoute(cfg, key)
-        if (!route.target) {
-          log(`跳过 ${key || '?'}（${route.reason || route.via}）`)
-          seenSet.add(msgId)
-          continue
-        }
-        const target = await resolveTarget(route.target)
+        const target = await 投递目标(key)
         if (!target.sessionId) {
-          warn(`转发目标 ${route.target} 解析不到会话（${target.reason || '未知'}），这条留在原地`)
+          if (!target.route) {
+            log(`跳过 ${key || '?'}（${target.reason || '没有目标'}）`)
+            seenSet.add(msgId)
+            continue
+          }
+          warn(`转发目标 ${target.routeTarget} 解析不到会话（${target.reason || '未知'}），这条留在原地`)
           continue
         }
         const text = formatIncoming(evt)

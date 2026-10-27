@@ -943,3 +943,19 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
 修法（两头都改，防以后再踩）：
 - 桥：`atType > 0` 或 `atUid/atNtUid 不是 '' / '0'` 才算真 @
 - 插件 `取指令()`：同样是「占位 at 直接跳过」，不再当开头有 @
+
+### 18.13 `/new` 白绑了：投递只看 mappings，不看 chats.json（2026-10-28 03:40）
+
+主人：「我绑的是对话啊，而且默认预设是 standard、工作区是 default，而且 /new 了，为什么又到你那去了？」
+
+两个问题：
+
+1. **投递目标不读 chats.json**。`/new`、`/session <序号>` 只把绑定写进 `home\qq-adapter\chats.json`，
+   而 tick 里的转发只看 `resolveRoute()`（mappings / defaultTarget）→ 绑了等于没绑 ✗
+   → 新增 `投递目标(key)`：**先看 chats.json 绑的会话**，没有绑定才走 mappings/defaultTarget。
+     tick 和「合并发送」两条路都改用它
+2. **`/new` 不继承预设/工作区**。以前 `preset = prefs.preset || 目标里的 p-xxx`，
+   群里映射的是 `s-xxx` → preset 空 → 新会话掉回宿主的 standard；`cwd` 也一样掉回部署根。
+   → 现在先继承**当前绑定会话的 header**（`agentPreset` / `cwd`），再退到偏好/部署默认。
+
+用法上现在是这样：`/new` 之后这个聊天真的会发到新会话；`/session <序号>` 切过去也一样。
