@@ -905,3 +905,22 @@ NapCat 把它当 **guildId** 传给内核。我们原来给的是 `guildId: ''`�
 
 列表第一行会写清楚：`当前绑定：预设 alive · 预设（alive，当前会话在这个池里）` 这种。
 归档判定 = `storages\workspace.json` 的 `global.archivedSessionIds`（session-archiver 是摘视图，不搬目录）。
+
+### 18.11 真凶找到了：收摊函数根本没登记上（2026-10-28 03:20）
+
+「每条指令回复发两遍」的根因不是 bundle patch（那个清空是对的，顺手做了），而是：
+
+```js
+g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
+```
+
+`cleanupKey` 是 `undefined`，于是收摊函数被挂到 `globalThis.undefined` 上；
+而上面判断的又是 `g.__qqAdapterCleanup` —— 名字对不上，**永远找不到** →
+每次 loader 重新 apply（改配置、`/model -d`、`/cfg-default` 写 ui-config 之后都会 refresh），
+旧实例的定时器就留在那儿继续轮询，新实例再起一个 → 同一条消息被处理两遍 ✗
+
+修法：
+1. 用一个全局 Map `globalThis.__qqAdapterCleanups`（桥 URL → 收摊函数），
+   mount 时先把同一个桥的上一份收摊掐掉（日志：`同一个桥的上一个实例已收摊`）
+2. 兜底再加一层：`__qqAdapterBridgeOwners`（桥 URL → **唯一实例键**，键里带随机后缀），
+   不是桥主的实例 `tick()` 直接 return —— 就算收摊漏了也不会双发

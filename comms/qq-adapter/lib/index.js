@@ -153,7 +153,7 @@ export async function apply(ctx, config = {}) {
   //   兜住：**同一个桥只允许一个实例轮询**（后来的接管，先来的只挂工具不轮询）
   const 桥主表 = (globalThis.__qqAdapterBridgeOwners ||= new Map())
   const 桥键 = String(cfg.bridgeUrl || '')
-  const 本键 = 桥键 + '|' + INST
+  const 本键 = 桥键 + '|' + INST + '|' + Math.random().toString(36).slice(2, 8)
   const 前主 = 桥主表.get(桥键)
   if (前主 && 前主 !== 本键) warn('桥 ' + 桥键 + ' 已被另一个实例接管（' + 前主 + '），这个实例只挂工具、不轮询')
   桥主表.set(桥键, 本键)
@@ -1071,11 +1071,15 @@ export async function apply(ctx, config = {}) {
     }
   }
 
-  // 同一份插件可能被 loader 重复 apply（配置改动时），把上一个实例的定时器掐掉，
-  // 否则会出现「两个实例各转一份、还用着旧配置」的怪现象。
+  // 同一份插件可能被 loader 重复 apply（改配置时），把**同一个桥**上一个实例的定时器掐掉，
+  // 否则会出现「两个实例各转一份、每条回复发两遍」的怪现象。
+  // ⚠ 2026-10-28：以前这里写的是 `g[cleanupKey]`，而 cleanupKey 根本没定义 → 收摊函数被存到
+  //   globalThis.undefined 上，永远找不到 → 旧实例一直活着 ✗（这就是「回复发两遍」的真凶）
   const g = globalThis
-  if (typeof g.__qqAdapterCleanup === 'function') {
-    try { g.__qqAdapterCleanup() } catch { /* 清理失败无所谓 */ }
+  const 收摊表 = (g.__qqAdapterCleanups ||= new Map())
+  const 上一份收摊 = 收摊表.get(桥键)
+  if (typeof 上一份收摊 === 'function') {
+    try { 上一份收摊(); log('同一个桥的上一个实例已收摊（' + 桥键 + '）') } catch { /* 清理失败无所谓 */ }
   }
   const every = Math.max(500, Number(cfg.pollMs) || 1500)
   const timer = setInterval(() => void tick('定时'), every)
@@ -1092,7 +1096,7 @@ export async function apply(ctx, config = {}) {
       for (const st of pendingBatch.values()) { try { if (st.timer) clearTimeout(st.timer) } catch { } }
       pendingBatch.clear()
     }
-    g[cleanupKey] = cleanup
+    收摊表.set(桥键, cleanup)
     ctx.on('dispose', cleanup)
   } catch { /* 收摊失败无所谓 */ }
 
@@ -1317,3 +1321,4 @@ export async function apply(ctx, config = {}) {
 }
 
 export const _internal = { resolveTarget, deliver, SOURCE_KIND }
+
