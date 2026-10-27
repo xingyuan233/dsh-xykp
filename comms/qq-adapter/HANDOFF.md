@@ -503,3 +503,45 @@ global.__QQ_BOOT = { port, log, cmd, res, config, qrFile, own, uin }
 而 `active` 会跟着「最近活跃」在几条 alive 会话之间切。
 所以同一条私聊今天可能落在我这边、明天落在鲸鱼娘那边，**这不是 bug**，是主人定的预设优先。
 真要钉死某条会话，就把 `defaultTarget` 写成 `s-<会话id>`。
+
+## 十三、设置页（2026-10-28 00:2x）
+
+### 13.1 现在能用的：桥自带的独立设置页
+
+**<http://127.0.0.1:39272/adapter-ui>**（39273 也有同一份）
+
+- 页面对两份配置各给一张卡：樱（39272 / `qq_`）、鲸鱼娘（39273 / `qq2_`）
+- 能改：`defaultTarget`、`mode`、`blocked`、`allowed`、`mappings`（一行一个 `u-uid → 目标`）
+- 保存写到 **`home\qq-adapter\ui-config.json`**（运行时覆盖），插件每个 tick 读一次 →
+  **下一轮轮询就生效**，不用重启、不用碰 `cordis.patch.yml`
+- 端点：`GET /adapter-ui`（页面本体就是工作区的 `qq-adapter-ui.html`）、
+  `GET/POST /adapter-config`（读/合并写那个 json）；响应带 `access-control-allow-origin: *`，
+  所以页面能跨端口读 39273 的状态
+- 读取逻辑在 `lib/overrides.js`：`readOverride()` + `pickRouting()`，只有这几个字段会被覆盖，
+  其余（端口、前缀、壳路径）仍然只认 profile 配置——避免设置页把壳搞挂
+
+### 13.2 没做成的：把它塞进 GUI 的「设置 → 内置插件」
+
+试过写一个 `lib/client.js`（`window.__ModuleLoader__.load` 那种形状，注册 `plugins.item` 页），
+并按 `dsh.client` 声明：
+
+```json
+"dsh": { "client": { "platform": "web", "inject": ["slots", "configForms"] } },
+"exports": { "./client": "./lib/client.js" }
+```
+
+结果：`GET /plugins/dsh-qq-adapter/client.js?rev=…` **一直 404**，宿主那边根本没把这个包放进
+client graph。排除过两件事：
+
+1. 不是「同名两行」的问题——把第二个实例 `enabled: false` 只留一行，仍然 404
+2. 不是 `inject` 写法的问题——照 `dsh-xykp` 改成服务名（`slots` / `configForms`），仍然 404
+
+对照：`dsh-xykp`（**pnpm 安装进 `profiles\web\node_modules`、写在依赖里**）它的
+`/plugins/dsh-xykp/client.js` 是正常的。差别只剩「怎么装进来的」：
+我们这个是 **junction 挂的本地包**，client-modules 的 `locatePkgJson` 大概率解析不到它。
+
+**结论 / 下一步**：要给 GUI 内嵌页面，得把这个包做成正式依赖装进 profile
+（`pnpm install` 那套，会覆盖本地补丁，得按 AGENTS.md 的流程走）。
+或者更省事：**以后并进 `dsh-xykp/client.js`**（主人也是这么想的：UI 都进公共 client），
+那边本来就是 pnpm 装的、bundle 路由是通的，只要在那个 bundle 里加一页，
+取数直接 `fetch('/adapter-config')` 或 `ctx.configForms` 都行。
