@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>QQ 登录二维码（实时）</title>
+<style>
+  body { background: #111; color: #ddd; font-family: system-ui, "Microsoft YaHei", sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+  img { width: min(64vmin, 600px); height: auto; image-rendering: pixelated; background: #fff; padding: 10px; border-radius: 12px; }
+  .t { margin: 10px 0 2px; font-size: 15px; color: #aaa; }
+  #age { font-size: 26px; font-weight: 700; margin: 6px 0; }
+  .fresh { color: #5ddc7a; }
+  .warn { color: #e8c04a; }
+  .bad { color: #e8604a; }
+  #st { font-size: 13px; color: #777; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="t">手机 QQ 扫码登录（樱 3793339506）</div>
+  <img id="qr" src="qq-qr-fresh.png" alt="QR">
+  <div id="age">—</div>
+  <div id="st">连接中…</div>
+<script>
+  let lastSrc = 0, tick = 0;
+  async function ping() {
+    try {
+      const s = await (await fetch('http://127.0.0.1:39272/status', { cache: 'no-store' })).json();
+      const img = document.getElementById('qr');
+      if (!lastSrc) { img.src = 'qq-qr-fresh.png?t=' + Date.now(); lastSrc = Date.now(); }
+
+      if (s.session && s.ms) {
+        document.getElementById('age').className = 'fresh';
+        document.getElementById('age').textContent = '✅ 已登录，session 就绪';
+        document.getElementById('st').textContent = 'uin=' + s.uin + ' · inbox=' + s.inbox;
+        return;
+      }
+      if (s.qrAge === null || s.qrAge === undefined) {
+        document.getElementById('age').textContent = '等二维码…';
+        return;
+      }
+      // 换码了就重新取图
+      if (s.qrAge < tick) lastSrc = 0;
+      tick = s.qrAge;
+
+      const fresh = 60 - s.qrAge;
+      const el = document.getElementById('age');
+      el.textContent = (fresh > 0 ? '这张码还有约 ' + fresh + ' 秒' : '这张码已经老了，等下一张…');
+      el.className = fresh > 30 ? 'fresh' : (fresh > 10 ? 'warn' : 'bad');
+      document.getElementById('st').textContent = '码龄 ' + s.qrAge + 's · 自动换新每 45s · ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      document.getElementById('st').textContent = '连不上 bridge（' + e.message + '）';
+    }
+  }
+  ping();
+  setInterval(ping, 2000);
+</script>
+</body>
+</html>

@@ -31,6 +31,10 @@ export function createBridge(baseUrl, opts = {}) {
     base,
     status: () => req('/status'),
     events: (since = 0) => req('/events?since=' + (Number(since) || 0)),
+    async sendImage(chatType, peerUid, filePath) {
+      const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
+      return req('/sendpic?' + q.toString())
+    },
     async send(chatType, peerUid, text) {
       const body = JSON.stringify({ chatType: Number(chatType) || 1, peerUid: String(peerUid || ''), text: String(text ?? '') })
       const r = await req('/send', {

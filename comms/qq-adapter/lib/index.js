@@ -47,6 +47,10 @@ export const Config = Schema.object({
   maxPerTick: Schema.number().default(10).description('一次最多转发几条'),
   seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen.json）'),
   skipBacklog: Schema.boolean().default(true).description('启动时不补发桥里积压的旧消息'),
+  notifyTopic: Schema.string().default('whale-qq-shell-channel').description('登录失效时把二维码推到哪个 ntfy 主题（空 = 不推）'),
+  notifyEveryMinutes: Schema.number().default(3).description('两次推码之间至少隔几分钟'),
+  notifyMax: Schema.number().default(3).description('一次掉线最多推几张码'),
+  qrFile: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\workspaces\\\\alive-workspace\\\\qq-qr-fresh.png').description('桥写出来的二维码图片路径'),
   autoStartShell: Schema.boolean().default(true).description('桥没在跑时自动拉起 QQ shell'),
   shellBootPath: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell\\\\NapCatWinBootMain.exe').description('shell 启动器路径'),
   shellDir: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell').description('shell 工作目录'),
@@ -127,11 +131,21 @@ export async function apply(ctx, config = {}) {
 
   /** 桥没在跑就把 QQ shell 拉起来（DSH 重启后 shell 会跟着死，这条兜住） */
   async function ensureShell() {
+    // 先看桥：活着就看登录态，挂了才去拉
+    let st = null
+    try { st = await bridge.status() } catch { st = null }
+    if (st && st.ok) {
+      const ready = st.stage === 'ready' && st.ms === true
+      if (ready) {
+        if (!wasReady) { log('桥已就绪（uin=' + st.uin + '）') ; wasReady = true }
+        notifyCount = 0
+        return
+      }
+      wasReady = false
+      await pushQrToNtfy(st)
+      return
+    }
     if (cfg.autoStartShell === false) return
-    try {
-      const st = await bridge.status()
-      if (st && st.ok) return
-    } catch { /* 连不上，往下走 */ }
     try {
       // 用 WMI 拉，进程挂在 WmiPrvSE 下面 —— 这样宿主重启（杀进程树）不会把 QQ shell 一起带走
       const { execFile } = await import('node:child_process')
@@ -147,6 +161,34 @@ export async function apply(ctx, config = {}) {
         else log('桥没在跑，已用 WMI 拉起 QQ shell：' + boot)
       })
     } catch (err) { warn('拉起 QQ shell 失败：', err?.message || err) }
+  }
+  // ── 哨兵：桥没起来就去拉；起来了但没登录就把二维码推到 ntfy ──
+  let lastNotifyAt = 0
+  let notifyCount = 0
+  let wasReady = false
+
+  async function pushQrToNtfy(st) {
+    if (!cfg.notifyTopic) return
+    const everyMs = Math.max(30_000, (Number(cfg.notifyEveryMinutes) || 3) * 60_000)
+    if (Date.now() - lastNotifyAt < everyMs) return
+    if (notifyCount >= (Number(cfg.notifyMax) || 3)) return
+    lastNotifyAt = Date.now()
+    notifyCount++
+    try {
+      const { readFile } = await import('node:fs/promises')
+      const png = await readFile(cfg.qrFile || '')
+      const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
+        method: 'PUT',
+        headers: {
+          Title: 'QQ shell needs a QR scan (' + notifyCount + '/' + (cfg.notifyMax || 3) + ')',
+          Tags: 'rotating_light,qrcode',
+          Priority: '4',
+          Filename: 'qq-qr.png',
+        },
+        body: png,
+      })
+      log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）HTTP ' + res.status + ' · uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
+    } catch (err) { warn('推二维码到 ntfy 失败：', err?.message || err) }
   }
   async function tick(reason) {
     if (!cfg.enabled || running) return
@@ -251,6 +293,27 @@ export async function apply(ctx, config = {}) {
         const peerUid = key.replace(/^[ugUG][-_]/, '')
         if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
         const r = await bridge.send(isGroup ? 2 : 1, peerUid, String(args.text ?? ''))
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+      },
+    }))
+
+    ctx.tools.register(defineTool({
+      name: 'qq_send_image',
+      description: '用自己 QQ 号发一张本地图片。chat 写成 u-<uid> 或 g-<群号>，path 是本地图片绝对路径。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+        path: { type: 'string', description: '本地图片绝对路径', required: true },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.sendImage(isGroup ? 2 : 1, peerUid, String(args.path || ''))
         return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
       },
     }))
