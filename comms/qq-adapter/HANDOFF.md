@@ -238,3 +238,49 @@ login `onLoginConnected/onLoginConnecting/onLoginDisConnected/onQRCodeGetPicture
 - 发图片不需要自己实现 highway：把文件按 md5 复制到 `getRichMediaFilePathForMobileQQSend` 给的路径，
   发 `picElement{sourcePath, md5HexStr, fileSize, picWidth, picHeight}` 就行，客户端自己上传。
 - PowerShell 里往 JS 文件塞代码要小心：`@"..."@` 会插值（`$s9` 直接变空），一律改成「写片段文件 + node 拼接」。
+
+## 十、当前状态 & 下一步（2026-10-27 23:1x，给下一个对话）
+
+### 跑着的进程
+
+| 东西 | 值 |
+|---|---|
+| QQ shell（桥） | `D:\Program-Files\QQ-shell`，pid **24772**（WMI 起的，宿主重启不死） |
+| 桥 HTTP | `http://127.0.0.1:39272`（`/status` `/events` `/send` `/sendpic` `/history` `/ptt` `/qr` `/buddy` `/recent` `/download`） |
+| 日志 | `workspaces\alive-workspace\qq-bridge.log`（每行带 pid）/ `qq-shell.log`（loader） |
+| 二维码页面 | `workspaces\alive-workspace\qq-qr.html`（自动换新 + 倒计时） |
+| 测试发送脚本 | `send-as-whale.mjs`（私聊/`--group <号>`）、`send-img-whale.mjs`、`send-ptt-whale.mjs` |
+
+### 插件配置（`home\profiles\web\cordis.patch.yml` 里那一行）
+
+- `defaultTarget: s-session-525f1840-…`（**这是上一个对话的 id，换对话后要改成新的 `s-<id>`**）
+- `deliverMode: steer`（默认插队）
+- `blocked/mappings` 现在是空的
+- 哨兵：桥挂了 → WMI 拉 shell；没登录 → 二维码推 ntfy 主题 `whale-qq-shell-channel`
+
+### 工具（新对话里会出现）
+
+`qq_send { chat, text, at?, atNick? }` · `qq_send_image { chat, path }` · `qq_history { chat, count?, seq? }` · `qq_status {}`
+
+chat 用 `u-<uid>`（私聊）/ `g-<群号>`（群聊）。鲸鱼娘的 uid 是 `u-u_wCwUuJmmlLb7g6MDEKm5Iw`（chat 里要写 `u-u_wCw…`，因为 uid 本身带 `u_`）。
+
+### 剩下要做的（按我自己的顺序）
+
+1. **发文件**（`fileElement`，走 `getRichMediaFilePathForMobileQQSend` 那套，跟图片类似）
+2. **引用回复（quote）**（`replyElement`：需要原消息的 msgId/seq/sender，可能要用 `getSourceOfReplyMsg`）
+3. **发语音**（`pttElement` + silk 编码；或者先只做「收」）
+4. **群成员列表**（`getGroupService().getGroupMemberList`）—— @ 人的时候能查 uid
+5. 收消息里把 `at` 元素渲染成 `@昵称`（现在事件里有 `el.at`，格式化还可以更友好）
+
+### 改代码前的两条铁律
+
+- **改桥脚本**（`workspaces\alive-workspace\qq-bridge-script.js`）：热重载只换代码、不换闭包 →
+  改了收消息相关的逻辑**必须 bump `LISTENER_VER`**，否则监听器还指着旧函数。
+  改完把文件复制到 `plugins\comms\qq-adapter\bridge\qq-bridge-script.js` 再 commit。
+- **改插件**（`plugins\comms\qq-adapter\lib\*.js`）：要重启宿主才生效（ESM 缓存）。
+  重启流程见 `$DSH_HOME\AGENTS.md`：挂 60 秒提醒 → `restart-dsh.ps1 -DelaySeconds 10` → 闭嘴。
+
+### 一句话总结
+
+**樱的纯 shell 桥 + qq-adapter 插件已经能：收/发文字、收/发图片、语音自动转写、群里 @ 人、翻私聊和群聊历史、插队唤醒、桥挂了自动拉起、登录失效推二维码到 ntfy。**
+剩下的是文件、引用、发语音——都是「再加一个 element 类型」的活。
