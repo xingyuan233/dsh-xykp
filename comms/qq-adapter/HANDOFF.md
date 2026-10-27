@@ -420,3 +420,14 @@ sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
 3. **`qq_reply` 的默认引用**不能靠「翻历史挑一条」——会挑到自己刚发的。
    插件在 `globalThis.__qqLastInbound` 里记住**每个聊天最近一条进来的消息**（msgId/seq/time/senderUid），
    `qq_reply` 不传 msgId 就用它，并把 seq/time/senderUid 一起带给桥。
+
+### 11.8 ⚠ 事故：发「群图片」把 QQ shell 搞崩了（2026-10-27 23:28）
+
+- 现象：`qq_send_image` 发到测试群 `602173548`，桥日志停在
+  `sendPicture md5=… -> …\nt_data\Pic\2026-10\Ori\<md5>.png`，**进程当场没了**（没有异常、没有堆栈）。
+- 哨兵把壳拉起来了（新 pid），但**登录没了**：`quickLogin: 3793339506 not in list` → 要重新扫码。
+- 私聊发图片是好的（发过好几次）；**群发图片这条路径要重新验**，别直接在群里试。
+  下次试的时候：先把 `picElement` 换成 NapCat 的完整形状（`picSubType`/`fileUuid`/`thumbFileSize` 都带上），
+  并且**单独开一个进程观察**，崩了至少能看出是哪一步。
+- 复盘要点：`getRichMediaFilePathForMobileQQSend` 对群（chatType=2）也许该换成群专用的路径函数，
+  或者群图片得先走 `RichMediaService` 上传再发元素——**别把私聊那套直接套到群里**。
