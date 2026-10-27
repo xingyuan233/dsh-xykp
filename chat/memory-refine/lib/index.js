@@ -543,12 +543,26 @@ const 交接系统提示 =
 // 概括一个会话（不截断：上下文通常还有几百 k，不差这几 k）
 async function 生成交接概括(ctx, agent, sess) {
   const 对话 = 读对话正文(sess)
+  // 2026-10-28 修「长会话只读到最后一轮」：先记一笔实际读到多少，
+  // 再把 surface 的节点数一起打出来，方便判断是不是 surface 被裁了
+  try {
+    let 节点 = -1
+    try { 节点 = sess.surface.nodes.length } catch (e) {}
+    diag('交接摘要：surface 节点=' + 节点 + '，读到正文 ' + 对话.length + ' 字')
+  } catch (e) {}
   if (!对话.trim()) return { ok: false, message: '这段对话里没读出内容' }
   const 回 = await 问模型(ctx, agent, 交接系统提示, 对话, 65536)
   const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
   if (!summary) {
     return { ok: false, message: '模型给了空概括（输入 ' + 对话.length + ' 字）' + (回 && 回.message ? '：' + 回.message : '') }
   }
+  // 2026-10-28：概括短得可疑就报错，别悄悄建个吃垃圾开场的新对话
+  const 最少 = Math.min(600, Math.floor(对话.length / 20))
+  if (summary.length < 最少 && 回 && 回.ok) {
+    diag('交接摘要：可疑地短（概括 ' + summary.length + ' 字 / 输入 ' + 对话.length + ' 字），拒绝建会话')
+    return { ok: false, message: '概括只有 ' + summary.length + ' 字（输入 ' + 对话.length + ' 字，太短），像是没读到整段对话；不建新对话了' }
+  }
+  diag('交接摘要：ok，概括 ' + summary.length + ' 字 / 输入 ' + 对话.length + ' 字')
   return { ok: true, summary, 对话长度: 对话.length }
 }
 
