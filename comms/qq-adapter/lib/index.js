@@ -49,6 +49,9 @@ export const Config = Schema.object({
     .description('转发方式：steer=插队（这轮就能看到）/ followup=排队（下轮才看到）'),
   pollMs: Schema.number().default(1500).description('轮询间隔（毫秒）'),
   maxPerTick: Schema.number().default(10).description('一次最多转发几条'),
+  minIntervalSeconds: Schema.number().default(0).description('同一个聊天两条消息的最短间隔（秒；0 = 不限制，来一条转一条）'),
+  flushSeconds: Schema.number().default(4).description('暂存的那些静默多少秒后一次性发出'),
+  fastUids: Schema.array(Schema.string()).default([]).description('不受限的聊天（u-<uid> / g-<群号>），这些来一条转一条'),
   instanceId: Schema.string().default('default').description('实例名：同一个宿主跑多个账号时用来隔开去重文件/内部状态'),
   toolPrefix: Schema.string().default('').description('工具名前缀（同一个宿主跑两个 QQ 账号时，第二个实例用 qq2_ 之类，免得多实例抢同名工具）'),
   seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen-<instanceId>.json）'),
@@ -217,6 +220,53 @@ export async function apply(ctx, config = {}) {
       log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）HTTP ' + res.status + ' · uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
     } catch (err) { warn('推二维码到 ntfy 失败：', err?.message || err) }
   }
+  // ── 流量控制：同一个聊天太频繁就暂存，静默几秒后合并成一条发 ──
+  // 主人要的语义：同一用户两条消息之间至少隔 N 秒；中间来的先攒着，攒到「静默 flushSeconds」再一次性发；
+  // fastUids 里的聊天不受限（来一条转一条）。
+  const pendingBatch = new Map() // key -> { parts: [{sender,text}], timer }
+  const lastDeliveredAt = new Map() // key -> ms
+
+  function trafficLimited(key) {
+    const min = Number(cfg.minIntervalSeconds) || 0
+    if (min <= 0) return false
+    const fast = Array.isArray(cfg.fastUids) ? cfg.fastUids : []
+    return !fast.includes(key)
+  }
+
+  function queueBatch(key, evt, text) {
+    let st = pendingBatch.get(key)
+    if (!st) { st = { parts: [], timer: null }; pendingBatch.set(key, st) }
+    st.parts.push({ sender: String(evt.senderName || evt.senderUid || ''), text })
+    const minMs = (Number(cfg.minIntervalSeconds) || 0) * 1000
+    const flushMs = Math.max(0, (Number(cfg.flushSeconds) || 0) * 1000)
+    const since = Date.now() - (lastDeliveredAt.get(key) || 0)
+    const wait = Math.max(flushMs, minMs - since, 500)
+    if (st.timer) clearTimeout(st.timer)
+    st.timer = setTimeout(() => { void flushBatch(key) }, wait)
+    if (typeof st.timer.unref === 'function') st.timer.unref()
+  }
+
+  async function flushBatch(key) {
+    const st = pendingBatch.get(key)
+    if (!st || !st.parts.length) return
+    pendingBatch.delete(key)
+    const parts = st.parts
+    const route = resolveRoute(cfg, key)
+    if (!route.target) { log(`合并的 ${parts.length} 条丢了：${key} 没有目标（${route.reason || route.via}）`); return }
+    const target = await resolveTarget(route.target)
+    if (!target.sessionId) { warn(`合并的 ${parts.length} 条留在原地：目标 ${route.target} 解析不到会话`); return }
+    const text = parts.length === 1
+      ? parts[0].text
+      : `（${parts.length} 条连着来的，合并成一条）\n` + parts.map((p) => (p.sender ? `[${p.sender}] ` : '') + p.text).join('\n')
+    try {
+      await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
+      lastDeliveredAt.set(key, Date.now())
+      log(`转发${parts.length > 1 ? `(${parts.length} 条合并)` : ''} ${key} → ${target.sessionId}`)
+    } catch (err) {
+      warn('合并转发失败（下轮再说）：', err?.message || err)
+    }
+  }
+
   async function tick(reason) {
     if (!cfg.enabled || running) return
     // 运行时覆盖：设置页写到 home\qq-adapter\ui-config.json 的分流配置，每轮读一次（很便宜）
@@ -265,10 +315,19 @@ export async function apply(ctx, config = {}) {
           continue
         }
         const text = formatIncoming(evt)
+        // 流量控制：太频繁就先攒着，别一条一条砸进会话
+        if (trafficLimited(key)) {
+          queueBatch(key, evt, text)
+          seenSet.add(msgId)
+          handled++
+          log(`暂存 ${key}（等 ${cfg.flushSeconds}s 静默后合并发，间隔 ${cfg.minIntervalSeconds}s）`)
+          continue
+        }
         try {
           await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
           seenSet.add(msgId)
           handled++
+          lastDeliveredAt.set(key, Date.now())
           log(`转发 ${key} → ${target.sessionId}（${route.via}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
         } catch (err) {
           warn('转发 ' + key + ' 失败（下轮再试）：', err?.message || err)
@@ -297,7 +356,12 @@ export async function apply(ctx, config = {}) {
   void tick('启动')
 
   try {
-    const cleanup = () => { clearInterval(timer); clearInterval(shellTimer) }
+    const cleanup = () => {
+      clearInterval(timer)
+      clearInterval(shellTimer)
+      for (const st of pendingBatch.values()) { try { if (st.timer) clearTimeout(st.timer) } catch { } }
+      pendingBatch.clear()
+    }
     g[cleanupKey] = cleanup
     ctx.on('dispose', cleanup)
   } catch { /* 收摊失败无所谓 */ }
