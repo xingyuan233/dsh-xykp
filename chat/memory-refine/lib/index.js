@@ -533,6 +533,78 @@ function 读对话正文(sess) {
   return 对话
 }
 
+// ⭐ 2026-10-28（主人拍板）：surface 不可靠就翻会话日志兜底。
+//   实测：同一个会话 `b51b82c8`，长跑进程里只读出 382 字（surface 被 compaction/prune 裁过），
+//   重启宿主后同一个会话读出 208527 字 —— 同一个文件、同一份代码，只差一个「进程活了多久」。
+//   → 光信 surface 会在长会话上把交接压成几百字；读磁盘日志才是全的 ✓
+//   为什么翻目录找：会话 id → 文件路径没有公开 API，但落盘布局是
+//   `<DSH_HOME>/sessions/<工作区>/<会话id>/session*.jsonl(.zstd)` ✓
+function 会话日志路径(sessionId) {
+  const sid = String(sessionId || '')
+  if (!sid) return ''
+  const 根 = join(CFG_DIR, 'sessions')
+  if (!existsSync(根)) return ''
+  let 工作区们 = []
+  try {
+    工作区们 = readdirSync(根)
+  } catch (error) {
+    return ''
+  }
+  for (const ws of 工作区们) {
+    const d = join(根, ws, sid)
+    if (!existsSync(d)) continue
+    let 文件 = []
+    try {
+      文件 = readdirSync(d)
+    } catch (error) {
+      continue
+    }
+    // ⚠ 别写死版本号（v3 / v4 都出现过）；带 zstd 的优先，同档取名字大的（新版本）
+    const 主 = 文件.filter((f) => /^session.*\.jsonl(\.zstd)?$/i.test(f))
+    if (!主.length) continue
+    主.sort((a, b) => (b.includes('zstd') ? 1 : 0) - (a.includes('zstd') ? 1 : 0) || b.localeCompare(a))
+    return join(d, 主[0])
+  }
+  return ''
+}
+
+// 从磁盘日志里把「ta：/我：」正文重新拼一遍（只取 text 块，reasoning / tool-call 全不要）
+function 读对话正文日志(sessionId) {
+  const 路径 = 会话日志路径(sessionId)
+  if (!路径) return ''
+  let 全文 = ''
+  try {
+    全文 = 生成档案.解会话(路径)
+  } catch (error) {
+    return ''
+  }
+  if (!全文) return ''
+  let 对话 = ''
+  for (const 行 of 全文.split('\n')) {
+    if (行.indexOf('/message"') < 0) continue
+    let o
+    try {
+      o = JSON.parse(行)
+    } catch (error) {
+      continue
+    }
+    const 类型 = o && o.type
+    if (类型 !== 'user/message' && 类型 !== 'assistant/message') continue
+    // ⚠ 两种消息形状不一样：user/message 的正文就在 data 上，
+    //   assistant/message 的正文在 data.message 上（data 上还有 turn / step）
+    const msg = 类型 === 'user/message' ? o.data : o.data && o.data.message
+    if (!msg || !Array.isArray(msg.content)) continue
+    const 文 = msg.content
+      .filter((x) => x && x.type === 'text')
+      .map((x) => x.text)
+      .join('\n')
+      .trim()
+    if (!文) continue
+    对话 += (msg.role === 'assistant' || 类型 === 'assistant/message' ? '我：' : 'ta：') + 文 + '\n'
+  }
+  return 对话
+}
+
 const 交接系统提示 =
   '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
   '可以详细与概括穿插，没有额外长度限制，可以很长，不会被裁剪。' +
@@ -542,14 +614,19 @@ const 交接系统提示 =
 
 // 概括一个会话（不截断：上下文通常还有几百 k，不差这几 k）
 async function 生成交接概括(ctx, agent, sess) {
-  const 对话 = 读对话正文(sess)
-  // 2026-10-28 修「长会话只读到最后一轮」：先记一笔实际读到多少，
-  // 再把 surface 的节点数一起打出来，方便判断是不是 surface 被裁了
-  try {
-    let 节点 = -1
-    try { 节点 = sess.surface.nodes.length } catch (e) {}
-    diag('交接摘要：surface 节点=' + 节点 + '，读到正文 ' + 对话.length + ' 字')
-  } catch (e) {}
+  // 2026-10-28 修「长会话只读到最后一轮」：先看 surface 读到多少，再拿磁盘日志对一遍；
+  //   surface 少一半以上就用日志（确诊：长跑进程的 surface 会被裁，重启宿主就恢复正常）✓
+  const 面 = 读对话正文(sess)
+  let 节点 = -1
+  try { 节点 = sess.surface.nodes.length } catch (e) {}
+  let 日志 = ''
+  try { 日志 = 读对话正文日志(sessionIdOf(sess)) } catch (e) {}
+  const 用日志 = 日志.length > 面.length * 2
+  const 对话 = 用日志 ? 日志 : 面
+  diag(
+    '交接摘要：surface 节点=' + 节点 + '，surface 正文 ' + 面.length + ' 字，日志正文 ' + 日志.length +
+      ' 字 → 用' + (用日志 ? '日志' : 'surface') + '（' + 对话.length + ' 字）'
+  )
   if (!对话.trim()) return { ok: false, message: '这段对话里没读出内容' }
   const 回 = await 问模型(ctx, agent, 交接系统提示, 对话, 65536)
   const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
@@ -6876,26 +6953,12 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
           sess = 目标 && 目标.session
         }
         if (!sess) throw new Error('这个预设现在没有活着的对话，没法概括')
-        let 对话 = ''
-        for (const seq of sess.surface.nodes) {
-          const ev = sess.eventAt(seq)
-          if (!ev) continue
-          let msg
-          try {
-            msg = sess.deriveEventMessage(ev)
-          } catch (error) {
-            msg = ev.data && ev.data.message
-          }
-          if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
-          const 文 = (msg.content || [])
-            .filter((x) => x && x.type === 'text')
-            .map((x) => x.text)
-            .join('\n')
-            .trim()
-          if (!文) continue
-          对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
-        }
-        if (!对话.trim()) throw new Error('这段对话里没读出内容')
+        // 2026-10-28：这里原来手抄了一遍 读对话正文 —— 改成共用，
+        //   不然「surface 不够就读日志」的兜底只在一半路上生效 ✗
+        const 面 = 读对话正文(sess)
+        const 日志文 = 读对话正文日志(sessionIdOf(sess))
+        const 全文 = 日志文.length > 面.length * 2 ? 日志文 : 面
+        if (!全文.trim()) throw new Error('这段对话里没读出内容')
 
         const agent = ctx.agents.list()[0]
         const 概 = await 生成交接概括(ctx, agent, sess)
