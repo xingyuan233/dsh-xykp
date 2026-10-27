@@ -1123,7 +1123,7 @@ export async function apply(ctx, config = {}) {
           seenSet.add(msgId)
           handled++
           lastDeliveredAt.set(key, Date.now())
-          log(`转发 ${key} → ${target.sessionId}（${route.via}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
+          log(`转发 ${key} → ${target.sessionId}（${target.via}${target.via === 'chats.json' ? ' 绑定' : ''}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
         } catch (err) {
           warn('转发 ' + key + ' 失败（下轮再试）：', err?.message || err)
         }
