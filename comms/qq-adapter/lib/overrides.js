@@ -39,14 +39,10 @@ export function pickRouting(entry) {
   for (const key of ['blocked', 'allowed']) {
     if (Array.isArray(entry[key])) out[key] = entry[key].map((x) => String(x)).filter(Boolean)
   }
-  // 流量控制也能从设置页改
-  if (entry.minIntervalSeconds !== undefined) {
-    const n = Number(entry.minIntervalSeconds)
-    if (Number.isFinite(n) && n >= 0) out.minIntervalSeconds = n
-  }
-  if (entry.flushSeconds !== undefined) {
-    const n = Number(entry.flushSeconds)
-    if (Number.isFinite(n) && n >= 0) out.flushSeconds = n
+  // 流量控制也能从设置页改（只有一个窗口参数）
+  if (entry.coalesceSeconds !== undefined) {
+    const n = Number(entry.coalesceSeconds)
+    if (Number.isFinite(n) && n >= 0) out.coalesceSeconds = n
   }
   if (Array.isArray(entry.fastUids)) out.fastUids = entry.fastUids.map((x) => String(x)).filter(Boolean)
   if (Array.isArray(entry.mappings)) {

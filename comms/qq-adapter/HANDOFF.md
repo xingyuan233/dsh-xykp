@@ -546,30 +546,30 @@ client graph。排除过两件事：
 那边本来就是 pnpm 装的、bundle 路由是通的，只要在那个 bundle 里加一页，
 取数直接 `fetch('/adapter-config')` 或 `ctx.configForms` 都行。
 
-## 十四、流量控制（2026-10-28 00:28）
+## 十四、流量控制（2026-10-28 00:30，收敛成单参数）
 
-主人要的语义：**同一个聊天两条消息之间至少隔 N 秒；中间来的先攒着，静默几秒后合并成一条发出去；
-白名单里的聊天不受限（来一条转一条）**。
+主人要的语义：**同一个聊天里的消息先攒着，静默够一个窗口就一次性发出去；白名单里的聊天不受限**。
 
-三个开关（Config 里有默认值，设置页也能改，改完下一轮生效）：
+**只有一个旋钮** `coalesceSeconds`（默认 **10**，`0` = 不限流）：
+
+> 我一开始拆成了 `minIntervalSeconds` + `flushSeconds` 两个，被主人一句话点回来了：
+> 「一次发送就把之前的缓存+新消息一起发了，你一个 6 一个 3，本质上还是 6，
+> 因为 3 秒根本等不到下一条」。**最短间隔和静默窗口本来就是同一件事**，拆开只会互相打架，现在合并了。
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `minIntervalSeconds` | `0`（关） | 同一个 `u-<uid>` / `g-<群号>` 两条消息最短间隔 |
-| `flushSeconds` | `4` | 攒着的那几条**静默**多少秒后一次性发出 |
-| `fastUids` | `[]` | 不受限的聊天（`u-…` / `g-…`），这些走「来一条转一条」 |
+| `coalesceSeconds` | `10` | 合并窗口：同一聊天静默这么久，就把攒的 + 最新这条一起发 |
+| `fastUids` | `[]` | 不受限的聊天（`u-…` / `g-…`），这些来一条转一条 |
 
 实现（`lib/index.js`）：
 
-- `trafficLimited(key)`：`minIntervalSeconds > 0` 且 key 不在 `fastUids` 里才限流
-- `queueBatch(key, evt, text)`：攒进 `pendingBatch`，重设定时器，
-  等待时长 = `max(flushSeconds, minIntervalSeconds - 距上次投递的时间, 0.5s)`
-  —— 既保证「静默 N 秒」，也保证「离上一条够久了」
-- `flushBatch(key)`：合并成一条，多条时前缀 `（N 条连着来的，合并成一条）`，
-  每条带 `[发送者]`；只投递一次，投递后记 `lastDeliveredAt`
+- `trafficLimited(key)`：`coalesceSeconds > 0` 且 key 不在 `fastUids` 里才限流
+- `queueBatch(key, evt, text)`：攒进 `pendingBatch`，**每来一条就重置定时器**（debounce），
+  计时 = `coalesceSeconds`；防呆：攒最久那条超过 `3 × 窗口` 就强制发，免得被人一直刷屏憋死
+- `flushBatch(key)`：合并成一条，多条时前缀 `（N 条连着来的，合并成一条）`，每条带 `[发送者]`
 - 插件被重新 apply 时，`cleanup()` 会把 pending 的定时器全清掉
 
-**实测**（00:27）：设 5s/3s，连发三条给樱 → 会话里只收到一条：
+**实测**（00:27，当时还是 5s/3s 两参数）：连发三条给樱 → 会话里只收到一条：
 
 ```
 （3 条连着来的，合并成一条）
@@ -577,5 +577,5 @@ client graph。排除过两件事：
 … 2/3 … 3/3
 ```
 
-之后两个实例都设成 **6s / 3s**（见 `home\qq-adapter\ui-config.json`）。
-不想限流就把 `minIntervalSeconds` 改回 0；某个号想直通就加进 `fastUids`。
+现在两个实例都是 `coalesceSeconds: 10`（见 `home\qq-adapter\ui-config.json`）。
+不想限流就设 0；某个号想直通就加进 `fastUids`。
