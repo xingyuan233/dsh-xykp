@@ -853,3 +853,19 @@ NapCat 把它当 **guildId** 传给内核。我们原来给的是 `guildId: ''`�
 ⚠ 另一条路：`getMsgService()` 里其实有 `sendNudge / recallNudge`（`/svc?which=msg` 能看到），
 但它是 native 且 arity=0，签名全靠试；NapCat 自己走的是 OIDB（`pkt.operation.SendPoke`），
 我们拿不到那个 packet client，所以先用「faceElement(faceType=5)」这条已经验证的路 ✓
+
+### 18.7 ❌ 假拍一拍：那样发出来是「表情」，不是灰条（02:41 主人实测）
+
+用 `faceElement(faceType=5, pokeType=1)` 发出去的戳一戳，在 QQ 里显示成**一个表情**，
+不是「樱拍了拍你」那条灰条 —— 主人一眼就看出来了（「这条戳一戳像是表情」「而不是双击头像的」）。
+所以 `qq_poke` **先禁掉、直接报错**，别再发一坨看不懂的东西。
+
+真拍一拍只有两条路：
+
+1. 内核 `getMsgService().sendNudge(...)` —— 存在（`/svc?which=msg` 能看到 sendNudge / recallNudge），
+   但 `arity = 0`、`[native code]`，参数得靠试；试错了可能直接把壳干掉（要重扫码）
+2. OIDB 包 0xED5 —— NapCat 用的就是这条（`pkt.operation.SendPoke` → `uW.build(isGroup, peer, target)`），
+   但它的发送器是**自带原生插件** `napcat.packet.node`（`napcat.mjs` 里 `napi2nativeLoader`），
+   我们纯壳里没有这个 client，发不了 OIDB
+
+表情（`faceElement` 普通小黄脸）是**真的能用**：`qq_face` 实测发出去 QQ 里正常显示（id=13 呲牙 ✓）。

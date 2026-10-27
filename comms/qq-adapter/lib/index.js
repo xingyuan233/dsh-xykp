@@ -1034,13 +1034,19 @@ export async function apply(ctx, config = {}) {
       },
       async execute(args) {
         const key = String(args.chat || '').trim()
-        const isGroup = key.startsWith('g-') || key.startsWith('G-')
-        const peerUid = key.replace(/^[ugUG][-_]/, '')
-        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
-        const r = await bridge.face(isGroup ? 2 : 1, peerUid, { kind: 'poke' })
-        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+        // ⚠ 2026-10-28 02:41（主人实测）：用 faceElement(faceType=5) 发出去，QQ 里显示成**一个表情**，
+        //   不是「拍了拍你」那条灰条 —— 它不是真拍一拍。真拍一拍只有两条路：
+        //   · 内核 `getMsgService().sendNudge(...)`（native，arity=0，签名全靠试）
+        //   · OIDB 包（NapCat 用它自带的原生插件 napcat.packet.node 发的，我们壳里没有）
+        //   在接通之前直接报错，别发出一坨看不懂的东西 ✗
+        if (!key) throw new Error('chat 不能空')
+        throw new Error('真拍一拍还没接通：现在只能发「看起来像表情」的假戳一戳，先不做。要试 sendNudge 得拿一个号去探签名（可能崩壳要重扫码）')
       },
     }))
+    // ⚠ 2026-10-28 02:41 主人实测：上面这条 poke 发出去在 QQ 里**显示成一个表情**，
+    //   不是「樱拍了拍你」那条灰条 —— 所以它不是真拍一拍，先禁用，别再误用 ✗
+    //   真拍一拍要内核的 `MsgService.sendNudge`（native、签名未知）或 OIDB 包
+    //   （NapCat 用的是它自带的原生插件 napcat.packet.node，我们壳里没有）
 
     ctx.tools.register(defineTool({
       name: TP('qq_history'),
