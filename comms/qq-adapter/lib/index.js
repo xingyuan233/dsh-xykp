@@ -61,6 +61,8 @@ export const Config = Schema.object({
   commandsEnabled: Schema.boolean().default(true).description('QQ 侧指令开关（关掉就全当普通消息）'),
   groupWake: Schema.union([Schema.const('mention'), Schema.const('all')]).default('mention')
     .description('群聊怎么唤醒对话：mention = 只有 @ 到自己（或 @ 完后面跟 / 指令）才转进会话；all = 群里每条都转'),
+  autoReply: Schema.boolean().default(true)
+    .description('QQ 来的消息跑完这一轮，把最终回复自动发回来源聊天（回复是 [[SILENT]]、或者这一轮已经用工具发过同样的话，就不重复发）'),
   instanceId: Schema.string().default('default').description('实例名：同一个宿主跑多个账号时用来隔开去重文件/内部状态'),
   toolPrefix: Schema.string().default('').description('工具名前缀（同一个宿主跑两个 QQ 账号时，第二个实例用 qq2_ 之类，免得多实例抢同名工具）'),
   seenPath: Schema.string().default('').description('去重记录文件（空 = <DSH_HOME>/qq-adapter/seen-<instanceId>.json）'),
@@ -304,10 +306,16 @@ export async function apply(ctx, config = {}) {
     return null
   }
 
+  // 最近发出去的文本（key → { text, at }）：自动回发前拿来比对，同一句话不重复发
+  const 近发文本 = new Map()
+
   async function replyTo(key, text) {
     const p = splitKey(key)
     if (!p) return
-    try { await bridge.send(p.chatType, p.peerUid, text) } catch (err) { warn('指令回复发送失败：', err?.message || err) }
+    try {
+      await bridge.send(p.chatType, p.peerUid, text)
+      近发文本.set(key, { text: String(text || ''), at: Date.now() })
+    } catch (err) { warn('指令回复发送失败：', err?.message || err) }
   }
 
   async function chatSessionId(key) {
@@ -852,6 +860,50 @@ export async function apply(ctx, config = {}) {
   const pendingBatch = new Map() // key -> { parts: [{sender,text}], timer, firstAt }
   const lastDeliveredAt = new Map() // key -> ms
 
+  // ── 自动回发：QQ 进来一条 → 记下来源 → 这一轮跑完把最终回复发回那个聊天 ──
+  // 主人 2026-10-28：群里跟机器人说话，机器人得在群里回话（以前只有指令会回，普通聊天永远没动静）
+  const 待回发 = new Map() // sessionId -> { key, at }
+  function 提取回复文本(msg) {
+    if (!msg) return ''
+    if (typeof msg === 'string') return msg.trim()
+    const blocks = Array.isArray(msg.content) ? msg.content : []
+    return blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n')
+      .trim()
+  }
+  async function 检查回发() {
+    if (cfg.autoReply === false) return
+    if (!待回发.size) return
+    for (const [sid, info] of [...待回发]) {
+      if (Date.now() - info.at > 5 * 60 * 1000) { 待回发.delete(sid); continue }
+      const ag = findAgent(agentsSvc, sid)
+      if (!ag) { 待回发.delete(sid); continue }
+      if (ag.status === 'running') continue // 还在跑，等下一轮 tick
+      let 文 = ''
+      try {
+        const ev = (ag.session && ag.session.snapshotEvents ? ag.session.snapshotEvents() : []) || []
+        for (let i = ev.length - 1; i >= 0; i--) {
+          const e = ev[i]
+          if (e && e.type === 'assistant/message') { 文 = 提取回复文本(e.data && e.data.message); break }
+        }
+      } catch { /* 拿不到就不发 */ }
+      待回发.delete(sid)
+      if (!文) continue
+      if (/^\[\[SILENT\]\]$/i.test(文)) { log('这一轮回的是 [[SILENT]]，不回发'); continue }
+      const 近 = 近发文本.get(info.key)
+      if (近 && 近.text === 文 && Date.now() - 近.at < 60 * 1000) { log('这一轮已经用工具发过同样的话，跳过自动回发'); continue }
+      const p = splitKey(info.key)
+      if (!p) continue
+      try {
+        await bridge.send(p.chatType, p.peerUid, 文)
+        近发文本.set(info.key, { text: 文, at: Date.now() })
+        log('自动回发 → ' + info.key + '（' + 文.length + ' 字）')
+      } catch (err) { warn('自动回发失败：', err?.message || err) }
+    }
+  }
+
   function coalesceMs() {
     return Math.max(0, (Number(cfg.coalesceSeconds) || 0) * 1000)
   }
@@ -893,6 +945,7 @@ export async function apply(ctx, config = {}) {
       : `（${parts.length} 条连着来的，合并成一条）\n` + parts.map((p) => (p.sender ? `[${p.sender}] ` : '') + p.text).join('\n')
     try {
       await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
+      待回发.set(target.sessionId, { key, at: Date.now() })
       lastDeliveredAt.set(key, Date.now())
       log(`转发${parts.length > 1 ? `(${parts.length} 条合并)` : ''} ${key} → ${target.sessionId}`)
     } catch (err) {
@@ -1123,6 +1176,7 @@ export async function apply(ctx, config = {}) {
         }
         try {
           await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode)
+          待回发.set(target.sessionId, { key, at: Date.now() })
           seenSet.add(msgId)
           handled++
           lastDeliveredAt.set(key, Date.now())
@@ -1131,6 +1185,7 @@ export async function apply(ctx, config = {}) {
           warn('转发 ' + key + ' 失败（下轮再试）：', err?.message || err)
         }
       }
+      await 检查回发()
       if (handled || events.length) await saveSeen()
     } catch (err) {
       warn('轮询失败（' + reason + '）：', err?.message || err)
@@ -1199,6 +1254,7 @@ export async function apply(ctx, config = {}) {
         // 2026-10-28：群里发消息以前会崩 native，根因是群聊 peer 少了唯一的 guildId（桥已修好，
         //   见 HANDOFF 18.4）。现在群里发文字、带 @ 都通了 ✓
         const r = await bridge.send(isGroup ? 2 : 1, peerUid, String(args.text ?? ''), at, String(args.atNick || ''))
+        if (r && r.ok) 近发文本.set(key, { text: String(args.text ?? ''), at: Date.now() })
         return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
       },
     }))
