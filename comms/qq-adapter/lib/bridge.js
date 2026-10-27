@@ -49,5 +49,18 @@ export function createBridge(baseUrl, opts = {}) {
       })
       return r
     },
+    async sendFile(chatType, peerUid, filePath) {
+      const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
+      return req('/sendfile?' + q.toString())
+    },
+    async sendVoice(chatType, peerUid, filePath, duration = 0) {
+      const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), path: String(filePath || '') })
+      if (duration) q.set('duration', String(Number(duration) || 0))
+      return req('/sendptt?' + q.toString())
+    },
+    async reply(chatType, peerUid, msgId, text) {
+      const q = new URLSearchParams({ chatType: String(Number(chatType) || 1), peerUid: String(peerUid || ''), msgId: String(msgId || ''), text: String(text ?? '') })
+      return req('/reply?' + q.toString())
+    },
   }
 }

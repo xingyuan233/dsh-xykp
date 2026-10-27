@@ -48,7 +48,7 @@
   var GLOBAL_PATH = OWN + '\\global'
   var PORT = 39272
   var QUICK_UIN = '3793339506'
-  var LISTENER_VER = 'v16'
+  var LISTENER_VER = 'v17'
   var HTTP_VER = 'v11'
   var CMD_VER = 'v10'
 
@@ -165,6 +165,7 @@
     S.session = session
     S.uin = uin
     S.uid = uid
+    S.selfUid = uid
 
     var infoObj = {
       selfUin: uin, selfUid: uid,
@@ -319,6 +320,24 @@
     w('[qq] qr keeper ON')
   }
   // ---------- 3) 消息监听 ----------
+  global.__qqListenerVer = LISTENER_VER
+  /** 把 addKernelMsgListener 包一层：只接收「当前版本」的监听器。
+   *  旧 eval 留下的僵尸定时器每 10 秒会把旧监听器再注册回来（QQ 会给新监听器回放最近消息 → 同一条刷十几遍） */
+  function installListenerGuard() {
+    try {
+      var s = msgService()
+      if (!s || s.__qqGuard) return
+      var origAdd = s.addKernelMsgListener
+      var origRm = s.removeKernelMsgListener
+      s.addKernelMsgListener = function (l) {
+        if (!l || l.__qqVer !== global.__qqListenerVer) { w('[qq] 拒绝旧监听器 ' + (l && l.__qqVer)); return }
+        return origAdd.call(s, l)
+      }
+      s.removeKernelMsgListener = function (l) { try { return origRm.call(s, l) } catch (e) { } }
+      s.__qqGuard = true
+      w('[qq] listener guard installed')
+    } catch (e) { w('[qq] listener guard err ' + e.message) }
+  }
   function ensureMsgListener() {
   if (S.session && msgService() && S.listenerVer !== LISTENER_VER) {
     try {
@@ -329,8 +348,10 @@
         S.msgListeners.forEach(function (l) { try { msgService().removeKernelMsgListener(l) } catch (e) { } })
         S.msgListeners = []
       } catch (e) { }
+      installListenerGuard()
       S.listenerVer = LISTENER_VER
       S.msgListener = {
+        __qqVer: LISTENER_VER,
         onRecvMsg: function (arr) { (arr || []).forEach(onOneMsg) },
         onAddSendMsg: function (m) { w('[qq] SENT-LOCAL msgId=' + m.msgId + ' status=' + m.sendStatus) },
         onMsgInfoListUpdate: function () { },
@@ -345,6 +366,8 @@
   }
   }
   ensureMsgListener()
+  // 旧 eval 的 onOneMsg 引用的这两个函数可能不在它自己的作用域里 → 兜到全局，免得每次回调都 ReferenceError
+  try { global.ensurePttTranscribed = ensurePttTranscribed; global.ensurePicDownloaded = ensurePicDownloaded } catch (e) { }
   if (!S.ensureTimer) {
     global.__qqEnsureMsgListener = ensureMsgListener
     S.ensureTimer = setInterval(function () { try { if (global.__qqEnsureMsgListener) global.__qqEnsureMsgListener() } catch (e) { } }, 10000)
@@ -822,6 +845,88 @@
             else reply(200, { ok: true, result: r5 })
           } catch (e) { reply(500, { ok: false, err: e.message }) }
           return
+        }        if (url.indexOf('/sendfile') === 0) {
+          var qf = qs()
+          try {
+            var r6 = sendFileInternal(qf.peerUid || qf.to, parseInt(qf.chatType || '1', 10), qf.path)
+            w('[qq] http sendfile -> ' + (qf.peerUid || qf.to) + ' ' + qf.path)
+            if (r6 && r6.then) r6.then(function (x) { reply(200, { ok: true, result: Js(x) }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+            else reply(200, { ok: true, result: r6 })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }        if (url.indexOf('/raw') === 0) {
+          // 把某条消息的原始元素结构 dump 出来（看 replyElement / fileElement 到底长什么样）
+          var qr = qs()
+          var peerR = { chatType: parseInt(qr.chatType || '1', 10), peerUid: qr.peerUid, guildId: '' }
+          try {
+            var s8 = msgService()
+            var pr8 = qr.msgId ? s8.getMsgsByMsgId(peerR, [String(qr.msgId)]) : s8.getAioFirstViewLatestMsgs(peerR, parseInt(qr.count || '5', 10))
+            pr8.then(function (x) {
+              var list = (x && (x.msgList || x.msg_list)) || (Array.isArray(x) ? x : [])
+              if (qr.msgId && !list.length) list = []
+              reply(200, {
+                ok: true, count: list.length,
+                messages: list.map(function (m) {
+                  return {
+                    msgId: m.msgId, msgSeq: m.msgSeq, msgTime: m.msgTime, chatType: m.chatType,
+                    peerUid: m.peerUid, senderUid: m.senderUid, sendNickName: m.sendNickName, sendMemberName: m.sendMemberName,
+                    elements: Js(m.elements)
+                  }
+                })
+              })
+            }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }        if (url.indexOf('/reply') === 0) {
+          // 引用回复：字段名是内核里那个拼错的 replayMsgId / replayMsgSeq，
+          // 还要带 replyMsgTime / senderUin / senderUidStr / replyMsgClientSeq —— 少一个就不挂引用块
+          var q7 = qs()
+          try {
+            var s11 = msgService()
+            var peer7 = { chatType: parseInt(q7.chatType || '1', 10), peerUid: q7.peerUid, guildId: '' }
+            var sendReply = function (tgt) {
+              var seq7 = String(q7.seq || q7.msgSeq || (tgt && tgt.msgSeq) || '0')
+              var t = q7.time || (tgt && tgt.msgTime) || Math.floor(Date.now() / 1000)
+              var rElems = [{
+                elementType: 7, elementId: '',
+                replyElement: {
+                  replayMsgId: String(q7.msgId || (tgt && tgt.msgId) || ''),
+                  replayMsgSeq: seq7,
+                  replyMsgTime: String(t),
+                  senderUin: String(q7.senderUin || (tgt && tgt.senderUin) || '0'),
+                  senderUidStr: q7.senderUid || (tgt && tgt.senderUid) || '',
+                  replyMsgClientSeq: seq7
+                }
+              }]
+              if (q7.text) rElems.push({ elementType: 1, elementId: '', textElement: { content: String(q7.text), atType: 0, atUid: '', atTinyId: '', atNtUid: '' } })
+              var r11 = s11.sendMsg('0', peer7, rElems, new Map())
+              w('[qq] http reply -> ' + q7.peerUid + ' to msgId=' + (q7.msgId || (tgt && tgt.msgId)) + ' seq=' + seq7)
+              if (r11 && r11.then) r11.then(function (x) { reply(200, { ok: true, result: Js(x) }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+              else reply(200, { ok: true, result: r11 })
+            }
+            if (q7.seq && q7.senderUid) return sendReply(null)
+            // 没给 seq/发送者 → 自己把目标消息查出来（qq_reply 工具只传 chat + msgId 就能用）
+            var pr7 = q7.msgId ? s11.getMsgsByMsgId(peer7, [String(q7.msgId)])
+              : s11.getAioFirstViewLatestMsgs(peer7, 20)
+            pr7.then(function (x) {
+              var list = (x && (x.msgList || x.msg_list)) || (Array.isArray(x) ? x : [])
+              var tgt = null
+              if (q7.msgId) { for (var i = 0; i < list.length; i++) if (String(list[i].msgId) === String(q7.msgId)) { tgt = list[i]; break } }
+              else { for (var j = list.length - 1; j >= 0; j--) { if (String(list[j].senderUid) !== String(S.selfUid || '')) { tgt = list[j]; break } } }
+              if (!tgt) return reply(404, { ok: false, err: '找不到要引用的那条消息' })
+              sendReply(tgt)
+            }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }        if (url.indexOf('/sendptt') === 0) {
+          var qt = qs()
+          try {
+            var r7 = sendPttInternal(qt.peerUid || qt.to, parseInt(qt.chatType || '1', 10), qt.path, qt.duration)
+            w('[qq] http sendptt -> ' + (qt.peerUid || qt.to) + ' ' + qt.path)
+            if (r7 && r7.then) r7.then(function (x) { reply(200, { ok: true, result: Js(x) }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+            else reply(200, { ok: true, result: r7 })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
         }        if (url.indexOf('/download') === 0) {
           var q0 = qs()
           var mediaDir = WS + '\\qq-media'
@@ -879,6 +984,83 @@
           return
         }
         return reply(404, { ok: false, err: 'not found ' + url })
+  }
+
+  /** 把内核对象转成能看懂的 JSON（Map / BigInt / 循环引用都处理掉） */
+  function Js(o) {
+    var seen = []
+    function conv(v) {
+      if (v === null || v === undefined) return v
+      var t = typeof v
+      if (t === 'bigint') return String(v)
+      if (t === 'function') return '[fn]'
+      if (t !== 'object') return v
+      if (seen.indexOf(v) >= 0) return '[circular]'
+      seen.push(v)
+      try {
+        if (v instanceof Map) { var m2 = {}; v.forEach(function (val, k) { m2[String(k)] = conv(val) }); return { __map: m2 } }
+        if (Array.isArray(v)) return v.map(conv)
+        if (typeof Uint8Array !== 'undefined' && v instanceof Uint8Array) return '[bytes ' + v.length + ']'
+      } catch (e) { }
+      var out = {}
+      try { Object.keys(v).forEach(function (k) { try { out[k] = conv(v[k]) } catch (e) { out[k] = '[err]' } }) } catch (e) { }
+      return out
+    }
+    return conv(o)
+  }
+
+  /** 发本地文件：照 NapCat 的做法——先把文件塞进 QQ 的发送目录，再发 fileElement{FILE=3}
+   *  注意 elementType 必须 3（FILE），9 是 WALLET → 内核直接回 result=5 */
+  function sendFileInternal(peerUid, chatType, filePath) {
+    var s = msgService()
+    if (!s) throw new Error('no msgService')
+    var crypto = p.mainModule.require('crypto')
+    var buf = fs.readFileSync(filePath)
+    var md5 = crypto.createHash('md5').update(buf).digest('hex')
+    var name = require_basename(filePath)
+    var req = { md5HexStr: md5, fileName: name, elementType: 3, elementSubType: 0, thumbSize: 0, needCreate: true, downloadType: 1, file_uuid: '' }
+    var target = ''
+    try { target = s.getRichMediaFilePathForMobileQQSend(req) } catch (e) { }
+    if (!target) { try { target = s.getRichMediaFilePathForGuild(req) } catch (e) { } }
+    if (!target) throw new Error('没拿到发送目录路径')
+    try { fs.mkdirSync(p.mainModule.require('path').dirname(target), { recursive: true }) } catch (e) { }
+    fs.copyFileSync(filePath, target)
+    var elem = {
+      elementType: 3, elementId: '',
+      fileElement: { fileName: name, folderId: '', filePath: target, fileSize: String(buf.length) }
+    }
+    w('[qq] sendFile md5=' + md5 + ' size=' + buf.length + ' -> ' + target)
+    return s.sendMsg('0', { chatType: chatType || 1, peerUid: peerUid, guildId: '' }, [elem], new Map())
+  }
+
+  /** 发语音：pttElement（FILE=4）。文件必须已经是 silk，塞进 QQ 的语音发送目录再发 */
+  function sendPttInternal(peerUid, chatType, filePath, duration) {
+    var s = msgService()
+    if (!s) throw new Error('no msgService')
+    var crypto = p.mainModule.require('crypto')
+    var buf = fs.readFileSync(filePath)
+    var md5 = crypto.createHash('md5').update(buf).digest('hex')
+    var name = require_basename(filePath)
+    var req = { md5HexStr: md5, fileName: name, elementType: 4, elementSubType: 0, thumbSize: 0, needCreate: true, downloadType: 1, file_uuid: '' }
+    var target = ''
+    try { target = s.getRichMediaFilePathForMobileQQSend(req) } catch (e) { }
+    if (!target) { try { target = s.getRichMediaFilePathForGuild(req) } catch (e) { } }
+    if (!target) throw new Error('没拿到语音发送目录路径')
+    try { fs.mkdirSync(p.mainModule.require('path').dirname(target), { recursive: true }) } catch (e) { }
+    fs.copyFileSync(filePath, target)
+    var elem = {
+      elementType: 4, elementId: '',
+      pttElement: {
+        fileName: name, filePath: target, md5HexStr: md5, fileSize: String(buf.length),
+        duration: Number(duration) || 2, formatType: 1, voiceType: 1, voiceChangeType: 0,
+        canConvert2Text: true,
+        waveAmplitudes: [0, 18, 9, 23, 16, 17, 16, 15, 44, 17, 24, 20, 14, 15, 17],
+        fileSubId: '', playState: 1, autoConvertText: 0, storeID: 0,
+        otherBusinessInfo: { aiVoiceType: 0 }
+      }
+    }
+    w('[qq] sendPtt md5=' + md5 + ' size=' + buf.length + ' dur=' + (duration || 2) + ' -> ' + target)
+    return s.sendMsg('0', { chatType: chatType || 1, peerUid: peerUid, guildId: '' }, [elem], new Map())
   }
 
   // ---------- 5) 命令文件（调试用） ----------

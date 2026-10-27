@@ -350,6 +350,71 @@ export async function apply(ctx, config = {}) {
     }))
 
     ctx.tools.register(defineTool({
+      name: 'qq_send_file',
+      description: '用自己 QQ 号发一个本地文件。chat 写成 u-<uid> 或 g-<群号>，path 是本地文件绝对路径。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+        path: { type: 'string', description: '本地文件绝对路径', required: true },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.sendFile(isGroup ? 2 : 1, peerUid, String(args.path || ''))
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+      },
+    }))
+
+    ctx.tools.register(defineTool({
+      name: 'qq_send_voice',
+      description: '用自己 QQ 号发一条语音。chat 写成 u-<uid> 或 g-<群号>，path 是 silk 语音文件（.amr 那种），duration 是秒数。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+        path: { type: 'string', description: 'silk 语音文件绝对路径', required: true },
+        duration: { type: 'number', description: '时长（秒）' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.sendVoice(isGroup ? 2 : 1, peerUid, String(args.path || ''), args.duration ?? 0)
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+      },
+    }))
+
+    ctx.tools.register(defineTool({
+      name: 'qq_reply',
+      description: '用自己 QQ 号引用某条消息回复。chat 写成 u-<uid> 或 g-<群号>；msgId 是那条消息的 msgId（可以不填，默认引用对方最近一条）；text 是要说的话。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
+        text: { type: 'string', description: '要发的内容', required: true },
+        msgId: { type: 'string', description: '可选：被引用消息的 msgId' },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }],
+      },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const isGroup = key.startsWith('g-') || key.startsWith('G-')
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const r = await bridge.reply(isGroup ? 2 : 1, peerUid, String(args.msgId || ''), String(args.text ?? ''))
+        return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
+      },
+    }))
+
+    ctx.tools.register(defineTool({
       name: 'qq_status',
       description: '看 QQ 桥的状态：登录没登录、session/msgService 好没好、收件箱里排了几条。',
       parameters: {},

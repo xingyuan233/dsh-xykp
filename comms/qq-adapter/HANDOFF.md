@@ -284,3 +284,94 @@ chat 用 `u-<uid>`（私聊）/ `g-<群号>`（群聊）。鲸鱼娘的 uid 是 
 
 **樱的纯 shell 桥 + qq-adapter 插件已经能：收/发文字、收/发图片、语音自动转写、群里 @ 人、翻私聊和群聊历史、插队唤醒、桥挂了自动拉起、登录失效推二维码到 ntfy。**
 剩下的是文件、引用、发语音——都是「再加一个 element 类型」的活。
+
+## 十一、发文件 / 引用回复 / 发语音 —— 都通了（2026-10-27 23:1x）
+
+三个「再加一个 element 类型」的活，一个晚上全做完。下面是能省下明天三小时的细节。
+
+### 11.1 发文件：`fileElement`，elementType 必须 **3**
+
+```js
+var target = msgService().getRichMediaFilePathForMobileQQSend({
+  md5HexStr: md5, fileName: name, elementType: 3, elementSubType: 0,
+  thumbSize: 0, needCreate: true, downloadType: 1, file_uuid: ''
+})
+fs.copyFileSync(localPath, target)   // 必须先拷进 QQ 自己的发送目录
+sendMsg('0', peer, [{
+  elementType: 3, elementId: '',
+  fileElement: { fileName: name, folderId: '', filePath: target, fileSize: String(size) }
+}], new Map())
+```
+
+- **踩的坑**：一开始按「文件」想当然写了 `elementType: 9` → `sendMsg` 返回 `result: 5`（拒绝）。
+  9 是 `WALLET`（钱包），`FILE = 3 / PTT = 4 / PIC = 2 / REPLY = 7 / TEXT = 1`。
+  枚举在 NapCat bundle 里：`_e = {UNKNOWN:0, TEXT:1, PIC:2, FILE:3, PTT:4, VIDEO:5, ... REPLY:7}`。
+- `fileElement` 只需要这**四个字段**（NapCat 的 `createValidSendFileElement` 就是这样），
+  多余字段（fileMd5/fileUuid/thumbs…）不用给，内核自己补 fileUuid/fileSha 之类。
+- 成功后 `transferStatus` 会走 1→4，对端落盘正常。
+
+### 11.2 引用回复：`replyElement`，字段名是**拼错的那个**
+
+```js
+{ elementType: 7, elementId: '', replyElement: {
+    replayMsgId: String(targetMsgId),        // ← replay，不是 reply！
+    replayMsgSeq: String(targetSeq),
+    replyMsgTime: String(targetTime),        // 秒
+    senderUin: String(targetSenderUin),
+    senderUidStr: String(targetSenderUid),
+    replyMsgClientSeq: String(targetSeq)     // 群聊里是 0，私聊 = seq
+} }
+```
+
+- 试过两套形状：只有 `replayMsgId/replayMsgSeq`（拼错的）+ 配套四个字段 → **引用块正常**；
+  写成正确的 `replyMsgId/replyMsgSeq` → 内核**照样 result 0**，但对端只看到裸文字，引用块不出现。
+  **内核只认拼错的那两个名字**，这套字段名来自 NapCat 的 `parseElement`：`n.messageId / n.friendSeq`。
+- `seq` / `time` / 发送者都可以不传：桥会先用 `getMsgsByMsgId(peer,[msgId])` 把消息查出来自己补
+  （不给 msgId 就取 `getAioFirstViewLatestMsgs` 里对方最近一条）。
+- 群里 `replyMsgClientSeq` 给 0（NapCat 的 `isGroupReply` 判断就是 `clientSeq === 0`）。
+
+### 11.3 发语音：`pttElement`，elementType **4**，文件必须已经是 silk
+
+```js
+var target = getRichMediaFilePathForMobileQQSend({ md5HexStr, fileName, elementType: 4, ... })
+fs.copyFileSync(silkPath, target)
+sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
+  fileName, filePath: target, md5HexStr, fileSize: String(size), duration, formatType: 1,
+  voiceType: 1, voiceChangeType: 0, canConvert2Text: true,
+  waveAmplitudes: [0,18,9,23,16,17,16,15,44,17,24,20,14,15,17],
+  fileSubId: '', playState: 1, autoConvertText: 0, storeID: 0,
+  otherBusinessInfo: { aiVoiceType: 0 }
+} }], new Map())
+```
+
+- **验证方式**：把刚发出去的语音再用 `/ptt?msgId=…` 走一遍服务器转写，返回「嗯。」——
+  说明服务器认这段音频，内容没坏（对端收到 1518 字节是服务器重编码后的短语音，不是截断）。
+- **还没做的**：任意音频（wav/mp3）→ silk。NapCat 靠带 `ntsilk_s16le` 编码器的 ffmpeg
+  （`ffmpeg -i in.wav -ac 1 -ar 24000 -c:a ntsilk_s16le out.silk`），本机 ffmpeg 7.0.2 **没这个编码器**；
+  `silk-wasm` 3.7.1 被 gate 扫成 **BLOCK**（wasm loader 里有 `new Function` 混淆），别绕过。
+  目前能发的是「已经是 silk 的文件」＝ 收到的语音原样转发。
+
+### 11.4 顺手修掉的炸弹：旧监听器被僵尸定时器反复注册
+
+症状：同一条消息在 `qq-bridge.log` 里刷十几遍 `RECV`，还夹着
+`onOneMsg err ensurePttTranscribed is not defined`。
+
+- 原因：早期 eval 留下的 `ensure` 定时器闭包里的 `LISTENER_VER` 永远是 `v12`，
+  它每 10 秒把 `v12` 监听器再注册一次；QQ 给新监听器会**回放最近消息**，于是同一条被推 N 遍。
+- 修法（两层）：
+  1. `installListenerGuard()` 把 `msgService().addKernelMsgListener` 包一层，
+     只放行 `l.__qqVer === global.__qqListenerVer`（版本号放全局，跟着 eval 更新）→ 旧注册进不来。
+  2. `global.ensurePttTranscribed / ensurePicDownloaded = …` 每轮 eval 覆盖一次，
+     旧闭包里那几个函数名解析到全局，不再 ReferenceError。
+- 现在 `LISTENER_VER = 'v17'`。
+
+### 11.5 调试用端点（留着有用）
+
+| 端点 | 用途 |
+|---|---|
+| `GET /raw?peerUid=&chatType=&msgId=&count=` | dump 原始元素结构（`Js()` 会处理 Map/BigInt/循环）——查 `replyElement`/`fileElement` 真字段名全靠它 |
+| `GET /sendfile?peerUid=&chatType=&path=` | 发文件 |
+| `GET /sendptt?peerUid=&chatType=&path=&duration=` | 发语音 |
+| `GET /reply?peerUid=&chatType=&msgId=&text=` | 引用回复（seq/time/sender 可省） |
+
+插件工具同步加好：`qq_send_file`、`qq_send_voice`、`qq_reply`（改插件要重启宿主才出现）。
