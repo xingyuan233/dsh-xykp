@@ -1,8 +1,8 @@
 {
   "name": "dsh-bili-rove",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "B站主动操作（带 cookie）：搜索/详情/字幕/截帧/评论/回复/私信；cookie 失效推二维码，持续失败回退匿名。",
+  "description": "B站主动操作（带 cookie）：搜索/详情/字幕/截帧/评论/弹幕/用户/收藏/热榜/回复/私信/三连/动态；登录走扫码推 ntfy，数据只碰 bili-duty。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -13,5 +13,8 @@
     "lib",
     "README.md"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT"
 }

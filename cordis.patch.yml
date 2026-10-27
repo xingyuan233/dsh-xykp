@@ -41,6 +41,8 @@
     # ── comms
     - id: bili-reply
       name: 'dsh-xykp/comms/bili-reply'
+    - id: bili-rove
+      name: 'dsh-xykp/comms/bili-rove'
 
     # ── observer
     - id: dsh-prosecutor

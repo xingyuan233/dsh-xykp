@@ -1,22 +1,21 @@
 // bili-rove · 宿主半边（主动用的那半边）
 //
-// 需求（任务-2026-10-27.md 第四节）：
-//   · 我主动做的事：搜视频、看详情、截帧、读评论、回评论、私信 —— 默认都带 cookie
-//   · cookie 失效 → ntfy 推二维码，等一段时间（等扫码）
-//   · 持续失败 → 回退不带 cookie 再试
-//   · 匿名也被限制 → 返回失败
-//   · 不再定时轮询 cookie
+// 一个插件两把工具：
+//   · bili_rove —— 搜视频 / 看详情 / 字幕 / 截帧 / 评论 / 弹幕 / 用户 / 收藏 / 热榜 /
+//                  回复 / 私信 / 三连 / 发动态 / 收到的 @ 和回复 / 批量扫
+//   · bili_login —— 扫码登录（推 ntfy 等扫码）/ 检查登录状态
 //
-// ⚠️ 现状（2026-10-27 06:00）：
-//   · 回退状态机、ntfy 推送、cookie 读取、工具注册、失败流程都就位并自测过
-//   · **读能力已接**：search / video / subtitles 走 vendor/ 里的官方 provider（复制自 dsh-plugin-bilibili）
-//   · **还没接**：frames / comments / reply / dm（调用会抛 BILI_ROVE_NOT_WIRED）
-import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { nextStep, DEFAULTS as FALLBACK_DEFAULTS } from './fallback.js'
-import { notify, DEFAULTS as NTFY_DEFAULTS } from './ntfy.js'
-import { createBackend } from './backend.js'
+// 设计取舍（任务-2026-10-27 第四节 + 2026-10-27 15:xx 主人补充）：
+//   · 不做自动刷、不做定时轮询 —— 什么时候刷由我自己判断
+//   · 不做自动回复 —— 那是 bili-reply 的事
+//   · 读操作 cookie 失效可以回退匿名；写操作**绝不重试**（避免重复发评论/私信）
+//   · cookie / 凭证 / 配置都只读写 <DSH_HOME>/bili-duty 里的数据文件
+import { DEFAULTS as FALLBACK_DEFAULTS } from './fallback.js'
+import { DEFAULTS as ACCOUNT_DEFAULTS, resolveCookie, readCredential, cookieOf, dataDirOf } from './account.js'
+import { DEFAULTS as NTFY_DEFAULTS } from './ntfy.js'
+import { DEFAULTS as LOGIN_DEFAULTS, qrLogin, checkLogin, loginStart } from './login.js'
+import { createBackend, WRITE_ACTIONS } from './backend.js'
+import { collectFrames, FRAME_MODES, FRAME_MAX_COUNT, FRAME_DEFAULT_COUNT } from './frames.js'
 
 // 自测环境里没有宿主的 dsh-tools 包，用恒等实现兜底（宿主里拿到的才是真的 defineTool）
 let defineTool = (spec) => spec
@@ -36,136 +35,216 @@ const warn = (...a) => console.warn(PREFIX, ...a)
 
 export const DEFAULTS = {
   ...FALLBACK_DEFAULTS,
+  ...ACCOUNT_DEFAULTS,
   ...NTFY_DEFAULTS,
-  cookie: '',
-  cookieEnv: 'BILIBILI_SESSDATA',
-  // bili-duty 的配置（扫码登录会写这里）
-  dutyConfigPath: '',
-  // 等扫码最长多久（秒），0 = 不等待，直接回退
-  qrWaitSeconds: 60,
-  // 检查 cookie 文件变化的间隔（秒）
-  qrPollSeconds: 5,
+  ...LOGIN_DEFAULTS,
+  // 读操作 cookie 失效时要不要顺手把二维码推到 ntfy（1 = 推，0 = 只报错）
+  autoPushQr: 0,
 }
 
-const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
+const READ_ACTIONS = [
+  'search', 'video', 'subtitles', 'frames', 'comments', 'danmaku',
+  'user', 'user_videos', 'favorites', 'hot', 'rank',
+  'dm_sessions', 'dm_recent', 'received_at', 'received_replies', 'whoami', 'crawl',
+]
 
-async function readJson(path, fallback) {
+/** 读操作：cookie → （登录类错误就推一次二维码）→ 匿名 → 失败 */
+async function runRead(action, args, cfg, deps) {
+  let lastErr = null
+  const cookie = await deps.cookie()
   try {
-    return JSON.parse(await readFile(path, 'utf8'))
-  } catch {
-    return fallback
+    return { ok: true, mode: 'cookie', data: await deps.call({ action, args, cookie }) }
+  } catch (e) {
+    lastErr = e
   }
-}
-
-/** 读 cookie：配置 > 环境变量 > bili-duty/config.json */
-export async function resolveCookie(cfg = {}) {
-  const literal = String(cfg.cookie || '').trim()
-  if (literal) return literal
-  const env = String(cfg.cookieEnv || DEFAULTS.cookieEnv)
-  const fromEnv = String(process.env[env] || '').trim()
-  if (fromEnv) return fromEnv
-  const path = cfg.dutyConfigPath || join(home(), 'bili-duty', 'config.json')
-  const duty = await readJson(path, null)
-  const fromFile = duty && typeof duty.cookie === 'string' ? duty.cookie.trim() : ''
-  return fromFile || ''
-}
-
-/** 默认 backend：读能力（search/video/subtitles）已接 vendor 里的 provider；
- *  评论/回复/私信/截帧还没接，会抛 BILI_ROVE_NOT_WIRED。 */
-export function makeBackend(cfg) {
-  return createBackend({ baseUrl: cfg.baseUrl, userAgent: cfg.userAgent, timeoutMs: cfg.timeoutMs })
-}
-
-/** 等扫码：轮询 cookie 文件，变了就返回 true；超时返回 false */
-async function waitForCookie(cfg, deps, before) {
-  const wait = Math.max(0, Number(cfg.qrWaitSeconds) || 0)
-  if (!wait) return false
-  const every = Math.max(1, Number(cfg.qrPollSeconds) || 5) * 1000
-  const deadline = Date.now() + wait * 1000
-  for (;;) {
-    await new Promise((r) => setTimeout(r, every))
-    const now = await deps.cookie()
-    if (now && now !== before) return true
-    if (Date.now() >= deadline) return false
-  }
-}
-
-/**
- * 带 cookie → 二维码等待 → 匿名 → 失败。
- * 抽成独立函数，方便用假 backend / 假 cookie 自测。
- */
-export async function runWithFallback(action, args, cfg, deps) {
-  const history = []
-  let qrPushed = 0
-  let anonymousTried = 0
-  for (;;) {
-    const step = nextStep(history, cfg)
-    log(`action=${action} → ${step.mode}（${step.reason}）`)
-    if (step.mode === 'fail') {
-      return { ok: false, error: 'BILI_ROVE_LIMITED', reason: step.reason, tried: history.map((h) => h.mode) }
-    }
-    if (step.pushQr && qrPushed < 1) {
-      qrPushed++
-      await deps.pushQr(step.reason)
-      const before = await deps.cookie()
-      const got = await deps.waitForCookie(cfg, before)
-      if (!got) log('二维码等待超时，继续按失败处理')
-    }
-    const cookie = step.mode === 'cookie' ? await deps.cookie() : ''
+  const msg = String(lastErr?.message || lastErr)
+  const authIssue = !cookie || /NO_CREDENTIAL|未登录|not login|-101|-111/i.test(msg)
+  if (authIssue && Number(cfg.autoPushQr) === 1) {
     try {
-      const data = await deps.call({ action, args, cookie })
-      history.push({ mode: step.mode, ok: true })
-      return { ok: true, mode: step.mode, data }
-    } catch (err) {
-      if (step.mode === 'anonymous') anonymousTried++
-      history.push({ mode: step.mode, ok: false, error: String(err?.message || err) })
-      if (history.length > 12) {
-        return { ok: false, error: 'BILI_ROVE_LOOP', reason: '回退次数过多', tried: history.map((h) => h.mode) }
-      }
+      const qr = await loginStart()
+      const { notifyText } = await import('./ntfy.js')
+      await notifyText('B站登录失效', '打开这条链接用 B站 App 扫码登录：' + qr.url, cfg)
+    } catch {
+      /* 推送失败不影响下面回退 */
     }
   }
+  // 匿名再试一次（读接口匿名通常也通）
+  try {
+    return { ok: true, mode: 'anonymous', data: await deps.call({ action, args, cookie: '' }) }
+  } catch (e) {
+    lastErr = e
+  }
+  const hint = authIssue
+    ? '\n（需要登录：调 bili_login 生成二维码扫码，扫完再试）'
+    : ''
+  throw new Error(String(lastErr?.message || lastErr) + hint)
 }
+
+/** frames 的图片块 <-> 模型 */
+function framesContent(value) {
+  const envelope = [
+    '<bvid>' + value.meta.bvid + '</bvid>',
+    '<title>' + value.meta.title + '</title>',
+    '<source>' + value.meta.source + '</source>',
+    '<frames>' + String(value.images.length) + '</frames>',
+  ]
+  if (value.meta.note !== undefined) envelope.push('<note>' + value.meta.note + '</note>')
+  const blocks = [{ type: 'text', text: envelope.join('\n') }]
+  for (const image of value.images) {
+    blocks.push({
+      type: 'image',
+      attachment: {
+        attachmentId: image.attachmentId,
+        mediaType: image.mediaType,
+        bytes: image.bytes,
+        width: image.width,
+        height: image.height,
+        ...(image.name === undefined ? {} : { name: image.name }),
+      },
+    })
+  }
+  return blocks
+}
+
+function roveRender(args, value) {
+  if (value && Array.isArray(value.images) && value.meta && value.meta.bvid) return framesContent(value)
+  return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
+}
+
+const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms))
 
 export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
-  const backend = makeBackend(cfg)
+  const backend = createBackend(cfg)
   const deps = {
     cookie: () => resolveCookie(cfg),
     call: (req) => backend.call(req),
-    pushQr: async (reason) => {
-      const ok = await notify('B站登录失效', `需要扫码：${reason}\n扫完 cookie 会自动接上`, 'rotating_light', cfg)
-      if (!ok) warn('ntfy 推送失败（不影响回退流程）')
-      log(`已推二维码请求：${reason}`)
-    },
-    waitForCookie,
   }
 
+  // ── bili_login ───────────────────────────────────────────────────────────
   ctx.tools.register(defineTool({
-    name: 'bili_rove',
-    description:
-      'B站主动操作（带 cookie）：search 搜视频 / video 详情 / subtitles 字幕 / frames 截帧 / comments 读评论 / reply 回评论 / dm 私信。' +
-      'cookie 失效会自动推二维码到 ntfy 并等待，持续失败会回退匿名，匿名也被限制就直接报失败。',
+    name: 'bili_login',
+    description: 'B站扫码登录：qr = 生成二维码并推 ntfy（whale-bilibili-login-channel），然后等扫码；check = 检查当前凭证是否有效。cookie 失效时先调这个。',
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: ['search', 'video', 'subtitles', 'frames', 'comments', 'reply', 'dm'],
-        description: '要做的操作',
+        enum: ['qr', 'check'],
+        description: 'qr 扫码登录 / check 检查登录状态',
       },
-      keyword: { type: 'string', description: 'search 用的关键词' },
-      bvid: { type: 'string', description: 'video / subtitles / frames / comments / reply 用的 BV 号' },
-      rpid: { type: 'string', description: 'reply 要回的那条评论 id' },
-      text: { type: 'string', description: 'reply / dm 要发的内容' },
-      page: { type: 'number', description: '搜索页码，默认 1' },
     },
     async execute(args) {
-      const action = String(args && args.action ? args.action : '').trim()
-      if (!action) return { ok: false, error: 'BILI_ROVE_BAD_ARGS', reason: 'action 必填' }
-      return runWithFallback(action, args || {}, cfg, deps)
+      const action = String(args && args.action ? args.action : 'check').trim()
+      if (action === 'check') {
+        const cred = await readCredential(cfg)
+        const st = await checkLogin(cookieOf(cred))
+        return { ...st, dataDir: dataDirOf(cfg) }
+      }
+      if (action !== 'qr') return { ok: false, error: 'BILI_ROVE_BAD_ARGS：action 只能是 qr / check' }
+      log('开始扫码登录…')
+      const cred = await qrLogin(cfg, { push: true })
+      if (!cred) return { ok: false, error: 'BILI_ROVE_LOGIN_TIMEOUT：没等到扫码（二维码已推到 ntfy，可以再调一次）' }
+      const st = await checkLogin(cookieOf(cred))
+      return { ok: true, ...st, saved: true }
     },
   }))
-  log('已注册工具 bili_rove（backend 未接，见 README）')
+
+  // ── bili_rove ────────────────────────────────────────────────────────────
+  ctx.tools.register(defineTool({
+    name: 'bili_rove',
+    description:
+      'B站主动操作（带 cookie）：search 搜视频 / video 详情 / subtitles 字幕 / frames 截帧 / comments 评论 / danmaku 弹幕 / ' +
+      'user 用户资料 / user_videos 用户投稿 / favorites 收藏夹 / hot 热门 / rank 排行 / reply 回评论 / dm 私信（带 text 发、不带读）/ ' +
+      'dm_sessions 私信会话 / dm_recent 读私信 / triple 点赞投币收藏 / dynamic 发动态 / received_at 收到的@ / received_replies 收到的回复 / crawl 批量扫。' +
+      'frames 会把真帧作为图片返回（meta.source 是 preview/videoshot 才是真帧，cover 只是封面）。',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        enum: [...READ_ACTIONS, 'reply', 'dm', 'triple', 'dynamic'],
+        description: '要做的操作',
+      },
+      keyword: { type: 'string', description: 'search / crawl 的关键词' },
+      bvid: { type: 'string', description: 'video / subtitles / frames / comments / danmaku / reply / triple 用的 BV 号（reply/triple 也接受纯数字 aid）' },
+      uid: { type: 'string', description: 'user / user_videos / favorites / dm 用的 UID' },
+      mediaId: { type: 'number', description: 'favorites 查某个收藏夹内容时用' },
+      rpid: { type: 'string', description: 'reply 要回的评论 rpid（楼中楼）' },
+      root: { type: 'string', description: 'reply 的楼层根 rpid（一般不用填）' },
+      text: { type: 'string', description: 'reply / dm / dynamic 要发的内容' },
+      mode: { type: 'string', description: 'frames: auto/extract；triple: like/coin/fav/like_fav/triple' },
+      count: { type: 'number', description: 'frames 取几帧（1-12，默认 8）' },
+      num: { type: 'number', description: 'comments / danmaku 取多少条' },
+      page: { type: 'number', description: '翻页（默认 1）' },
+      pageSize: { type: 'number', description: '每页多少' },
+      order: { type: 'string', description: 'search / user_videos 的排序' },
+      size: { type: 'number', description: 'dm_sessions / dm_recent 的条数' },
+      pages: { type: 'number', description: 'dm_recent 往前翻几页' },
+      rid: { type: 'number', description: 'rank 的分区 id（0 = 全站）' },
+      coinNum: { type: 'number', description: 'triple 投币枚数（1-2）' },
+      maxVideos: { type: 'number', description: 'crawl 扫几条视频' },
+      commentsPerVideo: { type: 'number', description: 'crawl 每条视频读几条评论' },
+      getSubtitles: { type: 'boolean', description: 'crawl 要不要读字幕（默认 true）' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {} },
+      render: roveRender,
+    },
+    async execute(args, exec) {
+      const action = String(args && args.action ? args.action : '').trim()
+      if (!action) return { ok: false, error: 'BILI_ROVE_BAD_ARGS：action 必填' }
+      const a = args || {}
+
+      if (action === 'frames') {
+        const bvid = String(a.bvid || '').trim()
+        if (!bvid) return { ok: false, error: 'BILI_ROVE_BAD_ARGS：frames 需要 bvid' }
+        const attachments = ctx.get('attachments')
+        if (attachments === undefined) return { ok: false, error: 'BILI_ROVE_NO_ATTACHMENTS：这个部署没有挂载附件服务，看不了帧' }
+        const cookie = await deps.cookie()
+        const mode = a.mode === undefined ? 'auto' : String(a.mode)
+        if (!FRAME_MODES.includes(mode)) return { ok: false, error: 'mode 只能是 ' + FRAME_MODES.join(' / ') }
+        const count = a.count === undefined ? FRAME_DEFAULT_COUNT : Number(a.count)
+        if (!Number.isInteger(count) || count < 1 || count > FRAME_MAX_COUNT) {
+          return { ok: false, error: 'count 要是 1-' + FRAME_MAX_COUNT + ' 的整数' }
+        }
+        // 用 provider 的 video/playerInfo/videoshot/fetchBytes 拿数据
+        const { BilibiliOfficialProvider } = await import('./vendor/provider.js')
+        const service = new BilibiliOfficialProvider({
+          ...(cookie ? { cookie } : {}),
+          requestTimeoutMs: Number(cfg.timeoutMs) || 30_000,
+        })
+        try {
+          const detail = await service.video({ bvid }, exec?.signal)
+          const value = await collectFrames({ service, attachments, detail, bvid, mode, count, signal: exec?.signal })
+          return value
+        } catch (e) {
+          return { ok: false, error: 'BILI_ROVE_FRAMES_FAILED：' + String(e?.message || e) }
+        }
+      }
+
+      if (WRITE_ACTIONS.has(action)) {
+        // 写操作：只带 cookie 试一次，失败不重试、不回退匿名
+        const cookie = await deps.cookie()
+        if (!cookie) {
+          return { ok: false, error: 'BILI_ROVE_NO_CREDENTIAL：写操作需要登录，先调 bili_login 扫码' }
+        }
+        try {
+          const data = await backend.call({ action, args: a, cookie, signal: exec?.signal })
+          return data && typeof data === 'object' ? data : { ok: true, data }
+        } catch (e) {
+          return { ok: false, error: String(e?.message || e) }
+        }
+      }
+
+      try {
+        const r = await runRead(action, a, cfg, deps)
+        return { ok: true, mode: r.mode, data: r.data }
+      } catch (e) {
+        return { ok: false, error: String(e?.message || e) }
+      }
+    },
+  }))
+  log('已注册工具 bili_rove / bili_login')
 }
 
-export const _internal = { runWithFallback, resolveCookie, DEFAULTS }
-export { nextStep, notify }
+export const _internal = { runRead, DEFAULTS }
+export { checkLogin, qrLogin, loginStart }
