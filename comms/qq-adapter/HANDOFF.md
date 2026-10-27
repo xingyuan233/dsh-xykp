@@ -959,3 +959,16 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
    → 现在先继承**当前绑定会话的 header**（`agentPreset` / `cwd`），再退到偏好/部署默认。
 
 用法上现在是这样：`/new` 之后这个聊天真的会发到新会话；`/session <序号>` 切过去也一样。
+
+### 18.14 两个修正（2026-10-28 03:50）
+
+**A. resume 参数写错**：`agentsSvc.resume()` 认的是 `options.resumeSessionId`（不是 `sessionId`），
+传错时 `id` 是 undefined，`persistence.open(undefined)` 抛
+`Cannot read properties of undefined (reading 'length')` → 宿主重启后 `/new` 的会话全都投不进去 ✗
+→ 改成 `resume({ resumeSessionId: sessionId })`
+
+**B. 限流语义改成「距上次发送」**（主人：以前是不管发没发过都硬等一个窗口）
+
+- 旧：非 fast 聊天**永远**走暂存，而且每来一条就把定时器往后推一个窗口 → 必定要等 ✗
+- 新：`trafficLimited(key)` 只看「`now - 上次发送 < coalesceSeconds`」；
+  隔得久就直接发；刚发过才攒。定时器定在「**上次发送 + 窗口**」，不因为新消息继续后推

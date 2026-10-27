@@ -124,7 +124,7 @@ async function deliver(agentsSvc, sessionId, text, mode = 'steer') {
     // 宿主重启后，`/new` 建的那些会话没有活着的 agent —— 按 id resume 回来再投
     // （2026-10-28：以前这里直接抛「找不到了」，等于重启后 /new 的绑定全废）
     try {
-      const h = await agentsSvc.resume({ sessionId })
+      const h = await agentsSvc.resume({ resumeSessionId: sessionId })
       agent = (h && h.agent) || findAgent(agentsSvc, sessionId)
     } catch (err) {
       warn('resume ' + sessionId + ' 失败：', err?.message || err)
@@ -843,13 +843,12 @@ export async function apply(ctx, config = {}) {
     return s
   }
 
-  // ── 流量控制：同一个聊天太频繁就暂存，攒够「静默窗口」再合并成一条发 ──
-  // 主人定的语义（2026-10-28）：只用一个数 `coalesceSeconds`。
-  //   · 同一个聊天里的消息，谁先来就先攒着，每次攒到新的就重新计时
-  //   · 静默够 coalesceSeconds 就把攒的 + 最新这条一起发出去（一次发送 = 清空缓存）
-  //   · 所以「最短间隔」和「静默多久」本来就是一件事，拆成两个参数只会互相打架
-  //   · fastUids 里的聊天不受限（来一条转一条）
-  // 防呆：一直有人刷屏时不至于永远发不出去，攒最久的那条超过 3 个窗口就强制发。
+  // ── 流量控制：同一个聊天「发得太密」时把消息合并成一条 ──
+  // 主人 2026-10-28 定的语义（改过一次）：
+  //   · 时间轴是「**距上次发送**」至少 coalesceSeconds，不是「距上一条消息静默这么久」。
+  //     隔了很久没人说话 → 第一条立刻发；刚发过 → 后面的攒着，到「上次发送 + 窗口」一起发。
+  //   · 以前是每条消息都把定时器往后推，结果不管之前发没发过都要硬等一个窗口 ✗
+  //   · fastUids 里的聊天完全不受限（来一条转一条）
   const pendingBatch = new Map() // key -> { parts: [{sender,text}], timer, firstAt }
   const lastDeliveredAt = new Map() // key -> ms
 
@@ -858,9 +857,12 @@ export async function apply(ctx, config = {}) {
   }
 
   function trafficLimited(key) {
-    if (coalesceMs() <= 0) return false
+    const win = coalesceMs()
+    if (win <= 0) return false
     const fast = Array.isArray(cfg.fastUids) ? cfg.fastUids : []
-    return !fast.includes(key)
+    if (fast.includes(key)) return false
+    const last = lastDeliveredAt.get(key) || 0
+    return Date.now() - last < win // 只有「刚发过、窗口还没过」才限流
   }
 
   function queueBatch(key, evt, text) {
@@ -868,10 +870,11 @@ export async function apply(ctx, config = {}) {
     if (!st) { st = { parts: [], timer: null, firstAt: Date.now() }; pendingBatch.set(key, st) }
     st.parts.push({ sender: String(evt.senderName || evt.senderUid || ''), text })
     const win = coalesceMs()
-    const starved = Date.now() - st.firstAt > win * 3
-    const wait = starved ? 0 : win
+    const last = lastDeliveredAt.get(key) || st.firstAt
+    // 到「上次发送 + 窗口」就发；**不因为新消息又往后推**
+    const wait = Math.max(100, last + win - Date.now())
     if (st.timer) clearTimeout(st.timer)
-    st.timer = setTimeout(() => { void flushBatch(key) }, Math.max(wait, 100))
+    st.timer = setTimeout(() => { void flushBatch(key) }, wait)
     if (typeof st.timer.unref === 'function') st.timer.unref()
   }
 
@@ -1386,4 +1389,5 @@ export async function apply(ctx, config = {}) {
 }
 
 export const _internal = { resolveTarget, deliver, SOURCE_KIND }
+
 
