@@ -19,6 +19,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { chatKeyOf, resolveRoute, parseTargetRef, formatIncoming, DEFAULTS as ROUTER_DEFAULTS } from './router.js'
 import { createBridge } from './bridge.js'
 import { toSilk, cleanupSilk } from './silk.js'
+import { readOverride, pickRouting } from './overrides.js'
 
 export const name = 'qq-adapter'
 
@@ -218,6 +219,8 @@ export async function apply(ctx, config = {}) {
   }
   async function tick(reason) {
     if (!cfg.enabled || running) return
+    // 运行时覆盖：设置页写到 home\qq-adapter\ui-config.json 的分流配置，每轮读一次（很便宜）
+    try { Object.assign(cfg, pickRouting((await readOverride())[INST] || {})) } catch { /* 读不到就用原配置 */ }
     running = true
     try {
       const r = await bridge.events(cursor)

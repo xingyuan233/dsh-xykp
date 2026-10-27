@@ -678,7 +678,7 @@
         function reply(code, obj) {
           var body = J(obj)
           try {
-            res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
+            res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body), 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type' })
             res.end(body)
           } catch (e) { }
         }
@@ -1012,7 +1012,39 @@
             return reply(200, { ok: true, which: which, methods: Object.getOwnPropertyNames(Object.getPrototypeOf(o)) })
           } catch (e) { return reply(500, { ok: false, err: e.message }) }
         }
-        if (url.indexOf('/buddy') === 0) {
+        // ---------- 设置页（分流覆盖配置） ----------
+        if (url.indexOf('/adapter-ui') === 0) {
+          try {
+            var html = fs.readFileSync(WS + '\\qq-adapter-ui.html', 'utf8')
+            try { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html) } catch (e) { }
+            return
+          } catch (e) { return reply(500, { ok: false, err: '读不到 qq-adapter-ui.html: ' + e.message }) }
+        }
+        if (url.indexOf('/adapter-config') === 0) {
+          var uiPath = CFG.uiConfigPath || 'D:\\AI\\DeepseekHarness\\home\\qq-adapter\\ui-config.json'
+          if (req.method === 'GET') {
+            var cur = {}
+            try { cur = JSON.parse(fs.readFileSync(uiPath, 'utf8') || '{}') } catch (e) { cur = {} }
+            return reply(200, cur)
+          }
+          var chunks2 = []
+          req.on('data', function (c) { chunks2.push(c) })
+          req.on('end', function () {
+            try {
+              var body = JSON.parse(Buffer.concat(chunks2).toString('utf8') || '{}')
+              var inst = String(body.instance || 'default')
+              var patch = body.patch || {}
+              var all = {}
+              try { all = JSON.parse(fs.readFileSync(uiPath, 'utf8') || '{}') } catch (e) { all = {} }
+              all[inst] = Object.assign({}, all[inst] || {}, patch)
+              try { fs.mkdirSync(path.dirname(uiPath), { recursive: true }) } catch (e) { }
+              fs.writeFileSync(uiPath, JSON.stringify(all, null, 2), 'utf8')
+              w('[qq] adapter-config saved for ' + inst + ': ' + J(patch).slice(0, 200))
+              reply(200, { ok: true, config: all })
+            } catch (e) { reply(500, { ok: false, err: e.message }) }
+          })
+          return
+        }        if (url.indexOf('/buddy') === 0) {
           try {
             var bsvc = S.session.getBuddyService()
             var pb = bsvc.getBuddyListV2('0', true, 0)
