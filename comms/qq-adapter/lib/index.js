@@ -372,7 +372,21 @@ export async function apply(ctx, config = {}) {
     //   「/new 应该用设置的预设和 ws，没设置用默认的；继承是会话转移（/compact、memory_movctx）才需要，
     //    不然改不动了」✓
     const preset = prefs.preset || presetOfTarget(route.target) || ''
-    const cwd = prefs.workspace || cfg.workspaceRoot
+    // ⚠ cwd 必须是**绝对路径**（宿主会校验：session header cwd must be an absolute path）。
+    //   以前 `/workspace alive-workspace` 存成名字，`/new` 直接炸 ✗ → 这里兜一下，按名字换成路径
+    let cwd = String(prefs.workspace || cfg.workspaceRoot || '')
+    if (cwd && !/^[a-zA-Z]:[\\/]/.test(cwd) && !cwd.startsWith('\\\\')) {
+      try {
+        const spaces = await listWorkspaces()
+        const 名 = cwd.trim().replace(/[\\/]+$/, '')
+        const hit = spaces.find((w) => w.title === 名 || w.id === 名 || w.path.toLowerCase().replace(/[\\/]+$/, '').endsWith('\\' + 名.toLowerCase()))
+        if (hit) cwd = hit.path
+      } catch { /* 换不到就用原值，下面还得校验 */ }
+    }
+    if (!/^[a-zA-Z]:[\\/]/.test(cwd) && !cwd.startsWith('\\\\')) {
+      await replyTo(key, '工作区「' + cwd + '」不是绝对路径，/new 开不了——先发 /workspace 选一个（或写完整的 D:\\…）')
+      return { id: '', preset: '' }
+    }
     const editor = (() => { try { return ctx.get('configEditor') } catch { return null } })()
     const overrideOf = (id) => {
       try {
@@ -819,6 +833,17 @@ export async function apply(ctx, config = {}) {
           const pick = spaces[Number(body) - 1]
           if (!pick) { await replyTo(key, '序号越界：工作区共 ' + spaces.length + ' 个，发 /workspace 看列表'); return }
           target = pick.path
+        } else if (!/^[a-zA-Z]:[\\/]/.test(target) && !target.startsWith('\\\\')) {
+          // ⚠ 2026-10-28 主人 `/workspace alive-workspace` → 存成相对名字，
+          //   `/new` 时报 `session header cwd must be an absolute path` ✗
+          //   → 允许写工作区**名字**，这里按 workspace.json 的表换成绝对路径
+          const 名 = String(target).replace(/[\\/]+$/, '')
+          const hit = spaces.find((w) => w.title === 名 || w.id === 名 || w.path.replace(/[\\/]+$/, '').toLowerCase().endsWith('\\' + 名.toLowerCase()))
+          if (!hit) {
+            await replyTo(key, '没找到工作区「' + target + '」——发 /workspace 看列表；要给路径就写绝对路径（D:\\…）')
+            return
+          }
+          target = hit.path
         }
         if (wantDefault) {
           const entry = entryOf('workspace-controller')
