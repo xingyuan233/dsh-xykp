@@ -757,12 +757,39 @@ export async function apply(ctx, config = {}) {
   // 群聊：没 @ 的时候跟私聊一样；
   //       开头一连串 @ 里**只要有自己**，就把 @ 后面那段当指令；
   //       开头 @ 的是别人、后面却跟着一条指令 → **静默忽略**（不执行、不转发、不回话）
-  function 取指令(evt) {
-    const 文本 = String((evt && evt.text) || '')
+  //
+  // ⚠⚠ 2026-10-28 实测（主人从手机在群里发「@樱 /ver」）：QQ 把群里的 @ 写进了**正文**，
+  //   事件长这样 → text="@樱 /ver"，elements=[TEXT, TEXT]，**没有 at 元素**。
+  //   所以只认 element.at 的话永远认不出「@ 的是我」✗
+  //   → 现在两头都认：element.at（有就认）+ 正文开头的「@名字」（拿群成员里自己的卡片名比）
+  const 群内自己名 = new Map() // gid -> { names: Set, at: ms }
+  async function 取自己群名(gid) {
+    const key = String(gid || '')
+    if (!key) return new Set()
+    const 旧 = 群内自己名.get(key)
+    if (旧 && Date.now() - 旧.at < 10 * 60 * 1000) return 旧.names
+    const names = new Set()
+    try {
+      const r = await bridge.groupMembers(key)
+      for (const m of (r && Array.isArray(r.members) ? r.members : [])) {
+        if (!m || m.isSelf !== true) continue
+        for (const n of [m.card, m.nick]) {
+          const s = String(n || '').trim()
+          if (s) names.add(s)
+        }
+      }
+    } catch { /* 拿不到成员表就只能靠 at 元素 */ }
+    群内自己名.set(key, { names, at: Date.now() })
+    return names
+  }
+
+  async function 取指令(evt) {
+    let 文本 = String((evt && evt.text) || '')
     if (Number(evt && evt.chatType) !== 2) return { cmd: parseCommand(文本), 提到自己: false }
-    const els = Array.isArray(evt.elements) ? evt.elements : []
     let 开头有at = false
     let 提到自己 = false
+    // (a) 真给了 at 元素的情况（别的 QQ 版本可能是这样）
+    const els = Array.isArray(evt.elements) ? evt.elements : []
     for (let i = 0; i < els.length; i++) {
       const el = els[i]
       if (!el || !el.at) break // 只认「开头连着的那几个 @」，中间夹了别的东西就不算
@@ -770,8 +797,27 @@ export async function apply(ctx, config = {}) {
       const at = el.at || {}
       if (是自己Uid(at.atUid) || 是自己Uid(at.atNtUid) || 是自己Uid(at.atTinyId)) 提到自己 = true
     }
+    // (b) @ 写在正文里的情况：「@樱 @鲸鱼娘 /ver」→ 把开头的 @名字 一个个剥掉
+    if (/^\s*@/.test(文本)) {
+      const names = await 取自己群名(evt.peerUid)
+      const 候选 = [...names].sort((a, b) => b.length - a.length) // 长名字优先，别被前缀骗
+      for (let n = 0; n < 8; n++) {
+        const head = /^\s*@/.exec(文本)
+        if (!head) break
+        开头有at = true
+        const 余 = 文本.slice(head[0].length)
+        // 先试「已知的自己名字」（这样 “@樱/ver” 不带空格也能剥干净）
+        let 命中 = 候选.find((x) => 余.startsWith(x)) || ''
+        if (!命中) {
+          const g = /^([^\s@]{1,40})/.exec(余)
+          if (!g) break
+          命中 = g[1]
+        }
+        文本 = 余.slice(命中.length).replace(/^\s+/, '')
+        if (names.has(命中)) 提到自己 = true
+      }
+    }
     if (!开头有at) return { cmd: parseCommand(文本), 提到自己: false }
-    // ⚠ @ 是单独的 element，不在 evt.text 里 —— 所以「@ 完之后的正文」就是 evt.text ✓
     if (!文本.trim().startsWith('/')) return { cmd: null, 提到自己 } // @ 了人但说的不是指令 → 照常转发
     if (!提到自己) return { cmd: null, 提到自己: false, silent: true }
     return { cmd: parseCommand(文本), 提到自己: true }
@@ -825,7 +871,7 @@ export async function apply(ctx, config = {}) {
         //   · 排在路由后面时，聊天没配目标 / 目标解析不到会话 → 指令被悄悄跳过不执行 ✗
         //   · 排在自己号后面时，从另一个号（樱 ↔ 鲸鱼娘）发来的指令会被当成「自己人」丢掉 ✗
         if (cfg.commandsEnabled !== false) {
-          const 意 = 取指令(evt)
+          const 意 = await 取指令(evt)
           if (意.silent) {
             seenSet.add(msgId)
             handled++
@@ -939,6 +985,9 @@ export async function apply(ctx, config = {}) {
         const peerUid = key.replace(/^[ugUG][-_]/, '')
         if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
         const at = String(args.at || '').replace(/^u-/, '')
+        // ⚠ 2026-10-28：群聊 + @ 会让 QQ 壳的 native 直接崩掉（进程无声消失、要重扫码）。
+        //   实证两次（02:15 樱、02:19 鲸鱼娘），桥那边也拦了；这里提前报清楚，别让它变成 fetch failed ✗
+        if (isGroup && at) throw new Error('群聊里带 @ 的发送会崩 QQ 壳（实测两次），先别用；群里发纯文字没问题')
         const r = await bridge.send(isGroup ? 2 : 1, peerUid, String(args.text ?? ''), at, String(args.atNick || ''))
         return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
       },

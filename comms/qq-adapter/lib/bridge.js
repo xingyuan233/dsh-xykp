@@ -35,6 +35,9 @@ export function createBridge(baseUrl, opts = {}) {
     events: (since = 0) => req('/events?since=' + (Number(since) || 0)),
     // QQ号(uin) → uid：设置页里可以直接写 u-3041632789
     uid: (uin) => req('/uid?uin=' + encodeURIComponent(String(uin || ''))),
+    // 群成员（带 isSelf 和卡片名）：群里 @ 是拿「名字」写在正文里的，
+    // 得知道自己在这个群叫什么，才认得出「@ 的是我」
+    groupMembers: (gid) => req('/groupmembers?gid=' + encodeURIComponent(String(gid || ''))),
     // 运行时覆盖配置（设置页用的那份 ui-config.json）
     getConfig: () => req('/adapter-config'),
     async saveConfig(instance, patch) {

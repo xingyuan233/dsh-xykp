@@ -485,6 +485,16 @@
             if (el.faceElement) o.face = { faceIndex: el.faceElement.faceIndex, faceText: el.faceElement.faceText }
             if (el.marketFaceElement) o.mface = { faceId: el.marketFaceElement.faceId, emojiId: el.marketFaceElement.emojiId }
             if (el.atElement) o.at = { atNtUid: el.atElement.atNtUid, atUid: el.atElement.atUid, atTinyId: el.atElement.atTinyId }
+            // ⚠ 2026-10-28 实测：群里的 @ 不一定走 atElement ——
+            //   QQ 9.9.36 把「@樱」编成 **textElement**（content 里就是 "@樱 "，atType 有值）。
+            //   把 textElement 上的 at 信息也带上，插件那边两头都能认 ✓
+            if (el.textElement && (el.textElement.atType || el.textElement.atUid || el.textElement.atNtUid)) {
+              o.at = {
+                atType: el.textElement.atType, atUid: el.textElement.atUid,
+                atNtUid: el.textElement.atNtUid, atTinyId: el.textElement.atTinyId,
+                fromText: true
+              }
+            }
             if (el.replyElement) o.reply = { sourceMsgIdInRecords: el.replyElement.sourceMsgIdInRecords }
             if (el.fileElement) o.file = {
               fileName: el.fileElement.fileName, fileSize: el.fileElement.fileSize,
@@ -844,6 +854,15 @@
           req.on('end', function () {
             var payload = {}
             try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch (e) { }
+            // ⚠⚠ 2026-10-28：**群聊 + atElement = 直接崩 native**（进程无声无息死掉、要重扫码）
+            //   实证两次：02:15 樱发「@樱 /ver」→ 崩；02:19 鲸鱼娘发同样一条 → 崩。
+            //   同一份代码里「群里发纯文本」是好的（早先几条群聊测试都发出来了），
+            //   所以先在这里拦死，别再拿壳的登录去试 ✗
+            if (Number(payload.chatType) === 2 && payload.at) {
+              w('[qq] 拒绝：群聊带 @ 的发送（会崩 native） peer=' + (payload.peerUid || payload.to))
+              reply(400, { ok: false, err: '群聊带 @ 的发送会崩 QQ 壳（已实证两次），先禁用' })
+              return
+            }
             try {
               var r = sendMsgInternal(payload.peerUid || payload.to, payload.chatType || 1, payload.elements || payload.text, payload.at || '', payload.atNick || '')
               w('[qq] http send -> ' + (payload.peerUid || payload.to) + ' text=' + J(payload.text))
