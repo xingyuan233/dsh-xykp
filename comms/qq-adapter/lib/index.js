@@ -213,9 +213,12 @@ export async function apply(ctx, config = {}) {
     lastReapAt = Date.now()
     try {
       const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
+      // ⚠ 别用 `Get-Process -Name X -ErrorAction SilentlyContinue`：进程不存在时 powershell 退出码仍是 1，
+      //   会被当成「清理失败」写日志（2026-10-28 实测）。用 CIM 查，没有就静默返回空 ✓
       const psCmd =
-        "Get-Process -Name NapCatWinBootMain -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" +
-        dirPrefix + "*' } | ForEach-Object { $id = $_.Id; Stop-Process -Id $id -Force -ErrorAction SilentlyContinue; $id }"
+        'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq ' + "'NapCatWinBootMain.exe'" +
+        ' -and $_.ExecutablePath -like ' + "'" + dirPrefix + "*'" +
+        ' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }'
       const { execFile } = await import('node:child_process')
       execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { windowsHide: true }, (err, stdout) => {
         const ids = String(stdout || '').trim().split(/\s+/).filter(Boolean)
