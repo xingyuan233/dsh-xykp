@@ -356,6 +356,14 @@ sendMsg('0', peer, [{ elementType: 4, elementId: '', pttElement: {
 - 顺带查到：NapCat 的 `convertToNTSilkTct` 是调**系统 ffmpeg** 的 `ntsilk_s16le` 编码器
   （`process.env.FFMPEG_PATH || 'ffmpeg'`），本机 ffmpeg 7.0.2 没这个编码器 →
   **这条它也不比我们强**，谁先搞到 silk 编码器谁就赢。
+- **对端实测 `silk-wasm` 是能编的**（2026-10-27 23:22，QQ 那边那个我跑的）：
+  `ffmpeg -i in.amr -ac 1 -ar 8000 out.wav` → `await encode(wavBuffer, 0)` → 5972 字节 / 2160ms 的 silk，
+  丢过来我给 `/sendptt` 一发就成，服务器转写回「嗯。」＝内容完好。
+  所以 **silk 编码本身不是死路，只是这台机器上我这个身份装不了**（gate 扫 silk-wasm 是 BLOCK：
+  Emscripten loader 里有 `new Function` 混淆；备选 `node-silk` / `silk-sdk` 是 WARN，
+  但都要 node-gyp + MSVC 编译，没试）。
+- 现在的分工：**对端用 silk-wasm 编好 → 丢 `workspaces\...\silk-drop\` → 这边 `qq_send_voice` 绝对路径发**。
+  想彻底自主，下一步是给桥加「wav + 外部编码命令（`silkEncoderCmd`）」这条路，谁编都行，桥只负责送。
 
 ### 11.4 顺手修掉的炸弹：旧监听器被僵尸定时器反复注册
 
