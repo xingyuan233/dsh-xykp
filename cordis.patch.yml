@@ -1,0 +1,47 @@
+# dsh-xykp bundle patch（dsh.bundle.patch，随包发布，宿主直接加载）
+#
+# 声明：package.json `dsh.bundle.patch = "./cordis.patch.yml"`。
+# 约定跟 dsh-onebot-qq / dsh-base 一致：
+#   1. 这里只写「插件身份 + 中性默认」（insert 块）；
+#   2. 具体配置放 profile 的 cordis.patch.yml，用顶层 `- id: <行id>` 覆盖；
+#   3. `xykp` 是客户端门面行（空插件）—— 不加它 client.js 不会被扫到。
+#
+# ⚠ 同一个插件文件不要在这里和 profile 里各 insert 一次（双实例注册会崩）。
+- insert:
+    # 客户端门面（client.js 的加载触发点）
+    - id: xykp
+      name: 'dsh-xykp'
+
+    # ── storage
+    - id: log-cleaner
+      name: 'dsh-xykp/storage/log-cleaner'
+    - id: session-archiver
+      name: 'dsh-xykp/storage/session-archiver'
+    - id: dsh-session-delete
+      name: 'dsh-xykp/storage/session-delete'
+    - id: preset-loader
+      name: 'dsh-xykp/storage/preset-loader'
+
+    # ── chat
+    - id: preset-binder
+      name: 'dsh-xykp/chat/preset-binder'
+    - id: memory-refine
+      name: 'dsh-xykp/chat/memory-refine'
+    - id: toolret-forget
+      name: 'dsh-xykp/chat/toolret-forget'
+    - id: token-reporter
+      name: 'dsh-xykp/chat/token-reporter'
+
+    # ── senses
+    - id: senses-screenshot
+      name: 'dsh-xykp/senses/screenshot'
+    - id: senses-keymouse
+      name: 'dsh-xykp/senses/keymouse'
+
+    # ── comms
+    - id: bili-reply
+      name: 'dsh-xykp/comms/bili-reply'
+
+    # ── observer
+    - id: dsh-prosecutor
+      name: 'dsh-xykp/observer/dsh-prosecutor'

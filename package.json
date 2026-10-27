@@ -34,6 +34,9 @@
     "./comms/bili-reply": "./comms/bili-reply/lib/index.js"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
@@ -46,6 +49,7 @@
   },
   "files": [
     "client.js",
+    "cordis.patch.yml",
     "core",
     "storage",
     "chat",
