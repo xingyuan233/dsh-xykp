@@ -288,6 +288,8 @@ export async function apply(ctx, config = {}) {
       parameters: {
         chat: { type: 'string', description: 'u-<uid> 私聊 / g-<群号> 群聊', required: true },
         text: { type: 'string', description: '要发的文字', required: true },
+        at: { type: 'string', description: '可选：要 @ 的 uid（群里用，u- 开头也可以）' },
+        atNick: { type: 'string', description: '可选：@ 时显示的名字' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -298,7 +300,8 @@ export async function apply(ctx, config = {}) {
         const isGroup = key.startsWith('g-') || key.startsWith('G-')
         const peerUid = key.replace(/^[ugUG][-_]/, '')
         if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
-        const r = await bridge.send(isGroup ? 2 : 1, peerUid, String(args.text ?? ''))
+        const at = String(args.at || '').replace(/^u-/, '')
+        const r = await bridge.send(isGroup ? 2 : 1, peerUid, String(args.text ?? ''), at, String(args.atNick || ''))
         return { ok: r?.ok === true, result: r?.result ?? null, err: r?.err ?? null, chat: key }
       },
     }))

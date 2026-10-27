@@ -48,7 +48,7 @@
   var GLOBAL_PATH = OWN + '\\global'
   var PORT = 39272
   var QUICK_UIN = '3793339506'
-  var LISTENER_VER = 'v14'
+  var LISTENER_VER = 'v16'
   var HTTP_VER = 'v11'
   var CMD_VER = 'v10'
 
@@ -346,11 +346,67 @@
   }
   ensureMsgListener()
   if (!S.ensureTimer) {
-    S.ensureTimer = setInterval(function () { try { ensureMsgListener() } catch (e) { } }, 10000)
+    global.__qqEnsureMsgListener = ensureMsgListener
+    S.ensureTimer = setInterval(function () { try { if (global.__qqEnsureMsgListener) global.__qqEnsureMsgListener() } catch (e) { } }, 10000)
     w('[qq] ensure-msg-listener timer ON')
   }
 
   /** 收到图片就顺手落到工作区（QQ 有时自己下好，有时得我们拉） */
+  /** 语音转文字：translatePtt2Text 是异步的，要轮询等消息上的 pttElement.text 出现 */
+  function transcribePtt(msgId, peer, maxTries) {
+    return new Promise(function (resolve) {
+      try {
+        var s9 = msgService()
+        if (!s9) return resolve('')
+        var findEl = function (list) {
+          for (var i = 0; i < list.length; i++) {
+            if (String(list[i].msgId) !== String(msgId)) continue
+            var els = list[i].elements || []
+            for (var j = 0; j < els.length; j++) if (els[j].elementType === 4) return els[j]
+          }
+          return null
+        }
+        s9.getAioFirstViewLatestMsgs(peer, 60).then(function (x) {
+          var list = (x && (x.msgList || x.msg_list)) || []
+          var el = findEl(list)
+          if (!el) return resolve('')
+          var tries = 0
+          var poll = function () {
+            tries++
+            s9.getAioFirstViewLatestMsgs(peer, 60).then(function (y) {
+              var list2 = (y && (y.msgList || y.msg_list)) || []
+              var el2 = findEl(list2)
+              var t = el2 && el2.pttElement && el2.pttElement.text
+              if (t) return resolve(t)
+              if (tries >= (maxTries || 8)) return resolve('')
+              setTimeout(poll, 1200)
+            }).catch(function () { resolve('') })
+          }
+          s9.translatePtt2Text(String(msgId), peer, el).then(function () { setTimeout(poll, 1200) }).catch(function () { resolve('') })
+        }).catch(function () { resolve('') })
+      } catch (e) { resolve('') }
+    })
+  }
+
+  /** 收到语音就顺手转成文字，转完往收件箱补一条（插件会转发给会话） */
+  function ensurePttTranscribed(evt) {
+    try {
+      var el = (evt.elements || []).filter(function (e) { return e.type === 4 && e.ptt })[0]
+      if (!el) return
+      var peer = { chatType: evt.chatType, peerUid: evt.peerUid, guildId: '' }
+      transcribePtt(evt.msgId, peer, 8).then(function (text) {
+        if (!text) { w('[qq] 语音没转出文字 ' + evt.msgId); return }
+        el.ptt.text = text
+        w('[qq] 语音转写 ' + evt.msgId + ' -> ' + J(text))
+        S.inbox.push({
+          time: Date.now(), chatType: evt.chatType, peerUid: evt.peerUid, senderUid: evt.senderUid,
+          senderName: evt.senderName || '', msgId: evt.msgId + '-asr', msgSeq: evt.msgSeq,
+          text: '（语音转写）' + text, elements: [{ type: 1, text: '（语音转写）' + text }]
+        })
+      })
+    } catch (e) { w('[qq] ensurePttTranscribed err ' + e.message) }
+  }
+
   function ensurePicDownloaded(evt) {
     try {
       (evt.elements || []).forEach(function (el) {
@@ -417,6 +473,7 @@
         if (S.inbox.length > 500) S.inbox = S.inbox.slice(-500)
       }
       ensurePicDownloaded(evt)
+      ensurePttTranscribed(evt)
       w('[qq] RECV ct=' + evt.chatType + ' peer=' + evt.peerUid + ' seq=' + evt.msgSeq +
         ' text=' + J(evt.text) + ' types=' + J(evt.elements.map(function (e) { return e.type })))
     } catch (e) { w('[qq] onOneMsg err ' + e.message) }
@@ -524,12 +581,27 @@
   function require_basename(p2) {
     try { return p.mainModule.require('path').basename(p2) } catch (e) { return 'image.png' }
   }
-  function sendMsgInternal(peerUid, chatType, elementsOrText) {
+  /** 组一条 @ 元素（群里 @ 人用；atType 2 = 指定一个人） */
+  function atElement(uid, nick, atType) {
+    return {
+      elementType: 1, elementId: '',
+      textElement: {
+        content: '@' + (nick || ''),
+        atType: atType || 2,
+        atUid: '',
+        atTinyId: '',
+        atNtUid: uid
+      }
+    }
+  }
+
+  function sendMsgInternal(peerUid, chatType, elementsOrText, atUid, atNick) {
     var s = msgService()
     if (!s) throw new Error('no msgService')
     var peer = { chatType: chatType || 1, peerUid: peerUid, guildId: '' }
     var elems = Array.isArray(elementsOrText) ? elementsOrText
       : [{ elementType: 1, elementId: '', textElement: { content: String(elementsOrText || ''), atType: 0, atUid: '', atTinyId: '', atNtUid: '' } }]
+    if (atUid) elems.unshift(atElement(atUid, atNick || '', 2))
     return s.sendMsg('0', peer, elems, new Map())
   }
 
@@ -669,7 +741,7 @@
             var payload = {}
             try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch (e) { }
             try {
-              var r = sendMsgInternal(payload.peerUid || payload.to, payload.chatType || 1, payload.elements || payload.text)
+              var r = sendMsgInternal(payload.peerUid || payload.to, payload.chatType || 1, payload.elements || payload.text, payload.at || '', payload.atNick || '')
               w('[qq] http send -> ' + (payload.peerUid || payload.to) + ' text=' + J(payload.text))
               if (r && r.then) r.then(function (x) { reply(200, { ok: true, result: x }) }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
               else reply(200, { ok: true, result: r })
@@ -677,7 +749,43 @@
           })
           return
         }
-        if (url.indexOf('/history') === 0) {
+        if (url.indexOf('/ptt') === 0) {
+          var qq3 = qs()
+          var peer3 = { chatType: parseInt(qq3.chatType || '1', 10), peerUid: qq3.peerUid, guildId: '' }
+          try {
+            var s7 = msgService()
+            var findPtt = function (list, id) {
+              for (var i = 0; i < list.length; i++) {
+                if (String(list[i].msgId) !== String(id)) continue
+                var els = list[i].elements || []
+                for (var j = 0; j < els.length; j++) if (els[j].elementType === 4) return els[j]
+              }
+              return null
+            }
+            s7.getAioFirstViewLatestMsgs(peer3, 60).then(function (x) {
+              var list = (x && (x.msgList || x.msg_list)) || []
+              var el = findPtt(list, qq3.msgId)
+              if (!el) { reply(404, { ok: false, err: '这条消息里没找到语音' }); return }
+              // translatePtt2Text 是异步的：调完过一会儿消息上的 pttElement.text 才有值，
+              // 所以要轮询几次（实测第一次调返回空、第二次就有字了）
+              var tries2 = 0
+              var poll2 = function () {
+                tries2++
+                s7.getAioFirstViewLatestMsgs(peer3, 60).then(function (y) {
+                  var list2 = (y && (y.msgList || y.msg_list)) || []
+                  var el2 = findPtt(list2, qq3.msgId)
+                  var text = el2 && el2.pttElement && el2.pttElement.text
+                  if (text) { w('[qq] ptt translate ' + qq3.msgId + ' -> ' + J(text)); reply(200, { ok: true, text: text }); return }
+                  if (tries2 >= 8) { reply(200, { ok: true, text: '' }); return }
+                  setTimeout(poll2, 1200)
+                }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+              }
+              s7.translatePtt2Text(String(qq3.msgId), peer3, el).then(function () { setTimeout(poll2, 1200) })
+                .catch(function (e) { reply(500, { ok: false, err: 'translate: ' + e.message }) })
+            }).catch(function (e) { reply(500, { ok: false, err: e.message }) })
+          } catch (e) { reply(500, { ok: false, err: e.message }) }
+          return
+        }        if (url.indexOf('/history') === 0) {
           var qh = qs()
           var peer = { chatType: parseInt(qh.chatType || '1', 10), peerUid: qh.peerUid, guildId: '' }
           var cnt = Math.min(100, Math.max(1, parseInt(qh.count || '20', 10)))
