@@ -572,7 +572,9 @@
     return { w: 0, h: 0 }
   }
 
-  /** 发本地图片：把文件塞进 QQ 的发送目录，再按 picElement 发出去 */
+  /** 发本地图片：把文件塞进 QQ 的发送目录，再按 picElement 发出去
+   *  ⚠ 群（chatType=2）和私聊不是一条路：2026-10-27 23:28 拿私聊那套发群，QQ 直接崩了。
+   *  群这边改用 getRichMediaFilePathForGuild + 不带 thumbPath 的完整字段，先当实验。 */
   function sendPictureInternal(peerUid, chatType, filePath) {
     var s = msgService()
     if (!s) throw new Error('no msgService')
@@ -581,23 +583,29 @@
     var md5 = crypto.createHash('md5').update(buf).digest('hex')
     var name = require_basename(filePath)
     var dims = imageDims(buf)
-    var target = s.getRichMediaFilePathForMobileQQSend({
+    var isGroup = Number(chatType) === 2
+    var req = {
       md5HexStr: md5, fileName: name, elementType: 2, elementSubType: 0,
       thumbSize: 0, needCreate: true, downloadType: 1, file_uuid: ''
-    })
-    if (!target) throw new Error('getRichMediaFilePathForMobileQQSend 没给路径')
+    }
+    var target = ''
+    if (isGroup) {
+      try { target = s.getRichMediaFilePathForGuild(req) } catch (e) { w('[qq] ForGuild err ' + e.message) }
+    }
+    if (!target) target = s.getRichMediaFilePathForMobileQQSend(req)
+    if (!target) throw new Error('没拿到图片发送路径')
     try { fs.mkdirSync(p.mainModule.require('path').dirname(target), { recursive: true }) } catch (e) { }
     fs.copyFileSync(filePath, target)
-    var elem = {
-      elementType: 2, elementId: '', elementGroupId: 0,
-      picElement: {
-        fileSize: String(buf.length), fileName: name, sourcePath: target,
-        original: true, picWidth: dims.w, picHeight: dims.h,
-        md5HexStr: md5, fileUuid: '', fileSubId: '', summary: '[图片]',
-        picType: 1000, thumbPath: new Map(), thumbFileSize: 0, originImageMd5: ''
-      }
+    var pic = {
+      fileSize: String(buf.length), fileName: name, sourcePath: target,
+      original: true, picWidth: dims.w, picHeight: dims.h,
+      md5HexStr: md5, fileUuid: '', fileSubId: '', summary: '[图片]',
+      picType: 1000, fileSubId2: '', originImageMd5: '',
+      picSubType: 0, thumbFileSize: 0
     }
-    w('[qq] sendPicture md5=' + md5 + ' size=' + buf.length + ' dims=' + dims.w + 'x' + dims.h + ' -> ' + target)
+    var elem = { elementType: 2, elementId: '', elementGroupId: 0, picElement: pic }
+    if (!isGroup) pic.thumbPath = new Map()
+    w('[qq] sendPicture ' + (isGroup ? 'GROUP' : 'C2C') + ' md5=' + md5 + ' size=' + buf.length + ' dims=' + dims.w + 'x' + dims.h + ' -> ' + target)
     return s.sendMsg('0', { chatType: chatType || 1, peerUid: toUid(peerUid), guildId: '' }, [elem], new Map())
   }
 
