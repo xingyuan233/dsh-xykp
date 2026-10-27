@@ -119,7 +119,17 @@ function findAgent(agents, sessionId) {
 }
 
 async function deliver(agentsSvc, sessionId, text, mode = 'steer') {
-  const agent = findAgent(agentsSvc, sessionId)
+  let agent = findAgent(agentsSvc, sessionId)
+  if (!agent) {
+    // 宿主重启后，`/new` 建的那些会话没有活着的 agent —— 按 id resume 回来再投
+    // （2026-10-28：以前这里直接抛「找不到了」，等于重启后 /new 的绑定全废）
+    try {
+      const h = await agentsSvc.resume({ sessionId })
+      agent = (h && h.agent) || findAgent(agentsSvc, sessionId)
+    } catch (err) {
+      warn('resume ' + sessionId + ' 失败：', err?.message || err)
+    }
+  }
   if (!agent) throw new Error('会话 ' + sessionId + ' 找不到了（可能被归档/删了）')
   const message = createUserMessage({
     content: [{ type: 'text', text }],
