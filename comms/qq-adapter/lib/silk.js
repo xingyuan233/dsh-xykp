@@ -34,6 +34,23 @@ function run(cmd, args, timeoutMs = 120000) {
   })
 }
 
+/** PATH 里找不到 ffmpeg 时挨个试这些（本机已知位置） */
+const FFMPEG_FALLBACKS = [
+  'D:\\devoding\\C++\\pakes\\ffmpeg-7.0.2\\bin\\ffmpeg.exe',
+]
+
+async function runFfmpeg(ffmpeg, args) {
+  try {
+    return await run(ffmpeg, args)
+  } catch (err) {
+    if (!/ENOENT|not found|不是内部/.test(String(err.message))) throw err
+    for (const alt of FFMPEG_FALLBACKS) {
+      try { return await run(alt, args) } catch { /* 试下一个 */ }
+    }
+    throw err
+  }
+}
+
 /**
  * 任意音频 → silk（已经是 silk 就原样返回）
  * @returns {Promise<{silkPath: string, converted: boolean, duration: number, dir?: string}>}
@@ -49,7 +66,7 @@ export async function toSilk(inputPath, opts = {}) {
   const pcm = join(dir, 'in.pcm')
   const out = join(dir, 'out.silk')
 
-  await run(ffmpeg, [
+  await runFfmpeg(ffmpeg, [
     '-hide_banner', '-loglevel', 'error', '-y',
     '-i', inputPath,
     '-f', 's16le', '-ac', '1', '-ar', '16000', '-acodec', 'pcm_s16le',
