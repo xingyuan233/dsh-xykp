@@ -927,8 +927,14 @@ export async function apply(ctx, config = {}) {
     for (let i = 0; i < els.length; i++) {
       const el = els[i]
       if (!el || !el.at) break // 只认「开头连着的那几个 @」，中间夹了别的东西就不算
-      开头有at = true
       const at = el.at || {}
+      // ⚠ atType:0 / atUid:"0" 是「没有 @」的占位——字符串 "0" 是真值！
+      //   2026-10-28 就因为没挑掉它，群里发的 /ver 被当成「@ 了别人」静默忽略 ✗
+      const 有at = Number(at.atType) > 0 ||
+        (String(at.atUid || '') !== '' && String(at.atUid) !== '0') ||
+        (String(at.atNtUid || '') !== '' && String(at.atNtUid) !== '0')
+      if (!有at) continue
+      开头有at = true
       if (是自己Uid(at.atUid) || 是自己Uid(at.atNtUid) || 是自己Uid(at.atTinyId)) 提到自己 = true
     }
     // (b) @ 写在正文里的情况：「@樱 @鲸鱼娘 /ver」→ 把开头的 @名字 一个个剥掉

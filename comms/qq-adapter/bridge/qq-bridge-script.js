@@ -507,13 +507,21 @@
             if (el.marketFaceElement) o.mface = { faceId: el.marketFaceElement.faceId, emojiId: el.marketFaceElement.emojiId }
             if (el.atElement) o.at = { atNtUid: el.atElement.atNtUid, atUid: el.atElement.atUid, atTinyId: el.atElement.atTinyId }
             // ⚠ 2026-10-28 实测：群里的 @ 不一定走 atElement ——
-            //   QQ 9.9.36 把「@樱」编成 **textElement**（content 里就是 "@樱 "，atType 有值）。
-            //   把 textElement 上的 at 信息也带上，插件那边两头都能认 ✓
-            if (el.textElement && (el.textElement.atType || el.textElement.atUid || el.textElement.atNtUid)) {
-              o.at = {
-                atType: el.textElement.atType, atUid: el.textElement.atUid,
-                atNtUid: el.textElement.atNtUid, atTinyId: el.textElement.atTinyId,
-                fromText: true
+            //   QQ 9.9.36 把「@鲸鱼娘」编成 **textElement**（content 里就是 "@鲸鱼娘"，atType=2）。
+            //   ⚠⚠ 但**普通消息的 textElement 也会带 atType:0 / atUid:"0"** ——
+            //   字符串 "0" 是真值，光靠真值判断会把「群里 /ver」误判成「@ 了别人」→ 静默忽略 ✗
+            if (el.textElement) {
+              var te = el.textElement
+              var atTypeN = Number(te.atType) || 0
+              var atUidS = String(te.atUid == null ? '' : te.atUid)
+              var atNtS = String(te.atNtUid == null ? '' : te.atNtUid)
+              var 是真at = atTypeN > 0 || (atUidS !== '' && atUidS !== '0') || (atNtS !== '' && atNtS !== '0')
+              if (是真at) {
+                o.at = {
+                  atType: te.atType, atUid: te.atUid,
+                  atNtUid: te.atNtUid, atTinyId: te.atTinyId,
+                  fromText: true
+                }
               }
             }
             if (el.replyElement) o.reply = { sourceMsgIdInRecords: el.replyElement.sourceMsgIdInRecords }

@@ -924,3 +924,22 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
    mount 时先把同一个桥的上一份收摊掐掉（日志：`同一个桥的上一个实例已收摊`）
 2. 兜底再加一层：`__qqAdapterBridgeOwners`（桥 URL → **唯一实例键**，键里带随机后缀），
    不是桥主的实例 `tick()` 直接 return —— 就算收摊漏了也不会双发
+
+### 18.12 群里 `/ver` 被当成「@ 了别人」静默忽略（2026-10-28 03:26）
+
+现象：群里发 `/ver`、`/cfg-table -add …`，日志却是
+`群里 @ 的是别人，指令静默忽略（g-659839032）`，指令不执行。
+
+原因：**普通消息的 textElement 也带 `atType: 0, atUid: "0"`**（字符串 "0" 是真值！）。
+我在桥里把 textElement 的 at 信息原样搬进 `o.at`，判断用的是真值 →
+每条群消息都长了「一个 @」，插件就以为是「@ 了别人」✗
+
+真实 @ 长这样（对照）：
+```
+@鲸鱼娘 → { atType: 2, atUid: "2909433072"(uin), atNtUid: "u_wCwUu…"(uid), atTinyId: "0" }
+普通消息 → { atType: 0, atUid: "0", atNtUid: "", atTinyId: "0" }
+```
+
+修法（两头都改，防以后再踩）：
+- 桥：`atType > 0` 或 `atUid/atNtUid 不是 '' / '0'` 才算真 @
+- 插件 `取指令()`：同样是「占位 at 直接跳过」，不再当开头有 @
