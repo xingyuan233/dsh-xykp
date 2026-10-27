@@ -47,3 +47,5 @@
     # ── observer
     - id: dsh-prosecutor
       name: 'dsh-xykp/observer/dsh-prosecutor'
+    - id: gate
+      name: 'dsh-xykp/observer/plugin-gate'
