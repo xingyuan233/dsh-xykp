@@ -37,6 +37,9 @@ const DEFAULTS = {
     order: 880,
     header: '[token]',
     fields: ['turn', 'session', 'cache', 'context', 'cost'],
+    // ⭐ 2026-10-27（主人想的）：上下文用到多少就提醒「该转移了」。
+    //   at = 占比（0.5 = 50%）。理由：太长之后注意力被稀释，到后面很容易丢角色。
+    transferHint: { enabled: true, at: 0.5, text: '' },
   },
   cost: { input: 0, cacheRead: 0, output: 0 },
   sessionsRoot: '',
@@ -47,10 +50,16 @@ function log(message) {
 }
 
 function pickConfig(raw = {}) {
+  const rawPrompt = raw.prompt || {}
   return {
     ...DEFAULTS,
     ...raw,
-    prompt: { ...DEFAULTS.prompt, ...(raw.prompt || {}) },
+    prompt: {
+      ...DEFAULTS.prompt,
+      ...rawPrompt,
+      // transferHint 是嵌在 prompt 里的对象，要单独再合一层，不然只填 at 会把 enabled 丢掉
+      transferHint: { ...DEFAULTS.prompt.transferHint, ...(rawPrompt.transferHint || {}) },
+    },
     cost: { ...DEFAULTS.cost, ...(raw.cost || {}) },
   }
 }
@@ -140,6 +149,32 @@ function costOf(totals, cost) {
   return input + cacheRead + output
 }
 
+/**
+ * 上下文占比到阈值时的那句提醒（2026-10-27 主人想的：让我自己判断该不该转移）。
+ * 阈值走 config.prompt.transferHint.at（0.5 = 50%），text 里可用 {pct}/{used}/{window}。
+ */
+function transferHintLine(pressure, config) {
+  const hint = config.prompt.transferHint || {}
+  if (hint.enabled === false) return ''
+  if (!pressure) return ''
+  const used = pressure.projectedTokens ?? pressure.pressureTokens
+  const win = pressure.contextWindow
+  if (used === undefined || !win) return ''
+  const raw = Number(hint.at)
+  const at = Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : 0.5
+  const ratio = used / win
+  if (ratio < at) return ''
+  const pct = Math.round(ratio * 100)
+  const custom = String(hint.text || '').trim()
+  if (custom) {
+    return custom
+      .replace(/\{pct\}/g, String(pct))
+      .replace(/\{used\}/g, fmt(used))
+      .replace(/\{window\}/g, fmt(win))
+  }
+  return `⚠ 上下文已用 ${pct}%（${fmt(used)}/${fmt(win)}），再长下去注意力会散、容易丢角色 —— 想接着认真聊就调 memory_movctx 把交接带到一个新对话，或者先问问要不要转。`
+}
+
 function promptLine(agent, config) {
   const usage = projectUsage(agent.ctx, agent.session)
   const pressure = projectPressure(agent.ctx, agent.session)
@@ -172,8 +207,9 @@ function promptLine(agent, config) {
     )
     if (money > 0) parts.push(`≈¥${money.toFixed(3)}`)
   }
-  if (!parts.length) return ''
-  return `${config.prompt.header} ${parts.join(' · ')}`
+  const hint = transferHintLine(pressure, config)
+  if (!parts.length) return hint
+  return `${config.prompt.header} ${parts.join(' · ')}` + (hint ? `\n${hint}` : '')
 }
 
 /** 余额：优先用 DSH 的平台账号服务；没有就退回官方 /user/balance（需要 DEEPSEEK_API_KEY）。 */
@@ -459,9 +495,11 @@ export function apply(ctx, rawConfig = {}) {
     })
   }
 
+  const hintOn = config.prompt.transferHint?.enabled !== false
+  const hintAt = Number(config.prompt.transferHint?.at)
   log(
     `已启用：工具 token_report（全局）；提示摘要 ${
       presets.size ? `预设 ${[...presets].join('/')}（${config.prompt.fields.join('/')}）` : '不注入（presets 为空）'
-    }`,
+    }` + (hintOn ? `；上下文 ≥${Math.round((Number.isFinite(hintAt) && hintAt > 0 ? hintAt : 0.5) * 100)}% 时提醒转移` : ''),
   )
 }

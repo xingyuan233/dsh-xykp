@@ -439,6 +439,297 @@ function saveCfg(c) {
   }
 }
 
+// ---------- 交接（转移）历史：生成就留着，除非手动删 ----------
+// ⭐ 2026-10-27（主人提的）：以前 transferNext 注入成功就整条 delete ——
+//   那份三四千字的概括用完就凭空没了，想回头看看「上个对话到底交代了什么」根本没地方找 ✗
+//   现在同一份同时记进 transferHistory（带全文），注入成功只标 usedAt/session，
+//   transferNext 照样清空 —— 「只吃一次」这一点不变 ✓
+const TRANSFER_KEEP = 40
+
+function 交接新id() {
+  try {
+    return 't-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
+  } catch (error) {
+    return 't-' + String(Date.now())
+  }
+}
+
+// 记一条历史。同一个 id 再调一次只更新「已用」信息，不会重复记 ✓
+function 记交接历史(c, 条) {
+  try {
+    if (!Array.isArray(c.transferHistory)) c.transferHistory = []
+    const id = String((条 && 条.id) || 交接新id())
+    const 旧 = c.transferHistory.find((x) => x && String(x.id) === id)
+    if (旧) {
+      if (条 && 条.usedAt) 旧.usedAt = String(条.usedAt)
+      if (条 && 条.session) 旧.session = String(条.session)
+      return id
+    }
+    c.transferHistory.push({
+      id,
+      preset: String((条 && 条.preset) || ''),
+      at: String((条 && 条.at) || new Date().toISOString()),
+      summary: String((条 && 条.summary) || ''),
+      extra: String((条 && 条.extra) || ''),
+      chars: String((条 && 条.summary) || '').length,
+      usedAt: 条 && 条.usedAt ? String(条.usedAt) : null,
+      session: String((条 && 条.session) || ''),
+    })
+    // 只留最近 40 条：超了先丢「已经注入过」的最老的，还超才按时间丢
+    if (c.transferHistory.length > TRANSFER_KEEP) {
+      let 多 = c.transferHistory.length - TRANSFER_KEEP
+      while (多 > 0) {
+        const i = c.transferHistory.findIndex((x) => x && x.usedAt)
+        if (i < 0) break
+        c.transferHistory.splice(i, 1)
+        多--
+      }
+      if (多 > 0) c.transferHistory.splice(0, 多)
+    }
+    return id
+  } catch (error) {
+    return ''
+  }
+}
+
+// 交接真的用掉了：从 transferNext 摘掉（不再排给下一个对话），历史里标「已注入」
+function 标交接已用(池名, 会话id) {
+  try {
+    const c = loadCfg()
+    const t = c.transferNext && c.transferNext[池名]
+    if (t) {
+      记交接历史(c, Object.assign({}, t, { preset: 池名, usedAt: new Date().toISOString(), session: String(会话id || '') }))
+      delete c.transferNext[池名]
+    }
+    if (c.transferReserved) delete c.transferReserved[池名]
+    saveCfg(c)
+  } catch (error) {}
+}
+
+// ---------- 交接概括（路由和 memory_movctx 共用一份逻辑）----------
+// 把一个会话里 user / assistant 的正文读成「ta：/我：」对话
+function 读对话正文(sess) {
+  let 对话 = ''
+  try {
+    for (const seq of sess.surface.nodes) {
+      const ev = sess.eventAt(seq)
+      if (!ev) continue
+      let msg
+      try {
+        msg = sess.deriveEventMessage(ev)
+      } catch (error) {
+        msg = ev.data && ev.data.message
+      }
+      if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) continue
+      const 文 = (msg.content || [])
+        .filter((x) => x && x.type === 'text')
+        .map((x) => x.text)
+        .join('\n')
+        .trim()
+      if (!文) continue
+      对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
+    }
+  } catch (error) {}
+  return 对话
+}
+
+const 交接系统提示 =
+  '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
+  '可以详细与概括穿插，没有额外长度限制，可以很长，不会被裁剪。' +
+  '这些输出将会作为你的记忆保留，不要以长短来评判详细与简略的标准，' +
+  '有些长的事情比较机械不重要则一句话概括即可，如果重要可以记录过程与自己的感受。' +
+  '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。'
+
+// 概括一个会话（不截断：上下文通常还有几百 k，不差这几 k）
+async function 生成交接概括(ctx, agent, sess) {
+  const 对话 = 读对话正文(sess)
+  if (!对话.trim()) return { ok: false, message: '这段对话里没读出内容' }
+  const 回 = await 问模型(ctx, agent, 交接系统提示, 对话, 65536)
+  const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
+  if (!summary) {
+    return { ok: false, message: '模型给了空概括（输入 ' + 对话.length + ' 字）' + (回 && 回.message ? '：' + 回.message : '') }
+  }
+  return { ok: true, summary, 对话长度: 对话.length }
+}
+
+// ---------- memory_movctx：她自己去开新对话（2026-10-27 主人想的）----------
+// 一件事三合一：把这段对话压成交接 → 排给「下一个新对话」→ 用同一个预设 / 模型 / 工作区
+// 开一个新的，并让它自己接着聊。原来的对话原样留着，不会丢。
+// 「只吃一次」靠的还是原来那套：新会话第一轮认领 → 注入 → 标已用（历史留档）。
+function 新会话id() {
+  try {
+    return (
+      'session-' +
+      'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+        const r = (Math.random() * 16) | 0
+        const v = ch === 'x' ? r : (r & 0x3) | 0x8
+        return v.toString(16)
+      })
+    )
+  } catch (error) {
+    return 'session-' + String(Date.now())
+  }
+}
+
+function makeMovCtxTool(ctx) {
+  return defineTool({
+    name: 'memory_movctx',
+    description:
+      '把当前这段对话压成一份「上下文交接」，然后用**同一个预设 / 模型 / 工作区**开一个新对话，并让它接着聊。' +
+      '上下文用掉一半左右、或者觉得注意力开始散、或者要换个大话题时用它 —— 新对话第一轮会注入这份交接（一份只注入一次）。' +
+      '原来的对话原样留着，随时能回去看；这一条主要在预设绑了记忆的时候效果最好（交接是按预设排队的）。',
+    parameters: {
+      extra: {
+        type: 'string',
+        description: '额外补充（可选）：新对话开头要特别注意的事，比如「刚才那个文件改到一半」「别动 X 配置」。',
+      },
+      note: {
+        type: 'string',
+        description: '新对话开跑的第一句话（可选），默认「（接上一个对话的交接，继续）」。',
+      },
+      start: {
+        type: 'boolean',
+        description: '是否立刻让新对话开始跑（默认 true）。false = 只建好挂在那儿，等对方自己开口。',
+      },
+      preset: {
+        type: 'string',
+        description: '要挪进哪个预设（可选，默认就用当前这个预设）。',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: { ok: { type: 'boolean' }, message: { type: 'string' }, session: { type: 'string' } },
+      },
+      render(_args, value) {
+        if (value && value.ok === false) return [{ type: 'text', text: '✗ ' + String(value.message || '没转成') }]
+        const 行 = ['↪ 新对话 ' + String((value && value.session) || '?') + (value && value.chars ? '（交接 ' + value.chars + ' 字）' : '')]
+        if (value && value.message) 行.push(String(value.message))
+        return [{ type: 'text', text: 行.join('\n') }]
+      },
+    },
+    async execute(args, exec) {
+      const agent = exec && (exec.agent || exec.caller || exec.agentRef)
+      const sess = agent && agent.session
+      if (!sess) return { ok: false, message: '拿不到当前会话，转不了' }
+      const 从 = sessionIdOf(sess)
+
+      // 1) 定预设：参数 > 当前会话在用的那个
+      const presets = ctx.get && ctx.get('agentPresets')
+      let presetId = String((args && args.preset) || '').trim()
+      try {
+        if (!presetId && presets && typeof presets.composedPreset === 'function') {
+          presetId = String(presets.composedPreset(agent.ctx) || '')
+        }
+      } catch (error) {}
+      if (!presetId) return { ok: false, message: '不知道当前用的是什么预设，没法用同一套配置开新对话（可以传 preset 指定）' }
+      if (!presets || typeof presets.resolve !== 'function' || typeof presets.mount !== 'function') {
+        return { ok: false, message: '宿主没挂 agentPresets，开不了新对话' }
+      }
+
+      // 2) 概括
+      diag('memory_movctx：给 ' + 从 + ' 生成交接（预设 ' + presetId + '）')
+      const 概 = await 生成交接概括(ctx, agent, sess)
+      if (!概.ok) return { ok: false, message: '概括失败：' + 概.message }
+      const extra = String((args && args.extra) || '').slice(0, 4000)
+
+      // 3) 排给下一个新对话 + 记历史（注入之后标已用，不删）
+      const c = loadCfg()
+      if (!c.transferNext || typeof c.transferNext !== 'object') c.transferNext = {}
+      const id = 交接新id()
+      const now = new Date().toISOString()
+      c.transferNext[presetId] = { id, summary: 概.summary, extra, at: now }
+      if (c.transferReserved && typeof c.transferReserved === 'object') delete c.transferReserved[presetId]
+      记交接历史(c, { id, preset: presetId, summary: 概.summary, extra, at: now })
+      saveCfg(c)
+
+      // 4) 建新会话（同预设 / 同模型 / 同工作区）
+      let resolved = null
+      try {
+        resolved = await presets.resolve(presetId)
+      } catch (error) {
+        return { ok: false, message: '预设 ' + presetId + ' 解析不了：' + ((error && error.message) || error) }
+      }
+      const 预设id = resolved && resolved.id ? String(resolved.id) : presetId
+      let cwd = ''
+      try {
+        cwd = String((sess.header && sess.header.cwd) || '')
+      } catch (error) {}
+      if (!cwd) {
+        try {
+          const wd = ctx.get && ctx.get('workingDirectory')
+          if (wd && typeof wd.cwd === 'function') cwd = String(wd.cwd() || '')
+        } catch (error) {}
+      }
+      if (!cwd) return { ok: false, message: '不知道这个对话的工作目录，开不了新对话' }
+      let agentOptions
+      try {
+        const 默 = ctx.get && ctx.get('agentDefaultModel')
+        if (默 && typeof 默.currentSelection === 'function') {
+          const s = 默.currentSelection()
+          if (s && s.provider && s.model) agentOptions = { provider: s.provider, model: s.model }
+        }
+      } catch (error) {}
+      const 新id = 新会话id()
+      let handle
+      try {
+        handle = await ctx.agents.create({
+          sessionId: 新id,
+          ...(agentOptions ? { agentOptions } : {}),
+          meta: { cwd, agentPreset: 预设id },
+          setup: async (agentCtx) => {
+            await presets.mount(agentCtx, 预设id)
+          },
+        })
+      } catch (error) {
+        return { ok: false, message: '新对话建不起来：' + ((error && error.message) || error) }
+      }
+
+      // 5) 挂到同一个工作区（Web 侧才会出现在工作区分组里，而不是「未分组」）
+      try {
+        const ws = ctx.get && ctx.get('workspaceRegistry')
+        if (ws && typeof ws.resolveByPath === 'function') {
+          const 区 = await ws.resolveByPath(cwd)
+          if (区 && typeof 区.attachSession === 'function') await 区.attachSession(新id)
+        }
+      } catch (error) {
+        diag('memory_movctx：挂工作区失败（不影响用）：' + ((error && error.message) || error))
+      }
+
+      // 6) 让它开跑（交接会在这一轮开头认领并注入）
+      const 要不要跑 = !(args && args.start === false)
+      if (要不要跑) {
+        const 话 = String((args && args.note) || '').trim() || '（接上一个对话的交接，继续）'
+        try {
+          const 消息 = createUserMessage({ content: [{ type: 'text', text: 话 }], source: { kind: 'plugin:dsh-xykp' } })
+          const a = handle && handle.agent
+          if (a && typeof a.followup === 'function') a.followup(消息)
+          else if (a && a.inbox && typeof a.inbox.followup === 'function') a.inbox.followup(消息)
+          else throw new Error('这个 agent 没有 followup')
+        } catch (error) {
+          // ⚠ 建好了但没开跑不算失败：交接还排在 transferNext 里，它第一句话来了照样注入 ✓
+          diag('memory_movctx：' + 新id + ' 没能自动开跑：' + ((error && error.message) || error))
+          return {
+            ok: true,
+            session: 新id,
+            chars: 概.summary.length,
+            message: '新对话建好了，但没能自动开跑：' + ((error && error.message) || error) + '。交接还排着队，等它第一句话来了会注入。',
+          }
+        }
+      }
+      diag('memory_movctx：已转到 ' + 新id + '（交接 ' + 概.summary.length + ' 字，' + (要不要跑 ? '已开跑' : '等人开口') + '）')
+      return {
+        ok: true,
+        session: 新id,
+        chars: 概.summary.length,
+        message: '交接会在它第一轮开头注入一次；原来的对话还在，随时能回去看。',
+      }
+    },
+  })
+}
+
+
 // 哪些会话开着记忆。
 // ⚠ 默认是「关」—— 不是每个对话都要用记忆，她点开哪个，哪个才用 ✓
 function isEnabled(sid) {
@@ -3744,13 +4035,8 @@ export function apply(ctx) {
             diag('  交接已拼进用户消息：' + 待注入交接.length + ' 字')
             待注入交接 = ''
             认领者 = ''
-            try {
-              const cc = loadCfg()
-              const 池 = String(sid).slice('preset_'.length)
-              if (cc.transferNext) delete cc.transferNext[池]
-              if (cc.transferReserved) delete cc.transferReserved[池]
-              saveCfg(cc)
-            } catch (error) {}
+            // ⭐ 2026-10-27：这里只标「已用」，历史里那份留着（以前是整条 delete，用完就没了）
+            标交接已用(String(sid).slice('preset_'.length), 本会话raw())
           }
         }
         if (txt) {
@@ -3910,12 +4196,8 @@ export function apply(ctx) {
               //   这里**不清空**，留到 turn-stopping 再清 —— 下一个 step 的 context 值从空变有，
               //   DSH 会把它追加到对话末尾，模型就能看到。
               const 池名 = String(sid).slice('preset_'.length)
-              try {
-                const c = loadCfg()
-                if (c.transferNext) delete c.transferNext[池名]
-                if (c.transferReserved) delete c.transferReserved[池名]
-                saveCfg(c)
-              } catch (error) {}
+              // ⭐ 2026-10-27：只标「已用」（transferNext 摘掉、历史留档），不再整条删掉
+              标交接已用(池名, 本会话raw())
               diag('转移提示词已注入（' + 池名 + '）：' + 转移.length + ' 字')
               }
             }
@@ -4194,6 +4476,16 @@ export function apply(ctx) {
   // 现在挪进 mountFor，挂在 agent 自己的 ctx 上，开关一关就跟着卸掉 ✓
   //
   // （这里留个记号，免得以后有人以为漏了。）
+
+  // ⭐ 2026-10-27（主人想的）：`memory_movctx` 是**全局**的 ——
+  //   它不需要「这个会话开着记忆」才能用（转移是对话本身的事，不是记忆的事），
+  //   「我是谁」靠 exec.agent 判（跟 token_report 一个套路）。
+  try {
+    ctx.tools.register(makeMovCtxTool(ctx))
+    diag('memory_movctx 工具挂上了（全局）')
+  } catch (error) {
+    diag('memory_movctx 挂不上：' + ((error && error.message) || error))
+  }
 
   // 诊断：看看每次组装时「模型能看到哪些工具」—— 查 remember 到底有没有出现
   let lastToolSig = ''
@@ -6564,25 +6856,94 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         if (!对话.trim()) throw new Error('这段对话里没读出内容')
 
         const agent = ctx.agents.list()[0]
-        const 系统 =
-          '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
-		  '可以详细与概括穿插，没有额外长度限制，可以很长，不会被裁剪。' +
-		  '这些输出将会作为你的记忆保留，不要以长短来评判详细与简略的标准，' +
-		  '有些长的事情比较机械不重要则一句话概括即可，如果重要可以记录过程与自己的感受。' +
-		  '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。'
-        // 不截断：这段对话原样全给模型（上下文通常还有几百 k，不差这几 k）
-        const 回 = await 问模型(ctx, agent, 系统, 对话, 65536)
-        const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
-        if (!summary) throw new Error('模型给了空概括（输入 ' + 对话.length + ' 字）')
+        const 概 = await 生成交接概括(ctx, agent, sess)
+        if (!概.ok) throw new Error(概.message)
+        const summary = 概.summary
 
         const c = loadCfg()
         if (!c.transferNext || typeof c.transferNext !== 'object') c.transferNext = {}
-        c.transferNext[preset] = { summary, extra, at: new Date().toISOString() }
+        const id = 交接新id()
+        const now = new Date().toISOString()
+        c.transferNext[preset] = { id, summary, extra, at: now }
         // 重新点一次转移 = 上一次的认领作废（不然旧会话还占着，新会话要空等 10 分钟）
         if (c.transferReserved && typeof c.transferReserved === 'object') delete c.transferReserved[preset]
+        // ⭐ 2026-10-27：概括生成就记进历史 —— 注入之后只标「已用」，不删（设置页能看能手动删）
+        记交接历史(c, { id, preset, summary, extra, at: now })
         saveCfg(c)
-        diag('转移：' + preset + ' 概括 ' + summary.length + ' 字，补充 ' + extra.length + ' 字（下一个对话注入一次）')
-        out = { ok: true, summary }
+        diag('转移：' + preset + ' 概括 ' + summary.length + ' 字，补充 ' + extra.length + ' 字（下一个对话注入一次；历史留档）')
+        out = { ok: true, summary, id }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    // ---- 交接历史：生成就留着，除非手动删（2026-10-27 主人提的）----
+    mroute('/dsh-fish-memory/transfer/history', async (req, res) => {
+      let out = { ok: false, message: '？' }
+      try {
+        const c = loadCfg()
+        const 全部 = Array.isArray(c.transferHistory) ? c.transferHistory : []
+        // 顺手把「还排着队等注入」的那份标出来（设置页上能一眼看出哪份还没被吃过）
+        const 排队 = c.transferNext && typeof c.transferNext === 'object' ? c.transferNext : {}
+        const 排队ids = new Set(
+          Object.keys(排队)
+            .map((k) => 排队[k] && 排队[k].id)
+            .filter(Boolean)
+            .map(String),
+        )
+        out = {
+          ok: true,
+          list: 全部
+            .slice()
+            .reverse()
+            .map((x) => ({
+              id: String(x.id || ''),
+              preset: String(x.preset || ''),
+              at: x.at || null,
+              usedAt: x.usedAt || null,
+              session: String(x.session || ''),
+              chars: Number(x.chars) || String(x.summary || '').length,
+              pending: 排队ids.has(String(x.id || '')),
+              summary: String(x.summary || ''),
+              extra: String(x.extra || ''),
+            })),
+        }
+      } catch (error) {
+        out = { ok: false, message: String((error && error.message) || error) }
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(out))
+    })
+
+    mroute('/dsh-fish-memory/transfer/history/delete', async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      let b = {}
+      try {
+        b = JSON.parse(body || '{}')
+      } catch (error) {}
+      let out = { ok: false, message: '？' }
+      try {
+        const id = String(b.id || '')
+        if (!id) throw new Error('要给出哪一条')
+        const c = loadCfg()
+        const 前 = Array.isArray(c.transferHistory) ? c.transferHistory.length : 0
+        if (Array.isArray(c.transferHistory)) {
+          c.transferHistory = c.transferHistory.filter((x) => !(x && String(x.id) === id))
+        }
+        // ⚠ 排队中的那份被删了，排队也一起撤 —— 不然会注入一份「设置页上已经删掉的」✗
+        if (c.transferNext && typeof c.transferNext === 'object') {
+          for (const k of Object.keys(c.transferNext)) {
+            if (c.transferNext[k] && String(c.transferNext[k].id) === id) {
+              delete c.transferNext[k]
+              if (c.transferReserved) delete c.transferReserved[k]
+            }
+          }
+        }
+        saveCfg(c)
+        out = { ok: true, removed: 前 - (Array.isArray(c.transferHistory) ? c.transferHistory.length : 0) }
       } catch (error) {
         out = { ok: false, message: String((error && error.message) || error) }
       }

@@ -212,6 +212,10 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       const [换新, set换新] = React.useState('')
       const [自定义, set自定义] = React.useState('')
       const [转移文本, set转移文本] = React.useState('')
+      // ⭐ 2026-10-27（主人想的）：交接概括不再「用完就删」—— 生成就留在历史里，
+      //   这儿能看到全文、也能手动删（只有删掉才是真的没了）。
+      const [交接历史, set交接历史] = React.useState([])
+      const [看交接, set看交接] = React.useState({}) // 哪几条展开了全文
       const [显示未命中, set显示未命中] = React.useState(false)
       const [召回上限, set召回上限] = React.useState(50)
       const [复制到, set复制到] = React.useState('') // 复制到哪个会话
@@ -374,6 +378,9 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
             set对话列((r && r.conversations) || [])
           })
           .catch(() => set对话列([]))
+        get('/transfer/history')
+          .then((r) => set交接历史((r && r.list) || []))
+          .catch(() => set交接历史([]))
         拉存档列表()
       }, [拉存档列表])
 
@@ -2288,6 +2295,10 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                               : ['✗ ' + ((r && r.message) || '？')],
                           )
                           set转移文本('')
+                          // ⭐ 2026-10-27：概括生成就进历史了，这边立刻刷，不用切窗口
+                          get('/transfer/history')
+                            .then((h) => set交接历史((h && h.list) || []))
+                            .catch(() => {})
                         })
                         .catch((e) => {
                           setBusy(false)
@@ -2297,6 +2308,93 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
                   },
                   '概括当前对话 → 排给下一个对话',
                 ),
+                交接历史.length
+                  ? React.createElement(
+                      'div',
+                      { style: { marginTop: 10 } },
+                      React.createElement(
+                        'div',
+                        { style: Object.assign({}, S.dim, { fontSize: 12 }) },
+                        '交接历史：共 ' + 交接历史.length + ' 份（生成就留着，不想要了点「删掉」）',
+                      ),
+                      React.createElement(
+                        'div',
+                        { style: { maxHeight: 260, overflowY: 'auto', marginTop: 4 } },
+                        交接历史.slice(0, 12).map((h) =>
+                          React.createElement(
+                            'div',
+                            {
+                              key: h.id,
+                              style: {
+                                padding: '6px 8px',
+                                marginTop: 6,
+                                border: '1px solid rgba(128,128,128,.25)',
+                                borderRadius: 6,
+                              },
+                            },
+                            React.createElement(
+                              'div',
+                              { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' } },
+                              React.createElement('span', null, fmt(h.at)),
+                              React.createElement('span', { style: S.dim }, h.preset || '?'),
+                              React.createElement('span', { style: S.dim }, String(h.chars || 0) + ' 字'),
+                              React.createElement(
+                                'span',
+                                { style: h.pending ? { color: '#c99a2e' } : S.dim },
+                                h.pending ? '排队中（等下一个对话）' : h.usedAt ? '已注入 ' + fmt(h.usedAt) : '没用上',
+                              ),
+                              React.createElement('span', { style: { flex: 1 } }),
+                              React.createElement(
+                                'button',
+                                {
+                                  style: S.btn,
+                                  onClick: () => set看交接(Object.assign({}, 看交接, { [h.id]: !看交接[h.id] })),
+                                },
+                                看交接[h.id] ? '收起' : '看全文',
+                              ),
+                              React.createElement(
+                                'button',
+                                {
+                                  style: S.btn,
+                                  onClick: () => {
+                                    post('/transfer/history/delete', { id: h.id })
+                                      .then(() => get('/transfer/history'))
+                                      .then((x) => set交接历史((x && x.list) || []))
+                                      .catch(() => {})
+                                  },
+                                },
+                                '删掉',
+                              ),
+                            ),
+                            h.extra
+                              ? React.createElement(
+                                  'div',
+                                  { style: Object.assign({}, S.dim, { fontSize: 12, marginTop: 2 }) },
+                                  '补充：' + h.extra,
+                                )
+                              : null,
+                            看交接[h.id]
+                              ? React.createElement(
+                                  'div',
+                                  {
+                                    style: {
+                                      marginTop: 6,
+                                      paddingTop: 6,
+                                      borderTop: '1px dashed rgba(128,128,128,.35)',
+                                      whiteSpace: 'pre-wrap',
+                                      fontSize: 12,
+                                      maxHeight: 260,
+                                      overflowY: 'auto',
+                                    },
+                                  },
+                                  h.summary || '（空）',
+                                )
+                              : null,
+                          ),
+                        ),
+                      ),
+                    )
+                  : null,
               ),
             )
           }

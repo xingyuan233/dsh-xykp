@@ -96,3 +96,21 @@
   注意 `toolret-forget` 也按 `presets` 生效——要让别的预设也折叠，两边的 `presets` 得对得上。
 - `usage` 只统计经过本机 DSH 的调用；换机器/换 home 目录后数字从那时开始。
 - 订阅型 provider（官方返回 usage 不带价格）没有单价信息，费用只能按 `cost` 自己填的价估。
+
+## prompt.transferHint（2026-10-27）
+
+上下文占比到阈值时，摘要里多一句提醒（让她自己判断要不要用 `memory_movctx` 转移对话）：
+
+```yaml
+prompt:
+  transferHint:
+    enabled: true   # 默认开；false = 不提醒
+    at: 0.5         # 占比阈值，0.5 = 一半（太长注意力会散、容易丢角色）
+    text: ''        # 可选自定义文案，支持 {pct} / {used} / {window}
+```
+
+默认文案：
+
+> ⚠ 上下文已用 52%（104k/200k），再长下去注意力会散、容易丢角色 —— 想接着认真聊就调
+> memory_movctx 把交接带到一个新对话，或者先问问要不要转。
+

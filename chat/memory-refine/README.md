@@ -42,3 +42,17 @@
    工具条 / 检索框 / 确认条都在框外，不会被滚走（「不会淡的」那个折叠分组算列表内容，
    跟着列表一起在框里滚）。
 
+## 2026-10-27 · 交接历史保留 + memory_movctx
+
+1. **概括不再「用完就删」**：`/transfer/next` 生成后同时记进配置的 `transferHistory`（带全文），
+   注入成功只标 `usedAt` / `session`，`transferNext` 照旧清空 —— 「只吃一次」不变 ✓
+   设置页「鱼的记忆」里能看到全文、能手动删（接口 `/transfer/history`、`/transfer/history/delete`）。
+   最多留 40 份，超了先丢「已经注入过」的最老的。
+2. **新工具 `memory_movctx`**（全局注册，不用会话开着记忆）：把当前对话压成交接 →
+   排给下一个新对话 → 用同一预设 / 模型 / 工作区 `ctx.agents.create` 一个新会话，
+   再 `followup` 让它自己开跑。参数：`extra` 额外交代、`note` 新对话第一句、
+   `start=false` 只建不跑、`preset` 换预设。交接注入还是走原来「新会话第一轮认领」那套，
+   所以预设得绑记忆（`bindPreset`）才有交接效果。
+3. 顺带：`chat/token-reporter` 加了 `prompt.transferHint`（占比过阈值就提醒她自己调
+   `memory_movctx`），默认 50%。
+
