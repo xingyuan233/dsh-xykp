@@ -7,6 +7,11 @@
 >   原作者把参数包在 `input` 里（`parameters: { input: { command, path, action } }`），但 `execute` 直接读
 >   `args.command` / `args.path`，两边对不上 → 不管怎么调用都返回 “provide either command or path”，工具实际不可用。
 >   现在参数改成顶层 `command` / `path` / `action`，`execute` 里加兼容层，两种形态都认。这是上游 bug，官方修了就能还原。
+> - **2026-10-27 补修：写文件没传 sandbox policy。** `gate_report write=true` / `gate_diff update=true`
+>   调 `ctx.fs.writeText(...)` 时少传第 5 个参数，dsh-fs-sandbox 就退回「部署默认」workspace-write，
+>   会话开着 danger-full-access 也照样被拒（`file access denied under workspace-write mode`）。
+>   现在按 dsh-tool-fs 的做法补上 `ctx.sandboxPolicy.resolve({ session: exec.agent.session })`。
+>   同样是上游 bug，官方修了就能还原。
 > - 本仓库改成 `private`，只为自用，**不发布到 npm**；版权与 LICENSE 归原作者。
 >
 > ## ⚠️ 静态检查 ≠ 100% 准确

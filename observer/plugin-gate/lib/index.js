@@ -76,6 +76,28 @@ function scanOpts(config, args) {
 }
 
 /**
+ * local patch (星鸢专属) 2026-10-27: fs-sandbox 的 per-call policy。
+ *
+ * `ctx.fs.writeText(target, content, expected, signal)` 不传第 5 个参数时，
+ * dsh-fs-sandbox 会用 `ctx.sandboxPolicy.resolve()`（**不带 session**）→ 部署默认
+ * workspace-write + 部署默认 workspace root。结果是：会话明明开了
+ * danger-full-access，写自己工作区里的报告仍被拒（实测报
+ * `file access denied under workspace-write mode`）。
+ *
+ * 这里按 dsh-tool-fs 的做法，把「当前会话」的 policy 传进去；拿不到就退回
+ * undefined（与旧行为一致，不会更糟）。
+ */
+function sandboxPolicyOf(ctx, exec) {
+  const sp = ctx.get("sandboxPolicy");
+  if (!sp || typeof sp.resolve !== "function") return undefined;
+  try {
+    return sp.resolve(exec && exec.agent ? { session: exec.agent.session } : {});
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Register the gate_scan tool and (when configured) the prompt section.
  * @param ctx - registrant context carrying tools, fs, systemPrompt.
  * @param config - validated plugin configuration.
@@ -320,7 +342,7 @@ function apply(ctx, config) {
       const diff = diffBaseline({ baseline, result, target });
       let updated = false;
       if (args.update === true) {
-        await ctx.fs.writeText(path, JSON.stringify(buildBaseline({ target, result }), null, 2), undefined, exec.signal);
+        await ctx.fs.writeText(path, JSON.stringify(buildBaseline({ target, result }), null, 2), undefined, exec.signal, sandboxPolicyOf(ctx, exec));
         updated = true;
       }
       return {
@@ -392,7 +414,7 @@ function apply(ctx, config) {
       if (args.write === true) {
         const outFile = args.path || (format === "json" ? reportFile.replace(/\.md$/, ".json") : reportFile);
         const outPath = await resolveWorkspaceFile(ctx, outFile, cwd, exec.signal);
-        await ctx.fs.writeText(outPath, body, undefined, exec.signal);
+        await ctx.fs.writeText(outPath, body, undefined, exec.signal, sandboxPolicyOf(ctx, exec));
         writtenPath = ctx.fs.processPath(outPath);
       }
       const text = writtenPath ? body + "\n\nWritten to " + writtenPath : body;
