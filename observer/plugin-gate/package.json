@@ -1,0 +1,62 @@
+{
+  "name": "dsh-plugin-gate",
+  "version": "1.3.2",
+  "description": "安装安全闸（fork 自 863683348/dsh-plugin-gate，仅修了 gate_guard 参数 schema；静态检查是启发式，不是 100% 准确）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./rules": "./lib/rules.js",
+    "./scan": "./lib/scan.js",
+    "./targz": "./lib/targz.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "SECURITY.md",
+    "ROADMAP.md"
+  ],
+  "scripts": {
+    "test": "node test/baseline.test.mjs && node test/osv.test.mjs && node test/protect.test.mjs && node test/report.test.mjs && node test/rules.test.mjs && node test/scan.test.mjs",
+    "prepublishOnly": "node test/baseline.test.mjs && node test/osv.test.mjs && node test/protect.test.mjs && node test/report.test.mjs && node test/rules.test.mjs && node test/scan.test.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "plugin",
+    "security",
+    "scan",
+    "audit",
+    "malware",
+    "supply-chain",
+    "gate",
+    "safety"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-fs": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/863683348/dsh-plugin-gate.git"
+  },
+  "homepage": "https://github.com/863683348/dsh-plugin-gate#readme",
+  "bugs": {
+    "url": "https://github.com/863683348/dsh-plugin-gate/issues"
+  },
+  "private": true
+}

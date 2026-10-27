@@ -1,0 +1,37 @@
+{
+  "name": "dsh-session-delete",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Permanently delete conversations (sessions) from the dsh web GUI: a Session row action, a confirmation dialog, and a Host Remote that removes the session log, its projection cache, and its Workspace accounting.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "README.md"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "session",
+    "delete",
+    "conversation",
+    "plugin"
+  ],
+  "license": "MIT"
+}

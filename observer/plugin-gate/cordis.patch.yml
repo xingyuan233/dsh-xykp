@@ -1,0 +1,19 @@
+# dsh-plugin-gate — bundle patch layer.
+#
+# Profile-bundle patches compose over an EMPTY entry list (launcher
+# composition), so this patch is an `insert` appending one composition row.
+# The row registers the `gate_scan` model tool (plus prompt guidance when
+# configured) host-wide. To scope the plugin to ONE agent preset instead,
+# remove this package from the profile's `dsh.profile.bundles` and add the
+# row below (the `gate` entry) to that preset's `agent.cordis.yml`.
+- insert:
+    - id: gate
+      name: 'dsh-plugin-gate'
+      config:
+        maxFiles: 1000
+        maxFileBytes: 2097152
+        includeNodeModules: false
+        maxTarballBytes: 33554432
+        allowlistHosts: []
+        promptSection: true
+        sectionOrder: 5

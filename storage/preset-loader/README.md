@@ -44,3 +44,11 @@
 
 - DSH 服务：`agentPresets`（注册表）
 - npm：`js-yaml@4.3.2`（仓库自己的依赖，`pnpm install` 会装到仓库的 node_modules；找不到就整层跳过，不报错）
+
+## 自测
+
+```powershell
+node test/preset-loader-test.mjs
+```
+
+离线跑（不启宿主），覆盖：注册进 `agentPresets`、`.last-read.json` 快照写入、改文件后重注册并输出行级 diff、装载失败自动回滚。

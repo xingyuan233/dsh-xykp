@@ -53,3 +53,11 @@ config:
       config:
         presets: [alive]
 ```
+
+## 自测
+
+```powershell
+node test/toolret-forget-test.mjs
+```
+
+离线跑（不启宿主），覆盖：按序号折叠、占位替换后 `callId` 仍在（配对不断）、`keep` 语义、重复折叠被跳过。

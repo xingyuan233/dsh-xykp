@@ -71,3 +71,11 @@ import { readTable, activeSession, sessionInfo } from 'dsh-xykp/chat/preset-bind
 ```
 
 读文件就行，不用等这个插件起来之后再查服务。
+
+## 自测
+
+```powershell
+node test/preset-binder-test.mjs
+```
+
+离线跑（不启宿主），覆盖：表字段是否齐全、跑着时 `endedAt` 为 `null`、结束后 `running=false` 且有结束时间、token 合计、`active` 指向。

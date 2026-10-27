@@ -1,9 +1,9 @@
 // 离线自测 preset-loader：注册、快照、diff、热重载回滚
-// 用法：node test/preset-loader.mjs
+// 用法：node test/preset-loader-test.mjs
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply } from '../storage/preset-loader/index.js'
+import { apply } from '../index.js'
 
 const logs = []
 const origLog = console.log

@@ -1,5 +1,6 @@
 // 离线自测 toolret-forget：选序号折叠、占位替换、配对不断
-import { foldSelection, FOLDED } from '../chat/toolret-forget/fold.js'
+// 用法：node test/toolret-forget-test.mjs
+import { foldSelection, FOLDED } from '../fold.js'
 
 const events = new Map()
 let nextSeq = 100

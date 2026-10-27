@@ -1,0 +1,17 @@
+{
+  "name": "dsh-log-cleaner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "日志清理：启动/定时检查日志，超限先 gzip 备份再清空。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "license": "MIT"
+}

@@ -3640,10 +3640,87 @@ export function apply(ctx) {
     //   （上一版挂了两个不存在的事件，所以线索一直是慢一轮的快照、consumed 也永远不触发）
     let lastText = ''
     let probed = false
+    // ⭐ 2026-10-27：交接改在「用户真的发来消息」这一刻认领 ——
+    //   以前是在 systemPrompt 的 text() 里查 session events 判「新会话」，
+    //   可那一刻 user/message 还没写进 events（时序），条件永远不成立 → 交接一直没人取 ✗
+    //   agent/inbox/inserted 一定发生在这一轮开跑之前，而且只在本会话触发 →
+    //   只有真正说话的那个会话能拿到，别的活着的会话碰不到 ✓
+    let 待注入交接 = ''
+    let 认领者 = ''
+    const 本会话raw = () => {
+      try { return sessionIdOf(agent.session) || '' } catch (error) { return '' }
+    }
+    function 认领交接() {
+      try {
+        if (待注入交接) return
+        if (!String(sid).startsWith('preset_')) return
+        const 池名 = String(sid).slice('preset_'.length)
+        const raw = 本会话raw()
+        const c = loadCfg()
+        const t = c.transferNext && c.transferNext[池名]
+        if (!t || !(t.summary || t.extra)) return
+        // 已经回过话的会话不许吃（「新对话」= 还没说过话）
+        let 回过 = false
+        let evCount = 0
+        let assistantCount = 0
+        try {
+          const ev = agent.session && agent.session.snapshotEvents ? agent.session.snapshotEvents() || [] : []
+          evCount = ev.length
+          assistantCount = ev.filter((e) => e && ((e.type || e.kind) === 'assistant/message')).length
+          回过 = assistantCount > 0
+        } catch (error) {}
+        diag(`  认领判定（${raw}）：events=${evCount} assistant=${assistantCount} 回过=${回过}`)
+        if (回过) return
+        // 已经被别的会话认领过（上一轮认领了却没来得及注入）→ 先让着，10 分钟后才允许重新认领
+        const 占 = c.transferReserved && c.transferReserved[池名]
+        if (占 && 占.sid && 占.sid !== raw) {
+          const 龄 = Date.now() - (Date.parse(占.at) || 0)
+          if (龄 < 10 * 60 * 1000) return
+        }
+        if (!c.transferReserved || typeof c.transferReserved !== 'object') c.transferReserved = {}
+        c.transferReserved[池名] = { sid: raw, at: new Date().toISOString() }
+        // ⭐ 2026-10-27 修（实测：交接被注入到旧会话 785935c7，新会话反倒没拿到）：
+        //   认领时就把它从 transferNext 删掉 —— 认领即占用，别的会话再也领不到。
+        //   之前是「注入成功才删」，中间那几秒里同一个池子的其他 agent 也能认领。
+        delete c.transferNext[池名]
+        saveCfg(c)
+        认领者 = raw
+        待注入交接 =
+          '【上一个对话的交接（一次性；看到就懂了，不用复述这段话）】\n' +
+          String(t.summary || '') +
+          (t.extra ? '\n\n【补充注意】\n' + String(t.extra) : '')
+        diag('  交接已认领（' + raw + '）：' + 待注入交接.length + ' 字，等本轮组装时注入')
+      } catch (error) {}
+    }
     try {
       agent.ctx.on('agent/inbox/inserted', (payload) => {
         const msg = payload && payload.message ? payload.message : payload
         const txt = textOfMessage(msg)
+        认领交接()
+        // ⭐ 2026-10-27（主人提的）：systemPrompt 那条路第一轮赶不上，那就**直接把交接拼进用户消息**。
+        //   用户消息一定在模型请求里，拼进去稳。
+        if (待注入交接) {
+          try {
+            const content = Array.isArray(msg.content) ? msg.content : null
+            if (content) {
+              content.unshift({ type: 'text', text: 待注入交接 + '\n\n（下面是对方真正说的话）' })
+              diag('  交接已拼进用户消息：' + 待注入交接.length + ' 字')
+              待注入交接 = ''
+              认领者 = ''
+              try {
+                const cc = loadCfg()
+                const 池 = String(sid).slice('preset_'.length)
+                if (cc.transferNext) delete cc.transferNext[池]
+                if (cc.transferReserved) delete cc.transferReserved[池]
+                saveCfg(cc)
+              } catch (error) {}
+            } else {
+              diag('  交接拼接失败：消息里没有 content 数组')
+            }
+          } catch (error) {
+            diag('  交接拼接失败：' + (error && error.message))
+          }
+        }
         if (txt) {
           lastText = txt
           记一句话(sid, txt) // ⭐ 喂给「她自己怎么说话」那把尺子（治太敏感用）✓
@@ -3659,6 +3736,12 @@ export function apply(ctx) {
     try {
       agent.ctx.on('agent/turn-stopping', () => {
         try {
+          // 交接用完了就清掉（保留到这一轮结束，保证第二个 step 也能看到）
+          if (待注入交接) {
+            diag('  这一轮结束，交接标记清空')
+            待注入交接 = ''
+            认领者 = ''
+          }
           const ev = (agent.session && agent.session.snapshotEvents ? agent.session.snapshotEvents() : []) || []
           let 回复 = ''
           for (let i = ev.length - 1; i >= 0; i--) {
@@ -3772,30 +3855,28 @@ export function apply(ctx) {
           // 一次性「转移到下一个对话」：这个预设的下一个会话开头注入一次，用完就删
           let 转移 = ''
           if (String(sid).startsWith('preset_')) {
-            const 池名 = String(sid).slice('preset_'.length)
-            try {
-              const c = loadCfg()
-              const t = c.transferNext && c.transferNext[池名]
-              // 只交给「刚开的那个新会话」：这个会话还没说过话（没有 assistant 回复）才注入；
-              // 不然谁先请求谁就把交接吃掉了（实测就是被别的活着的会话抢走）
-              let 是新会话 = true
+            // 认领发生在 agent/inbox/inserted（见上面的 认领交接）—— 那时用户的话刚到、还没开始跑
+            // 这里只负责把它拼进提示词，拼完就清掉，保证「一次性」
+            认领交接()
+            if (待注入交接) {
+              const 现在 = 本会话raw()
+              if (认领者 && 现在 && 现在 !== 认领者) {
+                diag(`  交接跳过：认领者是 ${认领者}，现在是 ${现在}`)
+              } else {
+              转移 = 待注入交接
+              // ⚠ 2026-10-27 修（实测：新会话 step1 的 assemble 早于认领，模型整轮都没看到交接）：
+              //   这里**不清空**，留到 turn-stopping 再清 —— 下一个 step 的 context 值从空变有，
+              //   DSH 会把它追加到对话末尾，模型就能看到。
+              const 池名 = String(sid).slice('preset_'.length)
               try {
-                const ev = agent.session.snapshotEvents ? agent.session.snapshotEvents() || [] : []
-                const 类型 = (e) => (e && (e.type || e.kind)) || ''
-                // 必须是「已经有一句用户话、但还没回复过」的会话 ——
-                // 光点了「+」还没说话的空白会话不许吃交接（实测就是那样被吞掉的）
-                是新会话 = ev.some((e) => 类型(e) === 'user/message') && !ev.some((e) => 类型(e) === 'assistant/message')
-              } catch (error) {}
-              if (t && (t.summary || t.extra) && 是新会话) {
-                转移 =
-                  '【上一个对话的交接（一次性；看到就懂了，不用复述这段话）】\n' +
-                  String(t.summary || '') +
-                  (t.extra ? '\n\n【补充注意】\n' + String(t.extra) : '')
-                delete c.transferNext[池名]
+                const c = loadCfg()
+                if (c.transferNext) delete c.transferNext[池名]
+                if (c.transferReserved) delete c.transferReserved[池名]
                 saveCfg(c)
-                diag('转移提示词已注入（' + 池名 + '）：' + 转移.length + ' 字')
+              } catch (error) {}
+              diag('转移提示词已注入（' + 池名 + '）：' + 转移.length + ' 字')
               }
-            } catch (error) {}
+            }
           }
           const data = loadStore(sid)
           if (!data.memories.length) {
@@ -6426,8 +6507,8 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         const agent = ctx.agents.list()[0]
         const 系统 =
           '把下面这段对话压缩成一份「上下文交接」，用来在上下文快满时接着往下聊。' +
-          '要详细、按小节写（时间线 / 关键决定与约定 / 对方的状态与偏好 / 正在做的事与没做完的 / 重要的原话要点），' +
-          '第一人称，不要寒暄、不要省略细节，能写多细写多细。直接输出交接正文，不要写思考过程、不要解释。'
+		  '可以详细与概括穿插，没有额外长度限制，可以很长，不会被裁剪。' +
+		  '这些输出将会作为你的记忆保留，所以将你不想忘记的东西交给下一轮对话。'
         // 不截断：这段对话原样全给模型（上下文通常还有几百 k，不差这几 k）
         const 回 = await 问模型(ctx, agent, 系统, 对话, 65536)
         const summary = 回 && 回.ok ? String(回.text || '').trim() : ''
@@ -6436,6 +6517,8 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         const c = loadCfg()
         if (!c.transferNext || typeof c.transferNext !== 'object') c.transferNext = {}
         c.transferNext[preset] = { summary, extra, at: new Date().toISOString() }
+        // 重新点一次转移 = 上一次的认领作废（不然旧会话还占着，新会话要空等 10 分钟）
+        if (c.transferReserved && typeof c.transferReserved === 'object') delete c.transferReserved[preset]
         saveCfg(c)
         diag('转移：' + preset + ' 概括 ' + summary.length + ' 字，补充 ' + extra.length + ' 字（下一个对话注入一次）')
         out = { ok: true, summary }
@@ -6781,3 +6864,7 @@ export {
   标作废,
   真重复门槛,
 }
+
+
+
+

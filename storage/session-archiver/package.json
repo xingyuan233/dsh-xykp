@@ -1,0 +1,17 @@
+{
+  "name": "dsh-session-archiver",
+  "version": "0.1.0",
+  "private": true,
+  "description": "自动归档：启动/定时检查会话，超过闲置天数且不在忽略名单里的就归档（走宿主 workspaceRegistry）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "license": "MIT"
+}

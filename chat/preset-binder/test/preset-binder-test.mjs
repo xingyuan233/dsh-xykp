@@ -1,8 +1,9 @@
 // 离线自测 preset-binder：字段是否齐全、running/endedAt 语义
+// 用法：node test/preset-binder-test.mjs
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply } from '../chat/preset-binder/index.js'
+import { apply } from '../index.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'preset-binder-'))
 const tablePath = join(dir, 'preset-binder.json')

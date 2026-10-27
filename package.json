@@ -23,7 +23,15 @@
     "./chat/memory-refine": "./chat/memory-refine/lib/index.js",
     "./chat/token-reporter": "./chat/token-reporter/index.js",
     "./senses/screenshot": "./senses/screenshot/index.js",
-    "./senses/keymouse": "./senses/keymouse/index.js"
+    "./senses/keymouse": "./senses/keymouse/index.js",
+    "./comms/bili-rove": "./comms/bili-rove/lib/index.js",
+    "./storage/log-cleaner": "./storage/log-cleaner/lib/index.js",
+    "./storage/session-delete": "./storage/session-delete/lib/index.js",
+    "./observer/plugin-gate": "./observer/plugin-gate/lib/index.js",
+    "./observer/dsh-prosecutor": "./observer/dsh-prosecutor/lib/index.js",
+    "./storage/session-delete/client": "./storage/session-delete/lib/client.js",
+    "./storage/session-archiver": "./storage/session-archiver/lib/index.js",
+    "./comms/bili-reply": "./comms/bili-reply/lib/index.js"
   },
   "dsh": {
     "client": {
