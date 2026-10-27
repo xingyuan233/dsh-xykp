@@ -526,8 +526,13 @@ function 读对话正文(sess) {
         .map((x) => x.text)
         .join('\n')
         .trim()
-      if (!文) continue
-      对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
+      // ⚠ 2026-10-28：正文里混着模型自己吐的 <｜｜DSML｜｜…> 工具调用标记，
+      //   摘要模型会照着学（实测：概括原文就是一段 DSML 调用，93 字，直接被当成"太短"拒绝）
+      //   → 拼进摘要输入前就剔掉
+      // 逐行剔掉 DSML 工具调用行（保留同一条消息里的正文），再判断还有没有内容
+      const 净 = String(文 || '').split('\n').filter((l) => l.indexOf('DSML') < 0).join('\n').trim()
+      if (!净) continue
+      对话 += (msg.role === 'user' ? 'ta：' : '我：') + 净 + '\n'
     }
   } catch (error) {}
   return 对话
@@ -600,7 +605,7 @@ function 读对话正文日志(sessionId) {
       .join('\n')
       .trim()
     if (!文) continue
-    对话 += (msg.role === 'assistant' || 类型 === 'assistant/message' ? '我：' : 'ta：') + 文 + '\n'
+    对话 += (msg.role === 'assistant' || 类型 === 'assistant/message' ? '我：' : 'ta：') + 净 + '\n'
   }
   return 对话
 }
@@ -610,7 +615,10 @@ const 交接系统提示 =
   '可以详细与概括穿插，没有额外长度限制，可以很长，不会被裁剪。' +
   '这些输出将会作为你的记忆保留，不要以长短来评判详细与简略的标准，' +
   '有些长的事情比较机械不重要则一句话概括即可，如果重要可以记录过程与自己的感受。' +
-  '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。'
+  '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。' +
+  // ⚠ 2026-10-28：对话正文里混着模型自己的工具调用标记，摘要模型会照着学
+  //   （实测：概括原文就是一段 <｜｜DSML｜｜…> 调用，93 字，被当成"太短"拒绝）
+  '只输出摘要正文（Markdown）。不要调用任何工具，不要输出 <｜｜DSML｜｜…> 之类的标记或 XML/JSON 块。'
 
 // 概括一个会话（不截断：上下文通常还有几百 k，不差这几 k）
 async function 生成交接概括(ctx, agent, sess) {
@@ -634,6 +642,8 @@ async function 生成交接概括(ctx, agent, sess) {
     return { ok: false, message: '模型给了空概括（输入 ' + 对话.length + ' 字）' + (回 && 回.message ? '：' + 回.message : '') }
   }
   // 2026-10-28：概括短得可疑就报错，别悄悄建个吃垃圾开场的新对话
+  // 2026-10-28 诊断：把概括原文打出来（怀疑模型只回了句短话/拒绝）
+  try { diag('交接摘要原文（前 400 字）：' + String(summary).slice(0, 400).replace(/\n/g, ' ⏎ ')) } catch (e) {}
   const 最少 = Math.min(600, Math.floor(对话.length / 20))
   if (summary.length < 最少 && 回 && 回.ok) {
     diag('交接摘要：可疑地短（概括 ' + summary.length + ' 字 / 输入 ' + 对话.length + ' 字），拒绝建会话')
@@ -6803,8 +6813,13 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
             .map((b) => b.text)
             .join('\n')
             .trim()
-          if (!文) continue
-          对话 += (msg.role === 'user' ? 'ta：' : '我：') + 文 + '\n'
+          // ⚠ 2026-10-28：正文里混着模型自己吐的 <｜｜DSML｜｜…> 工具调用标记，
+      //   摘要模型会照着学（实测：概括原文就是一段 DSML 调用，93 字，直接被当成"太短"拒绝）
+      //   → 拼进摘要输入前就剔掉
+      // 逐行剔掉 DSML 工具调用行（保留同一条消息里的正文），再判断还有没有内容
+      const 净 = String(文 || '').split('\n').filter((l) => l.indexOf('DSML') < 0).join('\n').trim()
+      if (!净) continue
+          对话 += (msg.role === 'user' ? 'ta：' : '我：') + 净 + '\n'
         }
         if (!对话.trim()) throw new Error('这个会话里没读出对话')
         const agent = ctx.agents.list()[0]
@@ -7391,6 +7406,9 @@ export {
   标作废,
   真重复门槛,
 }
+
+
+
 
 
 
