@@ -165,3 +165,57 @@ login `onLoginConnected/onLoginConnecting/onLoginDisConnected/onQRCodeGetPicture
 ## 七、当前 profile pin（插件仓库）
 
 最后一次 install 是 `abb1386`；之后 `febb819`（只改 README）没有 install。
+
+## 八、dsh 插件：分流 + 工具（2026-10-27 22:10）
+
+`plugins\comms\qq-adapter` 现在是「宿主那半边」：轮询桥的 `/events`，按规则把消息送进会话或预设，
+并提供 `qq_send` / `qq_status` 两个工具（工具在**新开的对话**里才看得到，旧对话的工具表是固定的）。
+
+### 怎么挂上去的（不用 pnpm install）
+
+1. junction：`home\profiles\web\node_modules\dsh-qq-adapter` → `D:\AI\DeepseekHarness\plugins\comms\qq-adapter`
+2. `home\profiles\web\cordis.patch.yml` 末尾 insert 一行：
+
+```yaml
+- insert:
+    - id: qq-adapter
+      name: 'dsh-qq-adapter'
+      config:
+        enabled: true
+        bridgeUrl: 'http://127.0.0.1:39272'
+        selfUid: 'u_BsJrCaYeH77_OZ78H5pEXA'
+        defaultTarget: 's-session-<会话id>'   # 或 p-<预设名>
+        mode: blacklist         # blacklist（默认）/ whitelist
+        blocked: ['u-...', 'g-...']
+        allowed: []
+        mappings:
+          - chat: 'u-<uid>'
+            target: 'p-alive'
+        pollMs: 2500
+```
+
+配置改完 **live 生效**（loader 会重新 apply），不用重启；但**改插件代码**要重启宿主（ESM 缓存）。
+
+### 分流规则
+
+判定顺序 **映射 → 名单 → 默认目标**；私聊键 `u-<peerUid>`，群聊键 `g-<群号>`。
+纯函数在 `lib/router.js`，单测 `node test/router-test.mjs`（15 条）。
+
+### 踩的坑（都真踩过）
+
+- `defineTool` 的 `output.schema` 必须写 `additionalProperties`，否则宿主抛
+  `JsonSchemaError: unsupported JSON schema` —— 而且这个错误发生在 apply 里，**整个插件直接不工作**
+  → 工具注册用 try/catch 包起来，别让它拖死分流
+- 配置改动会触发 loader **重新 apply**，旧实例的定时器不会自动停 → 同一条消息被转两次
+  → 用 `globalThis.__qqAdapterCleanup` 在 apply 开头掐掉上一个实例
+- 定时器里访问 `ctx.agents` 会拿到 inactive context 的老 fiber → **apply 时就把 agents 抓下来**
+- 桥的 inbox 游标是内存里的，宿主重启后从 0 重放 → 一重启就涌进来一堆旧消息
+  → 游标和去重表一起存 `home/qq-adapter/seen.json`，并且启动默认 `skipBacklog`（不补旧消息）
+- DSH 重启会把 QQ shell（我们起的子进程）一起杀掉 → 登录态失效又要扫码
+  → 插件用 **WMI（Win32_Process.Create）** 拉 shell，进程挂在 WmiPrvSE 下面，宿主重启带不走它
+  （实测：重启多次后 pid 24772 还活着，`stage=ready`）
+
+### 现在的默认目标
+
+`defaultTarget: s-session-525f1840-a15d-40d6-a176-0d020f9c1b65`（当时那个对话）；
+换对话就把它改成新的 `s-<会话id>`，或者用 `p-<预设名>` 跟着预设走。

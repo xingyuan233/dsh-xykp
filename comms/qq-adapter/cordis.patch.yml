@@ -1,0 +1,23 @@
+# dsh-qq-adapter — bundle patch layer.
+#
+# Profile-bundle patches compose over an EMPTY entry list, so this patch is an
+# `insert` appending one composition row.
+#
+# 分流规则就在下面的 config 里；这一层是「默认值」，
+# Web 设置页（设置 → 插件 → qq-adapter）改的是同一份 profile 里的人配置，
+# 改完 live 生效，不用重启宿主。
+- insert:
+    - id: qq-adapter
+      name: 'dsh-qq-adapter'
+      config:
+        enabled: true
+        bridgeUrl: 'http://127.0.0.1:39272'
+        selfUid: 'u_BsJrCaYeH77_OZ78H5pEXA'
+        defaultTarget: 'p-alive'
+        mode: blacklist
+        blocked: []
+        allowed: []
+        mappings: []
+        pollMs: 1500
+        maxPerTick: 10
+        seenPath: ''
