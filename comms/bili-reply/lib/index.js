@@ -78,11 +78,7 @@ async function writeJson(path, data) {
 }
 
 async function loadBinder() {
-  const dir = home()
-  return (
-    (await readJson(join(dir, 'xykp', 'preset-binder', 'preset-binder.json'), null)) ||
-    (await readJson(join(dir, 'storages', 'preset-binder.json'), null))
-  )
+  return readJson(join(home(), 'xykp', 'preset-binder', 'preset-binder.json'), null)
 }
 
 /**

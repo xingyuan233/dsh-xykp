@@ -71,16 +71,8 @@ export async function archivedIds() {
 export async function presetPools() {
   const out = new Map()
   try {
-    let json = null
-    for (const p of [
-      join(homeDir(), 'xykp', 'preset-binder', 'preset-binder.json'),
-      join(homeDir(), 'storages', 'preset-binder.json'),
-    ]) {
-      try {
-        json = JSON.parse(await readFile(p, 'utf8'))
-        break
-      } catch { /* 换下一个位置 */ }
-    }
+    const raw = await readFile(join(homeDir(), 'xykp', 'preset-binder', 'preset-binder.json'), 'utf8')
+    const json = JSON.parse(raw)
     const presets = (json && json.presets) || {}
     for (const [name, pool] of Object.entries(presets)) {
       const ids = new Set(Object.keys((pool && pool.sessions) || {}))

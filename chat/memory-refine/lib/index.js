@@ -6952,16 +6952,9 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
         if (!sess) {
           // 先看 preset-binder 记的活跃会话，再退回同预设的 agent
           try {
-            let 表 = null
-            for (const 表路径 of [
-              join(CFG_DIR, 'xykp', 'preset-binder', 'preset-binder.json'),
-              join(CFG_DIR, 'storages', 'preset-binder.json'),
-            ]) {
-              try {
-                表 = JSON.parse(readFileSync(表路径, 'utf8'))
-                break
-              } catch (error) {}
-            }
+            const 表 = JSON.parse(
+              readFileSync(join(CFG_DIR, 'xykp', 'preset-binder', 'preset-binder.json'), 'utf8'),
+            )
             const 活跃 = 表 && 表.presets && 表.presets[preset] && 表.presets[preset].active
             if (活跃) sess = ctx.sessions.get(String(活跃))
           } catch (error) {}

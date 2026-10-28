@@ -470,16 +470,8 @@ async function scriptLevelCheck() {
 
 // ---------- 会话查找（-p / -s）----------
 function readBinder() {
-  const paths = cfg.binderPath
-    ? [cfg.binderPath]
-    : [
-        join(HOME, 'xykp', 'preset-binder', 'preset-binder.json'),
-        join(HOME, 'storages', 'preset-binder.json'),
-      ];
-  for (const p of paths) {
-    try { return JSON.parse(readFileSync(p, 'utf8')); } catch {}
-  }
-  return null;
+  const path = cfg.binderPath || join(HOME, 'xykp', 'preset-binder', 'preset-binder.json');
+  try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
 }
 
 // -p：name（英文 id）→ 中文名 → 纯数字索引（1 开始）

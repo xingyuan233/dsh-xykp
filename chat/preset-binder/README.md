@@ -2,8 +2,7 @@
 
 维护一张「预设 → 会话」的实时表：`<DSH_HOME>/xykp/preset-binder/preset-binder.json`。
 
-> 2026-10 从 `<DSH_HOME>/storages/preset-binder.json` 搬过来；插件启动时发现旧文件会自动搬过去。
-> 其它模块（qq-adapter、bili-reply、memory-refine、prosecutor）读表时先看新位置、再退回旧位置。
+> 2026-10 从 `<DSH_HOME>/storages/preset-binder.json` 搬过来（已搬完，代码里不再认旧位置）。
 
 ## 表里有什么
 
