@@ -100,6 +100,16 @@ check('recall 不动历史节点', (resultText(s1, 'c2') || '').startsWith('⟨d
 const missing = await a1.tool().execute({ recall: [999] })
 check('recall 未找到会报', missing.text.includes('未找到：#999'), missing.text)
 
+// 召回正文按「新结果」记账：本体不打 [#id]，下一步默认折叠，keep 才留
+assistant(s1, [{ id: 'd2', name: 'steward', args: { recall: [2] } }])
+s1.append('tool/result', { message: { role: 'tool', toolCallId: 'd2', content: [{ type: 'text', text: recalled.text }] } })
+await tick()
+check('召回结果不打 [#id]', (resultText(s1, 'd2') || '').startsWith('⟨decided⟩'), resultText(s1, 'd2'))
+check('召回结果进通知', /#3\b/.test(a1.notice()), a1.notice())
+assistant(s1, [], 'ok')
+await tick()
+check('召回结果默认折叠', (resultText(s1, 'd2') || '').startsWith('⟨dropped #3'), resultText(s1, 'd2'))
+
 const s2 = new Session('s2')
 s2.append('assistant/message', { message: { role: 'assistant', content: [] } })
 s2.append('tool/result', { message: { role: 'tool', toolCallId: 'old', content: [{ type: 'text', text: '[#9] 旧' }] } })

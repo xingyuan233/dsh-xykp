@@ -74,7 +74,7 @@ function makeTool(takeRecall) {
     name: TOOL_NAME,
     description:
       'Decide the fate of tracked tool results. Nothing = fold them to a ⟨dropped #id⟩ stub.\n' +
-      'keep: ids to keep whole; summarize: ids to replace with your text; recall: return old results as this call’s output (history untouched); silence: mute the next N notices.',
+      'keep: ids to keep whole; summarize: ids to replace with your text; recall: return old results as this call’s output (treated as a new untagged result, folds next step unless kept); silence: mute the next N notices.',
     parameters,
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, text: { type: 'string' } } },
@@ -281,7 +281,8 @@ export function apply(ctx, config = {}) {
             text = `⟨dropped #${item.id} ${item.tool} ${item.label} · ${item.chars} chars⟩`
           }
           try {
-            if (replaceResult(ctx, session, surfaceItem, text)) folded++
+            // steward 自己的结果（回执/召回正文）以 ⟨ 开头，得 force 覆盖（占位守卫会拦）
+            if (replaceResult(ctx, session, surfaceItem, text, item.tool === TOOL_NAME)) folded++
           } catch (error) {
             warn('替换失败：', error?.message || error)
           }
@@ -320,12 +321,29 @@ export function apply(ctx, config = {}) {
         }
         if (!state.pending) state.pending = { originSeq, items: [] }
         const text = textOfMessage(message)
-        // 我们自己 append 的替换节点会再触发一次 tool/result：已打标 / 已是占位 / 处理过的 call 都跳过
-        if (text.startsWith('⟨') || /^\[#\d+\]/.test(text)) return
         if (state.seen.has(callId)) return
         const call = findCall(agent.session, callId)
         const tool = call?.name || '?'
-        if (tool === TOOL_NAME) return // steward 自己的回执/召回正文不再参与折叠
+        if (tool === TOOL_NAME) {
+          // 召回正文当成「一条新结果」记账：本体不打 [#id]，但照常参与 keep / summarize / 默认折叠
+          if (text.length < minChars) return
+          const recalled = {
+            id: ++state.seq,
+            callId,
+            tool,
+            label: summarizeArgs(call),
+            chars: text.length,
+            text,
+            judged: true,
+            hasImage: false,
+          }
+          state.seen.add(callId)
+          remember(recalled)
+          state.pending.items.push(recalled)
+          return
+        }
+        // 我们自己 append 的替换节点会再触发一次 tool/result：已打标 / 已是占位 都跳过
+        if (text.startsWith('⟨') || /^\[#\d+\]/.test(text)) return
         const judged = decides(tool)
         if (!judged && !trims(tool)) return
         const item = {
