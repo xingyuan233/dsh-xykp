@@ -69,6 +69,50 @@ async function boot(ctx, config) {
   const badSha = new Map()
   let syncing = Promise.resolve()
 
+  // 预设重推：把「刚改过」的预设重新绑到还活着的 agent 上。
+  // 不推的话，老会话会一直攥着旧工具集，改了预设得等它重开才生效。
+  // 会话里没起 agent 的（归档/关着的）跳过；单个失败只记日志，不打断别的会话。
+  async function pushToLiveSessions(ids) {
+    const presets = ctx.agentPresets
+    if (!presets || typeof presets.recompose !== 'function') {
+      warn('宿主里的 agentPresets 没有 recompose，跳过预设重推')
+      return
+    }
+    const get = (name) => {
+      try {
+        const v = ctx.get ? ctx.get(name) : null
+        if (v) return v
+      } catch { /* 没这个服务就当没拿到，下面按属性名再试一次 */ }
+      try { return ctx[name] || null } catch { return null }
+    }
+    const sessions = get('sessions')
+    const agents = get('agents')
+    if (!sessions || typeof sessions.list !== 'function' || !agents || typeof agents.get !== 'function') return
+    let list = []
+    try { list = sessions.list() } catch { return }
+    for (const presetId of ids) {
+      let done = 0
+      let skipped = 0
+      for (const session of list) {
+        const header = session && (session.header || session)
+        const mine = header && (header.agentPreset || header.preset)
+        if (mine !== presetId) continue
+        const sid = session.id || header.id
+        let agent = null
+        try { agent = agents.get(sid) } catch { agent = null }
+        if (!agent) { skipped += 1; continue }
+        try {
+          await presets.recompose(agent.ctx, presetId)
+          done += 1
+        } catch (err) {
+          skipped += 1
+          warn(`把 ${presetId} 推给 ${sid} 失败：`, err?.message || err)
+        }
+      }
+      log(`预设重推 ${presetId}：成功 ${done}，跳过 ${skipped}`)
+    }
+  }
+
   async function registeredIds() {
     try {
       return new Set((await ctx.agentPresets.list()).map((preset) => preset.id))
@@ -207,6 +251,14 @@ async function boot(ctx, config) {
         appendPerPresetChangelog(dir, diff, diffs, next)
       } catch (err) {
         warn('写各预设留痕失败：', err?.message || err)
+      }
+      // 预设重推：改完之后把新版本推给「还活着、正用着这个预设」的会话
+      if (diff.changed.length) {
+        try {
+          await pushToLiveSessions(diff.changed.map((c) => c.id))
+        } catch (err) {
+          warn('预设重推失败：', err?.stack || err)
+        }
       }
       log('预设变动已留痕：\n' + lines.join('\n'))
     } else {
