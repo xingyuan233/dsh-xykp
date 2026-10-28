@@ -67,31 +67,35 @@ export function resultOfCall(session, callId) {
   return undefined
 }
 
-/** 把一条工具结果替换成自定义文本。返回 true 表示真的换了。 */
-export function replaceResult(ctx, session, item, text) {
+/** 把一条工具结果替换成自定义文本。返回 true 表示真的换了。force 时允许覆盖已有占位（召回用）。 */
+export function replaceResult(ctx, session, item, text, force = false, silent = false) {
   const message = messageOf(session, item.event)
   if (!message || message.role !== 'tool') return false
-  return replaceNode(ctx, session, item, `${text}`, message, 'tool/result')
+  return replaceNode(ctx, session, item, `${text}`, message, 'tool/result', force, silent)
 }
 
-/** 通用：把任意表面节点替换成一段文本（通知、决策这类也要能收掉）。 */
-export function replaceNode(ctx, session, item, text, message = messageOf(session, item.event), eventType = item.event.type) {
+/** 通用：把任意表面节点替换成一段文本（通知、决策这类也要能收掉）。silent 时不记 compaction 统计。 */
+export function replaceNode(ctx, session, item, text, message = messageOf(session, item.event), eventType = item.event.type, force = false, silent = false) {
   if (!message) return false
   const current = textOfMessage(message)
-  if (current.startsWith('⟨') && current.includes('⟩')) return false // 已经是占位了
+  if (!force && current.startsWith('⟨') && current.includes('⟩')) return false // 已经是占位了
 
   let tokens = 0
-  try {
-    const meter = ctx.get ? ctx.get('tokenMeter') : undefined
-    if (meter && typeof meter.estimateMessage === 'function') tokens = meter.estimateMessage(message) || 0
-  } catch (error) {}
+  if (!silent) {
+    try {
+      const meter = ctx.get ? ctx.get('tokenMeter') : undefined
+      if (meter && typeof meter.estimateMessage === 'function') tokens = meter.estimateMessage(message) || 0
+    } catch (error) {}
+  }
 
   try {
-    session.append('compaction/prune', {
-      shadowedRange: { start: item.seq, end: item.seq },
-      shadowedSeqs: [item.seq],
-      shadowedTokenCount: tokens,
-    })
+    if (!silent) {
+      session.append('compaction/prune', {
+        shadowedRange: { start: item.seq, end: item.seq },
+        shadowedSeqs: [item.seq],
+        shadowedTokenCount: tokens,
+      })
+    }
   } catch (error) {}
 
   const placeholder = { ...message, content: [{ type: 'text', text }] }
