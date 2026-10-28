@@ -100,15 +100,36 @@ check('recall 不动历史节点', (resultText(s1, 'c2') || '').startsWith('⟨d
 const missing = await a1.tool().execute({ recall: [999] })
 check('recall 未找到会报', missing.text.includes('未找到：#999'), missing.text)
 
-// 召回正文按「新结果」记账：本体不打 [#id]，下一步默认折叠，keep 才留
+// 召回正文按「新结果」记账：跟直接读一样带 [#id]，下一步默认折叠，keep 才留
 assistant(s1, [{ id: 'd2', name: 'steward', args: { recall: [2] } }])
 s1.append('tool/result', { message: { role: 'tool', toolCallId: 'd2', content: [{ type: 'text', text: recalled.text }] } })
 await tick()
-check('召回结果不打 [#id]', (resultText(s1, 'd2') || '').startsWith('⟨decided⟩'), resultText(s1, 'd2'))
+check('召回结果带 [#id]', (resultText(s1, 'd2') || '').startsWith('[#3] ⟨#2'), resultText(s1, 'd2'))
 check('召回结果进通知', /#3\b/.test(a1.notice()), a1.notice())
 assistant(s1, [], 'ok')
 await tick()
 check('召回结果默认折叠', (resultText(s1, 'd2') || '').startsWith('⟨dropped #3'), resultText(s1, 'd2'))
+
+// sublines / subbytes：直接留一段，不用手写概括
+assistant(s1, [{ id: 'c5', name: 'pwsh', args: { command: 'seq' } }])
+const many = Array.from({ length: 900 }, (_, i) => 'L' + i).join('\n')
+s1.append('tool/result', { message: { role: 'tool', toolCallId: 'c5', content: [{ type: 'text', text: many }] } })
+await tick()
+check('多行结果打标', (resultText(s1, 'c5') || '').startsWith('[#4] L0'), (resultText(s1, 'c5') || '').slice(0, 12))
+assistant(s1, [{ id: 'd5', name: 'steward', args: { sublines: [{ id: 4, offset: 1, limit: 2 }] } }])
+await tick()
+const sliced = resultText(s1, 'c5') || ''
+check('sublines 只留两行', sliced.startsWith('[#4] L1\nL2'), JSON.stringify(sliced.slice(0, 30)))
+check('sublines 标范围', sliced.includes('只留第 1~2 行'), JSON.stringify(sliced.slice(-40)))
+
+assistant(s1, [{ id: 'c6', name: 'pwsh', args: { command: 'seq2' } }])
+const many2 = Array.from({ length: 900 }, (_, i) => 'A' + i).join('\n')
+s1.append('tool/result', { message: { role: 'tool', toolCallId: 'c6', content: [{ type: 'text', text: many2 }] } })
+await tick()
+assistant(s1, [{ id: 'd6', name: 'steward', args: { subbytes: [{ id: 5, offset: 0, limit: 9 }] } }])
+await tick()
+const sliced2 = resultText(s1, 'c6') || ''
+check('subbytes 只留字节', sliced2.startsWith('[#5] A0\nA1\nA2'), JSON.stringify(sliced2.slice(0, 20)))
 
 const s2 = new Session('s2')
 s2.append('assistant/message', { message: { role: 'assistant', content: [] } })
@@ -153,3 +174,4 @@ check('silence 结束标记', resumed.includes('silence 已结束'), resumed)
 
 console.log(fail === 0 ? '\n全部通过' : `\n失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
+

@@ -57,6 +57,34 @@ const parameters = {
       },
       description: 'Replace these results with your own summary.',
     },
+    sublines: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'number', description: 'Result id from the steward notice.' },
+          offset: { type: 'number', description: '0-based start line.' },
+          limit: { type: 'number', description: 'Max lines to keep (default: to the end).' },
+        },
+        required: ['id'],
+      },
+      description: 'Keep only a line range of these results (no summary needed).',
+    },
+    subbytes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'number', description: 'Result id from the steward notice.' },
+          offset: { type: 'number', description: '0-based start byte.' },
+          limit: { type: 'number', description: 'Max bytes to keep (default: to the end).' },
+        },
+        required: ['id'],
+      },
+      description: 'Keep only a byte range of these results (no summary needed).',
+    },
     recall: {
       type: 'array',
       items: { type: 'number' },
@@ -74,7 +102,7 @@ function makeTool(takeRecall) {
     name: TOOL_NAME,
     description:
       'Decide the fate of tracked tool results. Nothing = fold them to a ⟨dropped #id⟩ stub.\n' +
-      'keep: ids to keep whole; summarize: ids to replace with your text; recall: return old results as this call’s output (treated as a new untagged result, folds next step unless kept); silence: mute the next N notices.',
+      'keep: ids to keep whole; summarize: ids to replace with your text; recall: return old results as this call’s output (a new tagged result, folds next step unless kept); sublines/subbytes [{id,offset,limit}]: keep just that line/byte range of #id; silence: mute the next N notices.',
     parameters,
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, text: { type: 'string' } } },
@@ -88,11 +116,12 @@ function makeTool(takeRecall) {
       const recall = (Array.isArray(args?.recall) ? args.recall : []).map(Number).filter((id) => Number.isFinite(id))
       const silence = Number(args?.silence)
       const got = typeof takeRecall === 'function' && recall.length ? takeRecall(recall) : { blocks: [], lost: [] }
-      let text =
+      const head =
         `⟨decided⟩ keep ${keep.join(',') || '-'} / summary ${sum.map((s) => s.id).join(',') || '-'}` +
         (recall.length ? ` / recall ${recall.join(',')}` : '') +
         (Number.isFinite(silence) && silence > 0 ? ` / silence ${Math.floor(silence)}` : '')
-      if (got.blocks.length) text += '\n\n' + got.blocks.join('\n\n')
+      const decided = keep.length > 0 || sum.length > 0 || (Number.isFinite(silence) && silence > 0)
+      let text = got.blocks.length ? (decided ? head + '\n\n' : '') + got.blocks.join('\n\n') : head
       if (got.lost.length) text += `\n未找到：${got.lost.map((id) => '#' + id).join(' ')}`
       return { ok: true, text }
     },
@@ -107,6 +136,21 @@ function clip(text, max) {
 
 /** 结果本体上的 id 标签（不能用 ⟨…⟩，否则 fold 的占位守卫会拒绝后续替换）。 */
 const tag = (id) => '[#' + id + '] '
+
+/** 只留 #id 的一段：lines = 行区间，bytes = 字节区间；保留 id 标签，末尾标出实际范围。 */
+function sliceText(item, spec) {
+  const raw = String(item.text || '')
+  if (spec.mode === 'lines') {
+    const lines = raw.split('\n')
+    const start = Math.min(Math.max(0, spec.offset), lines.length)
+    const end = spec.limit ? Math.min(lines.length, start + spec.limit) : lines.length
+    return `${tag(item.id)}${lines.slice(start, end).join('\n')}\n…⟨#${item.id} 只留第 ${start}~${end - 1} 行（共 ${lines.length} 行）⟩`
+  }
+  const buf = Buffer.from(raw, 'utf8')
+  const start = Math.min(Math.max(0, spec.offset), buf.length)
+  const end = spec.limit ? Math.min(buf.length, start + spec.limit) : buf.length
+  return `${tag(item.id)}${buf.subarray(start, end).toString('utf8')}\n…⟨#${item.id} 只留第 ${start}~${end} 字节（共 ${buf.length} 字节）⟩`
+}
 
 /** tool-call 的参数是 JSON 字符串（不是对象，也不是 input 字段）。 */
 function argsOf(block) {
@@ -124,12 +168,21 @@ function argsOf(block) {
 
 /** 从一条 assistant 消息里读出 steward 调用的参数。 */
 function decisionsOf(message) {
-  const out = { keep: new Set(), summary: new Map(), recall: new Set(), silence: 0 }
+  const out = { keep: new Set(), summary: new Map(), recall: new Set(), silence: 0, slice: new Map() }
+  const sliceOf = (entry, mode) => {
+    const id = Number(entry?.id)
+    if (!Number.isFinite(id)) return
+    const offset = Math.max(0, Number(entry.offset) || 0)
+    const limit = Number(entry.limit)
+    out.slice.set(id, { mode, offset, limit: Number.isFinite(limit) && limit > 0 ? limit : undefined })
+  }
   for (const block of message?.content || []) {
     if (!block || block.type !== 'tool-call' || block.name !== TOOL_NAME) continue
     const input = argsOf(block)
     for (const id of input.keep || []) out.keep.add(Number(id))
     for (const id of input.recall || []) out.recall.add(Number(id))
+    for (const entry of input.sublines || []) sliceOf(entry, 'lines')
+    for (const entry of input.subbytes || []) sliceOf(entry, 'bytes')
     const silence = Number(input.silence)
     if (Number.isFinite(silence) && silence > 0) out.silence = Math.floor(silence)
     for (const entry of input.summarize || []) {
@@ -271,6 +324,8 @@ export function apply(ctx, config = {}) {
           if (!item.judged) {
             // 不参与决策的工具：只留头尾
             text = clip(item.text, headChars) + '\n…\n' + (item.text || '').slice(-tailChars)
+          } else if (decisions.slice.has(item.id)) {
+            text = sliceText(item, decisions.slice.get(item.id))
           } else if (decisions.keep.has(item.id)) {
             continue
           } else if (decisions.summary.has(item.id)) {
@@ -299,7 +354,7 @@ export function apply(ctx, config = {}) {
           if (!message || message.role !== 'assistant') return
           const calls = (message.content || []).filter((b) => b && b.type === 'tool-call')
           const decisions = calls.length === 0
-            ? { keep: new Set(), summary: new Map(), recall: new Set(), silence: 0 }
+            ? { keep: new Set(), summary: new Map(), recall: new Set(), silence: 0, slice: new Map() }
             : decisionsOf(message)
           if (decisions.silence > 0) {
             state.silenceLeft = decisions.silence
@@ -317,33 +372,15 @@ export function apply(ctx, config = {}) {
         if (!callId) return
         const originSeq = assistantSeqOfCall(agent.session, callId)
         if (state.pending && originSeq !== state.pending.originSeq) {
-          finalize({ keep: new Set(), summary: new Map(), recall: new Set() })
+          finalize({ keep: new Set(), summary: new Map(), recall: new Set(), slice: new Map() })
         }
         if (!state.pending) state.pending = { originSeq, items: [] }
         const text = textOfMessage(message)
         if (state.seen.has(callId)) return
         const call = findCall(agent.session, callId)
         const tool = call?.name || '?'
-        if (tool === TOOL_NAME) {
-          // 召回正文当成「一条新结果」记账：本体不打 [#id]，但照常参与 keep / summarize / 默认折叠
-          if (text.length < minChars) return
-          const recalled = {
-            id: ++state.seq,
-            callId,
-            tool,
-            label: summarizeArgs(call),
-            chars: text.length,
-            text,
-            judged: true,
-            hasImage: false,
-          }
-          state.seen.add(callId)
-          remember(recalled)
-          state.pending.items.push(recalled)
-          return
-        }
         // 我们自己 append 的替换节点会再触发一次 tool/result：已打标 / 已是占位 都跳过
-        if (text.startsWith('⟨') || /^\[#\d+\]/.test(text)) return
+        if (tool !== TOOL_NAME && (text.startsWith('⟨') || /^\[#\d+\]/.test(text))) return
         const judged = decides(tool)
         if (!judged && !trims(tool)) return
         const item = {
@@ -367,7 +404,7 @@ export function apply(ctx, config = {}) {
             const surfaceItem = resultOfCall(agent.session, callId)
             if (!surfaceItem) return
             try {
-              replaceResult(ctx, agent.session, surfaceItem, tag(item.id) + text, false, true)
+              replaceResult(ctx, agent.session, surfaceItem, tag(item.id) + text, tool === TOOL_NAME, true)
             } catch (error) {
               warn('打标失败：', error?.message || error)
             }
@@ -485,3 +522,4 @@ function summarizeArgs(block) {
   }
   return ''
 }
+
