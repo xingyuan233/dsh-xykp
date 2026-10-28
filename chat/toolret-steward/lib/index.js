@@ -181,7 +181,8 @@ export function apply(ctx, config = {}) {
       return max
     }
 
-    const state = { pending: null, seq: seedSeq(), archive: new Map() }
+    const state = { pending: null, seq: seedSeq(), archive: new Map(), seen: new Set() }
+    watched.set(agent, state)
 
     /** 档案：丢了原文也能召回；按条数 FIFO。 */
     const remember = (item) => {
@@ -266,6 +267,9 @@ export function apply(ctx, config = {}) {
         }
         if (!state.pending) state.pending = { originSeq, items: [] }
         const text = textOfMessage(message)
+        // 我们自己 append 的替换节点会再触发一次 tool/result：已打标 / 已是占位 / 处理过的 call 都跳过
+        if (text.startsWith('⟨') || /^\[#\d+\]/.test(text)) return
+        if (state.seen.has(callId)) return
         const call = findCall(agent.session, callId)
         const tool = call?.name || '?'
         const judged = decides(tool)
@@ -282,6 +286,7 @@ export function apply(ctx, config = {}) {
         }
         if (item.chars < minChars && !item.hasImage) return
         item.id = ++state.seq
+        state.seen.add(callId)
         remember(item)
         state.pending.items.push(item)
         // 结果本体打标：id 跟着结果走，不是只在末尾通知里出现
@@ -305,7 +310,7 @@ export function apply(ctx, config = {}) {
     try {
       disposers.push(agent.ctx.tools.register(makeTool()))
     } catch (error) {
-      watched.delete(agent)
+      // 同一个 agent 只挂一次；失败也不再重试，避免每 3 秒刷屏
       warn('挂载失败（tools）：', error?.message || error)
       return
     }
