@@ -509,7 +509,8 @@ export function apply(ctx, config = {}) {
           name: 'toolret-steward:howto',
           order: 1,
           text:
-            '工具结果：大结果在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +            '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])；steward(sublines/subbytes:[{id,offest?=0,limit?=最后}])选择其中的某几行或某些。\n' + 
+            '工具结果：较短的无影响，较长的在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +  '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])；steward(sublines/subbytes:[{id,offest?=0,limit?=最后}])选择其中的某几行或某些。\n' + 
+			'特殊id: 0取上一次所以输出，负数按id结果逆序获取，比如-1拿到最近一次输出，recall后也会占新id。\n' +
 			'这些工具可以和 edit / read / pwsh 等调用并排发，不单独占一轮！！！',
         }),
       )

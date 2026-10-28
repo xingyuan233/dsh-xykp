@@ -530,7 +530,10 @@ function 读对话正文(sess) {
       //   摘要模型会照着学（实测：概括原文就是一段 DSML 调用，93 字，直接被当成"太短"拒绝）
       //   → 拼进摘要输入前就剔掉
       // 逐行剔掉 DSML 工具调用行（保留同一条消息里的正文），再判断还有没有内容
-      const 净 = String(文 || '').split('\n').filter((l) => l.indexOf('DSML') < 0).join('\n').trim()
+      // 工具调用标记有**好几种方言**：<｜｜DSML｜｜…>、<｜｜DSH｜｜tool_call>/invoke/parameter、
+      // 以及 bash 那种 JSON 参数块 —— 全按行剔掉（实测摘要模型会照着学，回一段调用就算"概括"）
+      const 像调用 = /<\uff5c\uff5c|DSML|tool_call|invoke name=|parameter name=|<\/?function_calls>/i
+      const 净 = String(文 || '').split('\n').filter((l) => !像调用.test(l)).join('\n').trim()
       if (!净) continue
       对话 += (msg.role === 'user' ? 'ta：' : '我：') + 净 + '\n'
     }
@@ -618,7 +621,7 @@ const 交接系统提示 =
   '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。' +
   // ⚠ 2026-10-28：对话正文里混着模型自己的工具调用标记，摘要模型会照着学
   //   （实测：概括原文就是一段 <｜｜DSML｜｜…> 调用，93 字，被当成"太短"拒绝）
-  '只输出摘要正文（Markdown）。不要调用任何工具，不要输出 <｜｜DSML｜｜…> 之类的标记或 XML/JSON 块。'
+  '只输出摘要正文（Markdown）。不要调用任何工具，不要输出 <｜｜DSML｜｜…>、<｜｜DSH｜｜tool_call>、invoke/parameter 之类的标记，也不要输出 XML/JSON 代码块。'
 
 // 概括一个会话（不截断：上下文通常还有几百 k，不差这几 k）
 async function 生成交接概括(ctx, agent, sess) {
@@ -6817,7 +6820,10 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       //   摘要模型会照着学（实测：概括原文就是一段 DSML 调用，93 字，直接被当成"太短"拒绝）
       //   → 拼进摘要输入前就剔掉
       // 逐行剔掉 DSML 工具调用行（保留同一条消息里的正文），再判断还有没有内容
-      const 净 = String(文 || '').split('\n').filter((l) => l.indexOf('DSML') < 0).join('\n').trim()
+      // 工具调用标记有**好几种方言**：<｜｜DSML｜｜…>、<｜｜DSH｜｜tool_call>/invoke/parameter、
+      // 以及 bash 那种 JSON 参数块 —— 全按行剔掉（实测摘要模型会照着学，回一段调用就算"概括"）
+      const 像调用 = /<\uff5c\uff5c|DSML|tool_call|invoke name=|parameter name=|<\/?function_calls>/i
+      const 净 = String(文 || '').split('\n').filter((l) => !像调用.test(l)).join('\n').trim()
       if (!净) continue
           对话 += (msg.role === 'user' ? 'ta：' : '我：') + 净 + '\n'
         }
@@ -7408,6 +7414,8 @@ export {
   标作废,
   真重复门槛,
 }
+
+
 
 
 
