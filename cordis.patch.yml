@@ -27,8 +27,12 @@
       name: 'dsh-xykp/chat/preset-binder'
     - id: memory-refine
       name: 'dsh-xykp/chat/memory-refine'
+    # 2026-10-28：被 toolret-steward 顶替（工具结果默认下一轮丢弃，可 keep/summarize）
     - id: toolret-forget
       name: 'dsh-xykp/chat/toolret-forget'
+      disabled: true
+    - id: toolret-steward
+      name: 'dsh-xykp/chat/toolret-steward'
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
 

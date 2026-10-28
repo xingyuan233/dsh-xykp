@@ -22,6 +22,7 @@
     "./chat/toolret-forget/fold": "./chat/toolret-forget/fold.js",
     "./chat/memory-refine": "./chat/memory-refine/lib/index.js",
     "./chat/token-reporter": "./chat/token-reporter/index.js",
+    "./chat/toolret-steward": "./chat/toolret-steward/lib/index.js",
     "./senses/screenshot": "./senses/screenshot/index.js",
     "./senses/keymouse": "./senses/keymouse/index.js",
     "./comms/bili-rove": "./comms/bili-rove/lib/index.js",

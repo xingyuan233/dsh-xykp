@@ -1,0 +1,16 @@
+{
+  "name": "dsh-toolret-steward",
+  "version": "0.1.0",
+  "private": true,
+  "description": "工具结果的去留管家：默认下一轮丢弃，可保留或用概括替换；黑白名单决定哪些工具参与。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
