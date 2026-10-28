@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-gate",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "安装安全闸（fork 自 863683348/dsh-plugin-gate，仅修了 gate_guard 参数 schema；静态检查是启发式，不是 100% 准确）",
   "type": "module",
   "main": "lib/index.js",

@@ -23,7 +23,7 @@ dsh plugin --profile <profile> add dsh-plugin-gate
 
 ## 使用
 
-安装插件前让 agent 扫描（插件也会注入提示词，引导 agent 自动执行）：
+安装插件前让 agent 扫描：
 
 ```
 gate_scan target: "npm:dsh-plugin-some-package"
@@ -51,8 +51,6 @@ gate_scan target: "./downloaded-plugin"                 # 本地目录
 | `osvCheck` | true | 对接 Google OSV 查询精确版本依赖的已知漏洞 |
 | `osvMaxDeps` | 8 | 最多检查的精确版本直接依赖数 |
 | `osvTimeoutMs` | 10000 | 单个依赖 OSV 查询超时 |
-| `promptSection` | true | 注入 agent 使用指引 |
-| `sectionOrder` | 5 | 提示词区块顺序 |
 
 ## 开发
 

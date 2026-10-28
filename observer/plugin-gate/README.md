@@ -55,7 +55,7 @@ dsh plugin --profile <profile> add dsh-plugin-gate
 
 ## Usage
 
-Ask the agent to scan a plugin before installing it (the plugin also injects prompt guidance that tells the agent to do this automatically):
+Ask the agent to scan a plugin before installing it:
 
 ```
 gate_scan target: "npm:dsh-plugin-some-package"
@@ -79,7 +79,7 @@ Attach evidence to a ticket, PR or CI job:
 
 ### v1.1 - Data-protection guard
 
-Before any destructive operation, ask the agent to evaluate it with gate_guard (also injected into prompt guidance):
+Before any destructive operation, ask the agent to evaluate it with gate_guard:
 
     gate_guard command: "rm -rf ./node_modules"
     gate_guard path: ".dsh-memory-setup/memory.json" action: "delete"
@@ -122,8 +122,6 @@ Context-aware rules: `exec()`/`execSync()` hits are downgraded when the file doe
 | `osvCheck` | true | query Google OSV for known vulnerabilities on exact-version deps |
 | `osvMaxDeps` | 8 | max exact-version direct deps checked |
 | `osvTimeoutMs` | 10000 | per-dep OSV query timeout |
-| `promptSection` | true | inject agent guidance |
-| `sectionOrder` | 5 | prompt section order |
 
 ## Development
 

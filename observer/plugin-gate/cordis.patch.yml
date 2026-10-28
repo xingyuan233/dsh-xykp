@@ -15,5 +15,3 @@
         includeNodeModules: false
         maxTarballBytes: 33554432
         allowlistHosts: []
-        promptSection: true
-        sectionOrder: 5

@@ -3,8 +3,8 @@
  *
  * A Cordis plugin. When this package is a profile layer (declares
  * dsh.bundle.patch), its cordis.patch.yml inserts this row into the launcher
- * composition: the host runner loads this file, registering the gate_scan
- * model tool plus prompt guidance. The gate acts as an "antivirus" review
+ * composition: the host runner loads this file, registering the gate_*
+ * model tools (scan / guard / diff / report). The gate acts as an "antivirus" review
  * step: before the agent runs 'dsh plugin add' on any marketplace plugin, it
  * scans the plugin source (a local directory or an npm tarball) for
  * malicious install scripts, dangerous permissions/fs usage, credential
@@ -27,7 +27,7 @@ import { renderJsonReport, renderMarkdownReport } from "./report.js";
 const name = "gate";
 
 /** Services this plugin must resolve before it applies (host face). */
-const inject = ["tools", "fs", "systemPrompt"];
+const inject = ["tools", "fs"];
 
 /** Composition-row configuration for the plugin entry. */
 const Config = z.object({
@@ -47,18 +47,11 @@ const Config = z.object({
   osvMaxDeps: z.number().default(8),
   /** Per-dep OSV query timeout. */
   osvTimeoutMs: z.number().default(10000),
-  /** Register the gate prompt-guidance section. */
-  promptSection: z.boolean().default(true),
-  /** Order of the gate prompt section (ascending; persona is 0). */
-  sectionOrder: z.number().default(5),
   /** Baseline file for gate_diff, relative to the session workspace. */
   baselineFile: z.string().default(".dsh/gate-baseline.json"),
   /** Report file for gate_report writes, relative to the session workspace. */
   reportFile: z.string().default(".dsh/gate-report.md"),
 });
-
-/** Prompt section telling the agent when and how to use the gate. */
-const GATE_SECTION_TEXT = "Installation safety gate: before installing any plugin from a marketplace, npm registry, or untrusted repository (e.g. before running 'dsh plugin add' or adding a bundle), call gate_scan on the plugin source — a local directory path, or an npm package with the npm: prefix (for example gate_scan with target \"npm:dsh-plugin-focus\" or \"npm:dsh-plugin-focus@1.0.1\").\n\nInterpret the verdict strictly:\n- BLOCK: high-severity patterns were found (install-time exec, encoded PowerShell, eval/Function, cloud-metadata probes, webhooks, private keys, credential reads). Refuse to install until the maintainer ships a clean version you can scan again; do not work around it.\n- WARN: medium-severity patterns need manual review (network I/O, home-path writes, base64 blobs). Inspect every hit in context before deciding; a legit plugin may need network access — verify destinations.\n- PASS: no risky signatures found. This is heuristic, not a guarantee; keep normal caution with unknown maintainers.\n\nThe gate never executes scanned code and never writes files.\n\nData-protection guard: BEFORE running any destructive command (rm -rf, Remove-Item -Recurse, rmdir /s, del /f /s, format, dd, mkfs) or deleting/overwriting a file, call gate_guard with the command or the target path. It returns BLOCK (device/root level — refuse), WARN (recursive/outside-workspace/critical file — confirm the exact target), or PASS.";
 
 /** Resolve the tool's per-scan options from plugin config + call args. */
 function scanOpts(config, args) {
@@ -98,8 +91,8 @@ function sandboxPolicyOf(ctx, exec) {
 }
 
 /**
- * Register the gate_scan tool and (when configured) the prompt section.
- * @param ctx - registrant context carrying tools, fs, systemPrompt.
+ * Register the gate tools (scan / guard / diff / report).
+ * @param ctx - registrant context carrying tools, fs.
  * @param config - validated plugin configuration.
  */
 async function resolveWorkspaceFile(ctx, file, cwd, signal) {
@@ -422,14 +415,6 @@ function apply(ctx, config) {
     },
     presentCall: (args) => ({ card: "generic", title: "Gate report: " + String(args.target || ""), kind: "other", rawInput: args }),
   }));
-
-  if (config.promptSection) {
-    ctx.effect(() => ctx.systemPrompt.section({
-      name: "gate:instructions",
-      order: config.sectionOrder,
-      text: GATE_SECTION_TEXT,
-    }), "gate.section()");
-  }
 }
 
-export { Config, GATE_SECTION_TEXT, apply, inject, name };
+export { Config, apply, inject, name };
