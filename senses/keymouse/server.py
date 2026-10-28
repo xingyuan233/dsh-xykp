@@ -205,10 +205,26 @@ def _visible_windows() -> list[tuple[int, int, str]]:
     return found
 
 
-def _find_window(substr: str) -> tuple[int, str]:
-    hits = [x for x in _visible_windows() if substr.lower() in x[2].lower()]
+def _window_title(hwnd: int) -> str:
+    n = user32.GetWindowTextLengthW(hwnd)
+    if n <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(hwnd, buf, n + 1)
+    return buf.value
+
+
+def _find_window(spec: str) -> tuple[int, str]:
+    """标题子串（不分大小写）或纯数字 hwnd；多个命中取面积最大的。"""
+    s = str(spec).strip()
+    if s.isdigit():
+        hwnd = int(s)
+        if not user32.IsWindow(hwnd):
+            raise ValueError(f"hwnd={hwnd} 不是有效窗口")
+        return hwnd, _window_title(hwnd)
+    hits = [x for x in _visible_windows() if s.lower() in x[2].lower()]
     if not hits:
-        raise ValueError(f"没有标题包含 {substr!r} 的可见窗口")
+        raise ValueError(f"没有标题包含 {spec!r} 的可见窗口")
     _, hwnd, title = hits[0]
     return hwnd, title
 

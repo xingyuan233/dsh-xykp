@@ -7,7 +7,12 @@
 // 后端沿用同目录 server.py（ctypes 调 SendInput），
 // 通过 lib/mcp-bridge.mjs 走 stdio，工具名对外是干净的 mouse_input / keyboard_input。
 
-import { fileURLToPath } from 'node:url' // eslint-disable-line
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { defineTool } from '@deepseek-ai/dsh-tools'
+
 import { McpBridge, contentToText } from '../lib/mcp-bridge.mjs'
 
 export const name = 'senses-keymouse'
@@ -15,7 +20,9 @@ export const inject = ['tools']
 
 const PYTHON = process.env.DSH_SENSES_PYTHON || 'D:\\Program-Files\\Python\\312\\python.exe'
 const SERVER = fileURLToPath(new URL('./server.py', import.meta.url))
-const DIR = fileURLToPath(new URL('./', import.meta.url))
+const HOME = process.env.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
+// 子进程 cwd 固定在 home 下，插件目录保持干净（更新插件不丢数据）。
+const DATA_DIR = join(HOME, 'xykp', 'senses', 'keymouse')
 
 function log(msg) {
   console.error(`[senses-keymouse] ${msg}`)
@@ -24,36 +31,32 @@ function log(msg) {
 const MOUSE_ACTIONS = ['move', 'click', 'multi_click', 'long_press', 'drag', 'scroll', 'focus_window', 'info']
 
 const mouseParameters = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    action: {
-      type: 'string',
-      enum: MOUSE_ACTIONS,
-      description:
-        '要做的鼠标动作：move 移动 / click 点击（count>1 即连点）/ long_press 长按 / ' +
-        'drag 拖曳 / scroll 滚轮 / focus_window 把窗口切到前台 / info 查光标与前台窗口。',
-    },
-    x: { type: 'number', description: '目标点 x。传 window 时是客户区坐标，否则是虚拟桌面物理像素。' },
-    y: { type: 'number', description: '目标点 y。' },
-    x1: { type: 'number', description: 'drag 起点 x。' },
-    y1: { type: 'number', description: 'drag 起点 y。' },
-    x2: { type: 'number', description: 'drag 终点 x。' },
-    y2: { type: 'number', description: 'drag 终点 y。' },
-    button: { type: 'string', enum: ['left', 'right', 'middle'], description: '鼠标键，默认 left。' },
-    count: { type: 'integer', description: '点击次数，默认 1；multi_click 默认 3。' },
-    interval: { type: 'number', description: '连点间隔秒，默认 0.08。' },
-    hold: { type: 'number', description: '每次按下保持秒数，默认 0（立即松开）。' },
-    duration: { type: 'number', description: 'long_press 按住秒数（默认 0.6）/ drag 拖曳总时长秒（默认 0.4）。' },
-    steps: { type: 'integer', description: 'drag 中间移动步数，默认 24。' },
-    amount: { type: 'integer', description: '滚轮格数，正数向上/向右，负数向下/向左。' },
-    horizontal: { type: 'boolean', description: '滚轮是否横向滚动。' },
-    window: {
-      type: 'string',
-      description: '窗口标题子串：给了就按该窗口客户区坐标计算，并且发送前不强制切前台。',
-    },
+  action: {
+    type: 'string',
+    enum: MOUSE_ACTIONS,
+    required: true,
+    description:
+      'move 移动 / click 点击（count>1 即连点）/ multi_click 连点 / long_press 长按 / drag 拖曳 / ' +
+      'scroll 滚轮 / focus_window 窗口切前台 / info 查光标与前台窗口',
   },
-  required: ['action'],
+  x: { type: 'number', description: '目标点 x；传 window 时是客户区坐标，否则虚拟桌面物理像素' },
+  y: { type: 'number' },
+  x1: { type: 'number' },
+  y1: { type: 'number' },
+  x2: { type: 'number' },
+  y2: { type: 'number' },
+  button: { type: 'string', enum: ['left', 'right', 'middle'], description: '默认 left' },
+  count: { type: 'number', description: '点击次数，默认 1；multi_click 默认 3' },
+  interval: { type: 'number', description: '连点间隔秒，默认 0.08' },
+  hold: { type: 'number', description: '每次按下保持秒数，默认 0（立即松开）' },
+  duration: { type: 'number', description: 'long_press 按住秒数（默认 0.6）/ drag 拖曳总时长秒（默认 0.4）' },
+  steps: { type: 'number', description: 'drag 中间移动步数，默认 24' },
+  amount: { type: 'number', description: '滚轮格数，正数向上/向右，负数向下/向左' },
+  horizontal: { type: 'boolean', description: '滚轮是否横向' },
+  window: {
+    type: 'string',
+    description: '窗口标题子串（纯数字当 hwnd）：按该窗口客户区坐标算，且发送前不强制切前台',
+  },
 }
 
 const mouseOutput = {
@@ -68,20 +71,16 @@ const mouseOutput = {
 }
 
 const keyboardParameters = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    action: {
-      type: 'string',
-      enum: ['key', 'type_text'],
-      description: 'key 按组合键（如 ctrl+c、alt+tab、enter）/ type_text 输入一段文本（支持中文）。',
-    },
-    keys: { type: 'string', description: 'key 动作要按的键，组合键用 + 连接，例如 "ctrl+shift+s"。默认 enter。' },
-    hold: { type: 'number', description: '每个键按住秒数，默认 0.05。' },
-    text: { type: 'string', description: 'type_text 要输入的文本。' },
-    interval: { type: 'number', description: 'type_text 每个字符的间隔秒，默认 0.02。' },
+  action: {
+    type: 'string',
+    enum: ['key', 'type_text'],
+    required: true,
+    description: 'key 按组合键（如 ctrl+c、alt+tab、enter）/ type_text 输入一段文本（支持中文）',
   },
-  required: ['action'],
+  keys: { type: 'string', description: 'key 动作的键，组合键用 + 连接，如 "ctrl+shift+s"；默认 enter' },
+  hold: { type: 'number', description: '每个键按住秒数，默认 0.05' },
+  text: { type: 'string', description: 'type_text 要输入的文本' },
+  interval: { type: 'number', description: 'type_text 每个字符的间隔秒，默认 0.02' },
 }
 
 const keyboardOutput = {
@@ -192,40 +191,48 @@ async function runKeyboard(bridge, args) {
 }
 
 export function apply(ctx) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true })
+  } catch (err) {
+    log(`建数据目录失败（继续用进程 cwd）：${err.message}`)
+  }
+
   const bridge = new McpBridge({
     command: PYTHON,
     args: [SERVER],
-    cwd: DIR,
+    cwd: DATA_DIR,
     clientName: 'dsh-senses-keymouse',
     log,
   })
 
-  const unregisterMouse = ctx.tools.register({
-    name: 'mouse_input',
-    description:
-      '操作鼠标：move 移动 / click 点击（count 即连点）/ long_press 长按 / drag 拖曳 / ' +
-      'scroll 滚轮 / focus_window 窗口切前台 / info 查光标与前台窗口。' +
-      '不传 window 时坐标是虚拟桌面物理像素；传 window 时是那个窗口的客户区坐标。' +
-      '截图被缩小过的话，先用 screenshot_acquire 返回的 scale 把图上坐标换算回物理像素。',
-    parameters: mouseParameters,
-    output: mouseOutput,
-    async execute(args = {}) {
-      return runMouse(bridge, args)
-    },
-  })
+  const unregisterMouse = ctx.tools.register(
+    defineTool({
+      name: 'mouse_input',
+      description:
+        '操作鼠标：move 移动 / click 点击（count 即连点）/ long_press 长按 / drag 拖曳 / scroll 滚轮 / ' +
+        'focus_window 窗口切前台 / info 查光标与前台窗口。坐标默认虚拟桌面物理像素，' +
+        '传 window 时是该窗口客户区坐标。截图缩小过就用返回的 scale 换算；没有撤销，先 move 确认再 click。',
+      parameters: mouseParameters,
+      output: mouseOutput,
+      async execute(args = {}) {
+        return runMouse(bridge, args)
+      },
+    }),
+  )
 
-  const unregisterKeyboard = ctx.tools.register({
-    name: 'keyboard_input',
-    description:
-      '操作键盘：key 按单个键或组合键（"ctrl+c"、"alt+tab"、"enter"），' +
-      'type_text 输入一段文本（Unicode，支持中文）。' +
-      '输入前要激活目标窗口的话，先用 mouse_input(action="focus_window") 聚焦。',
-    parameters: keyboardParameters,
-    output: keyboardOutput,
-    async execute(args = {}) {
-      return runKeyboard(bridge, args)
-    },
-  })
+  const unregisterKeyboard = ctx.tools.register(
+    defineTool({
+      name: 'keyboard_input',
+      description:
+        '操作键盘：key 按单个键或组合键（"ctrl+c"、"alt+tab"、"enter"），' +
+        'type_text 输入一段文本（Unicode，支持中文）。要激活目标窗口先用 mouse_input(action="focus_window")。',
+      parameters: keyboardParameters,
+      output: keyboardOutput,
+      async execute(args = {}) {
+        return runKeyboard(bridge, args)
+      },
+    }),
+  )
 
   const teardown = () => {
     for (const unregister of [unregisterMouse, unregisterKeyboard]) {
