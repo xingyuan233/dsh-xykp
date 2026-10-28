@@ -19,7 +19,20 @@
 //   }
 // }
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
+
+const HOME = () => process.env.DSH_HOME || join(homedir(), '.dsh')
+
+/** 表文件的标准位置：<DSH_HOME>/xykp/preset-binder/preset-binder.json */
+export function binderPath(home = HOME()) {
+  return join(home, 'xykp', 'preset-binder', 'preset-binder.json')
+}
+
+/** 旧位置（2026-10 迁进 xykp 之前）：<DSH_HOME>/storages/preset-binder.json */
+export function legacyBinderPath(home = HOME()) {
+  return join(home, 'storages', 'preset-binder.json')
+}
 
 export function emptyTable() {
   return { version: 2, updatedAt: null, presets: {} }

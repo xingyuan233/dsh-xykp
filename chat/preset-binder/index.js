@@ -1,7 +1,8 @@
 // dsh-xykp · chat/preset-binder
 //
 // 维护一张「预设 → 会话」的实时表：
-//   <DSH_HOME>/storages/preset-binder.json
+//   <DSH_HOME>/xykp/preset-binder/preset-binder.json
+//   （旧位置 <DSH_HOME>/storages/preset-binder.json 首次启动时自动搬过来）
 //
 // 每个会话记：标题、提供方/模型、这轮对话开始没/结束没、起止时间、轮数、
 // token 用量（未缓存输入 / 缓存读取 / 缓存写入 / 输出 / 合计）、上下文占用。
@@ -10,8 +11,9 @@
 //
 // 表只记账，不拦消息；出错只记日志。
 import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { readTable, writeTable, noteSession } from './table.js'
+import { dirname, join } from 'node:path'
+import { mkdirSync, renameSync, existsSync } from 'node:fs'
+import { readTable, writeTable, noteSession, binderPath, legacyBinderPath } from './table.js'
 
 export const name = 'preset-binder'
 export const inject = ['agents', 'agentPresets']
@@ -26,9 +28,29 @@ export function apply(ctx, config = {}) {
   void boot(ctx, config).catch((err) => warn('启动失败（已忽略）：', err?.stack || err))
 }
 
+// 旧位置的表搬进 xykp：<DSH_HOME>/storages/preset-binder.json
+//                     → <DSH_HOME>/xykp/preset-binder/preset-binder.json
+function migrateLegacyTable(home, tablePath) {
+  try {
+    const legacy = legacyBinderPath(home)
+    if (!existsSync(legacy)) return
+    if (existsSync(tablePath)) {
+      // 两边都有：以新位置为准，旧的改名留档，免得以后又被读到
+      renameSync(legacy, `${legacy}.bak-${Date.now()}`)
+      return
+    }
+    mkdirSync(dirname(tablePath), { recursive: true })
+    renameSync(legacy, tablePath)
+    log(`旧表已迁到 ${tablePath}`)
+  } catch (err) {
+    warn('迁移旧表失败：', err?.message || err)
+  }
+}
+
 async function boot(ctx, config) {
   const home = process.env.DSH_HOME || join(homedir(), '.dsh')
-  const tablePath = config.tablePath || join(home, 'storages', 'preset-binder.json')
+  const tablePath = config.tablePath || binderPath(home)
+  if (!config.tablePath) migrateLegacyTable(home, tablePath)
   const ignore = new Set(config.ignore?.length ? config.ignore : DEFAULT_IGNORE)
   const track = new Set(config.track || [])
   const maxSessions = Number.isFinite(config.maxSessions) ? config.maxSessions : 30

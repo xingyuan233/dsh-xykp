@@ -92,7 +92,11 @@ async function writeJson(path, data) {
 }
 
 async function loadBinder() {
-  return readJson(join(home(), 'storages', 'preset-binder.json'), null)
+  const dir = home()
+  return (
+    (await readJson(join(dir, 'xykp', 'preset-binder', 'preset-binder.json'), null)) ||
+    (await readJson(join(dir, 'storages', 'preset-binder.json'), null))
+  )
 }
 
 /** p-<预设> / s-<会话id> → 真正的会话 id */
