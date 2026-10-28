@@ -200,7 +200,9 @@ export function apply(ctx, config = {}) {
       const current = textOfMessage(messageOf(agent.session, surfaceItem.event))
       if (!current.startsWith('⟨')) return true // 还完整着，不用召回
       try {
-        return replaceResult(ctx, agent.session, surfaceItem, tag(id) + entry.text, true)
+        const ok = replaceResult(ctx, agent.session, surfaceItem, tag(id) + entry.text, true)
+        if (ok) log(`召回 #${id}${entry.label === 'log' ? '（日志兜底）' : ''}`)
+        return ok
       } catch (error) {
         warn('召回失败：', error?.message || error)
         return false
