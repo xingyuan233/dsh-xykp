@@ -62,6 +62,10 @@ const parameters = {
       items: { type: 'number' },
       description: 'Bring dropped results back by id (older steps included).',
     },
+    silence: {
+      type: 'number',
+      description: 'Mute the next N notices (0 = keep them coming).',
+    },
   },
 }
 
@@ -70,7 +74,7 @@ function makeTool() {
     name: TOOL_NAME,
     description:
       'Decide the fate of tracked tool results. Nothing = fold them to a ⟨dropped #id⟩ stub.\n' +
-      'keep: ids to keep whole; summarize: ids to replace with your text; recall: ids to re-inflate.',
+      'keep: ids to keep whole; summarize: ids to replace with your text; recall: ids to re-inflate; silence: mute the next N notices.',
     parameters,
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, text: { type: 'string' } } },
@@ -82,9 +86,10 @@ function makeTool() {
       const keep = Array.isArray(args?.keep) ? args.keep : []
       const sum = Array.isArray(args?.summarize) ? args.summarize : []
       const recall = Array.isArray(args?.recall) ? args.recall : []
+      const silence = Number(args?.silence)
       return {
         ok: true,
-        text: `⟨decided⟩ keep ${keep.join(',') || '-'} / summary ${sum.map((s) => s.id).join(',') || '-'} / recall ${recall.join(',') || '-'}`,
+        text: `⟨decided⟩ keep ${keep.join(',') || '-'} / summary ${sum.map((s) => s.id).join(',') || '-'} / recall ${recall.join(',') || '-'}${Number.isFinite(silence) && silence > 0 ? ` / silence ${Math.floor(silence)}` : ''}`,
       }
     },
   }
@@ -115,12 +120,14 @@ function argsOf(block) {
 
 /** 从一条 assistant 消息里读出 steward 调用的参数。 */
 function decisionsOf(message) {
-  const out = { keep: new Set(), summary: new Map(), recall: new Set() }
+  const out = { keep: new Set(), summary: new Map(), recall: new Set(), silence: 0 }
   for (const block of message?.content || []) {
     if (!block || block.type !== 'tool-call' || block.name !== TOOL_NAME) continue
     const input = argsOf(block)
     for (const id of input.keep || []) out.keep.add(Number(id))
     for (const id of input.recall || []) out.recall.add(Number(id))
+    const silence = Number(input.silence)
+    if (Number.isFinite(silence) && silence > 0) out.silence = Math.floor(silence)
     for (const entry of input.summarize || []) {
       if (entry && Number.isInteger(Number(entry.id)) && typeof entry.text === 'string') out.summary.set(Number(entry.id), entry.text)
     }
@@ -181,7 +188,7 @@ export function apply(ctx, config = {}) {
       return max
     }
 
-    const state = { pending: null, seq: seedSeq(), archive: new Map(), seen: new Set() }
+    const state = { pending: null, seq: seedSeq(), archive: new Map(), seen: new Set(), silenceLeft: 0, silenceEnded: false, silenceConsumedSeq: undefined }
     watched.set(agent, state)
 
     /** 档案：丢了原文也能召回；按条数 FIFO。 */
@@ -294,8 +301,13 @@ export function apply(ctx, config = {}) {
           if (!message || message.role !== 'assistant') return
           const calls = (message.content || []).filter((b) => b && b.type === 'tool-call')
           const decisions = calls.length === 0
-            ? { keep: new Set(), summary: new Map(), recall: new Set() }
+            ? { keep: new Set(), summary: new Map(), recall: new Set(), silence: 0 }
             : decisionsOf(message)
+          if (decisions.silence > 0) {
+            state.silenceLeft = decisions.silence
+            state.silenceEnded = false
+            state.silenceConsumedSeq = undefined
+          }
           // 召回会 append（替换节点），事件发布中不能重入 → 挪到微任务里
           if (decisions.recall.size) queueMicrotask(() => applyRecall(decisions.recall))
           finalize(decisions)
@@ -368,8 +380,19 @@ export function apply(ctx, config = {}) {
             const pending = state.pending
             const items = (pending?.items || []).filter((item) => item.judged)
             if (items.length === 0) return ''
+            if (state.silenceLeft > 0) {
+              // 静默按「批次」算：同一批只扣一次，免得一次请求渲染多次多扣
+              if (state.silenceConsumedSeq !== pending.originSeq) {
+                state.silenceConsumedSeq = pending.originSeq
+                state.silenceLeft--
+                if (state.silenceLeft === 0) state.silenceEnded = true
+              }
+              return ''
+            }
             const ids = items.map((item) => '#' + item.id).join(' ')
-            return '[steward] 上一步结果 ' + ids + ' 默认折叠；keep:[#id] 留，summarize:[{id,text}] 概括'
+            const tail = state.silenceEnded ? '（silence 已结束）' : ''
+            state.silenceEnded = false
+            return '[steward] 上一步结果 ' + ids + ' 默认折叠；keep永久保留,summarize概括保留,recall拿回之前' + tail
           },
         }),
       )
@@ -382,8 +405,8 @@ export function apply(ctx, config = {}) {
           name: 'toolret-steward:howto',
           order: 1,
           text:
-            '工具结果：大结果在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（空结果同理，不等于失败，失败会带错误码）。\n' +
-            '想留：steward(keep:[#id])；想概括：steward(summarize:[{id,text}])；事后要原文：steward(recall:[#id])。',
+            '工具结果：大结果在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +            '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])。\n' + 
+			'这些工具可以和其他工具一起调用，可以一起调用，重要的就保留或概括。',
         }),
       )
     } catch (error) {

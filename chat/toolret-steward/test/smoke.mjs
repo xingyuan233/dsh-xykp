@@ -24,14 +24,19 @@ const tick = () => new Promise((r) => setTimeout(r, 0))
 function makeAgent(session) {
   let registered = 0
   const handlers = []
+  let notice = () => ''
   const agent = {
     id: 'a-' + session.id,
     session,
     counters: () => registered,
+    notice: () => notice(),
     ctx: {
       tools: { register: () => { registered++; return () => {} } },
       systemPrompt: {
-        context: () => () => {},
+        context: (opts) => {
+          if (opts && typeof opts.text === 'function') notice = opts.text
+          return () => {}
+        },
         section: () => () => {},
       },
       on: (ev, fn) => { if (ev === 'session/event') handlers.push(fn); return () => {} },
@@ -113,6 +118,24 @@ check('日志兜底前是 stub', (resultText(s3, 'c9') || '').startsWith('⟨dro
 assistant(s3, [{ id: 'r1', name: 'steward', args: { recall: [3] } }])
 await tick()
 check('日志兜底召回成功', (resultText(s3, 'c9') || '').startsWith('[#3] QQQ'), (resultText(s3, 'c9') || '').slice(0, 12))
+
+// silence：静默下一批通知，倒计时走完后第一次通知带「（silence 已结束）」
+const s4 = new Session('s4')
+const a4 = makeAgent(s4)
+apply(ctxOf([a4]), { minChars: 100 })
+await tick()
+assistant(s4, [{ id: 'e1', name: 'pwsh', args: { command: 'a' } }])
+s4.append('tool/result', { message: { role: 'tool', toolCallId: 'e1', content: [{ type: 'text', text: 'A'.repeat(300) }] } })
+check('通知默认出现', /^\[steward\] 上一步结果 #\d+/.test(a4.notice()), a4.notice())
+assistant(s4, [{ id: 'e2', name: 'steward', args: { silence: 1 } }])
+assistant(s4, [{ id: 'e3', name: 'pwsh', args: { command: 'b' } }])
+s4.append('tool/result', { message: { role: 'tool', toolCallId: 'e3', content: [{ type: 'text', text: 'B'.repeat(300) }] } })
+const quiet = a4.notice()
+check('silence 之后不弹通知', quiet === '', quiet)
+assistant(s4, [{ id: 'e4', name: 'pwsh', args: { command: 'c' } }])
+s4.append('tool/result', { message: { role: 'tool', toolCallId: 'e4', content: [{ type: 'text', text: 'C'.repeat(300) }] } })
+const resumed = a4.notice()
+check('silence 结束标记', resumed.includes('silence 已结束'), resumed)
 
 console.log(fail === 0 ? '\n全部通过' : `\n失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

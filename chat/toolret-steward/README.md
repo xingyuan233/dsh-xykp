@@ -6,11 +6,13 @@
 
 1. 工具结果落地（≥ `minChars` 或含图片）→ 在最前面打上 `[#7]` 标签，同时记进 pending 和召回档案（**先不折叠**）；
 2. 下一步模型看到一条很短的通知（`systemPrompt.context` 渲染进请求，不进历史）：
-   `[steward] 上一步结果 #7 #8 默认折叠；keep:[#id] 留，summarize:[{id,text}] 概括`
+   `[steward] 上一步结果 #7 #8 默认折叠；keep永久保留,summarize概括保留,recall拿回之前`
 3. 模型可以：
-   - `steward(keep: [7])` —— 保留原文；
+   - `steward(keep: [7])` —— 保留原文（永久，之后不会再进 pending）；
    - `steward(summarize: [{ id: 7, text: "..." }])` —— 换成自己的概括；
    - `steward(recall: [7])` —— 把已折叠的结果按 id 铺回来（先查内存档案；档案没有就回扫会话日志找 `[#7]` 原节点）；
+   - `steward(silence: 2)` —— 接下来 2 批结果不弹通知（结果照旧默认折叠），倒计时走完后第一条通知带「（silence 已结束）」；
+   - 这些调用可以和别的工具调用放在**同一条消息**里，不额外占一轮；
    - 不表态 —— 默认折叠。
 4. 下一条 assistant 消息出现时执行：没保留的替换成
    `⟨dropped #7 pwsh Get-ChildItem · 12345 chars⟩`
