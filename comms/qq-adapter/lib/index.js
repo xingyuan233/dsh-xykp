@@ -120,13 +120,34 @@ function findAgent(agents, sessionId) {
   return null
 }
 
+// 统一算「这个 agent 该用哪个 provider/model」——create 和 resume 都必须带。
+// ⚠ 2026-10-29：resume 那条分支以前只传 resumeSessionId，宿主重启后所有活着的绑定
+//   每一轮都炸 `agent "session-…" has no provider/model`（session-12ecb406 就这么废的）
+function resolveAgentOptions(ctx, prefs = null) {
+  try {
+    const dm = ctx && typeof ctx.get === 'function' ? ctx.get('agentDefaultModel') : null
+    const sel = prefs && prefs.model
+      ? { provider: prefs.model.provider, model: prefs.model.model, reasoningEffort: prefs.level }
+      : (dm && dm.currentSelection ? dm.currentSelection() : null)
+    if (sel && sel.provider && sel.model) {
+      const out = { provider: sel.provider, model: sel.model }
+      if (sel.reasoningEffort) out.reasoningEffort = sel.reasoningEffort
+      return out
+    }
+  } catch (err) { warn('拿默认模型失败：', err?.message || err) }
+  return null
+}
+
 async function deliver(agentsSvc, sessionId, text, mode = 'steer', ctx = null) {
   let agent = findAgent(agentsSvc, sessionId)
   if (!agent) {
     // 宿主重启后，`/new` 建的那些会话没有活着的 agent —— 按 id resume 回来再投
     // （2026-10-28：以前这里直接抛「找不到了」，等于重启后 /new 的绑定全废）
     try {
-      const h = await agentsSvc.resume({ resumeSessionId: sessionId })
+      const resumeOpts = { resumeSessionId: sessionId }
+      const resumeAgentOptions = resolveAgentOptions(ctx)
+      if (resumeAgentOptions) resumeOpts.agentOptions = resumeAgentOptions
+      const h = await agentsSvc.resume(resumeOpts)
       agent = (h && h.agent) || findAgent(agentsSvc, sessionId)
       // ⚠ resume 出来的 agent **没有挂预设** → 消息进去了但这一轮根本跑不起来
       //   （实测：qq-20261028-ry86 的会话文件一直停在创建那一刻，不涨）
@@ -210,6 +231,9 @@ export async function apply(ctx, config = {}) {
       return
     }
     if (cfg.autoStartShell === false) return
+    // ⚠ 2026-10-29：桥连不上的时候（壳还没起来/刚掉线）以前一张码都不推，
+    //   主人只能守在电脑前。现在用上一次落盘的二维码也推一下，间隔/次数照旧受 notifyEveryMinutes / notifyMax 管 ✓
+    await pushQrToNtfy(null)
     // 冷却：壳正在启动时 /status 还没起来，别每 15 秒又拉一个（两个实例会互相踢登录）
     if (Date.now() - lastSpawnAt < 120000) return
     // 同一套安装目录里只要有 QQ.exe 在跑，就绝不能再拉一个：
@@ -267,25 +291,39 @@ export async function apply(ctx, config = {}) {
   let lastNotifyAt = 0
   let notifyCount = 0
   let wasReady = false
+  let lastQrStamp = 0   // 上次推出去的那张码的 mtime：同一张不重复推，保证到手是「刚生成」的
 
   async function pushQrToNtfy(st) {
     if (!cfg.notifyTopic) return
-    const everyMs = Math.max(30_000, (Number(cfg.notifyEveryMinutes) || 3) * 60_000)
+    const everyMs = Math.max(30_000, (Number(cfg.notifyEveryMinutes) || 1) * 60_000)
+    const maxPushes = Number(cfg.notifyMax) || 6
+    if (notifyCount >= maxPushes) return
     if (Date.now() - lastNotifyAt < everyMs) return
-    if (notifyCount >= (Number(cfg.notifyMax) || 3)) return
+    // ⚠ 2026-10-29：必须推**新鲜**的码 —— 二维码两分左右就过期，
+    //   以前桥一挂会拿几小时前的旧图硬推（主人扫了只会「二维码已失效」）。
+    //   规则：文件超过 2 分钟就当没码；同一张码（mtime 没变）不重复推。都不占次数/冷却 ✓
+    let png
+    try {
+      const { readFile, stat } = await import('node:fs/promises')
+      const file = cfg.qrFile || ''
+      const st2 = await stat(file)
+      const ageMin = (Date.now() - st2.mtimeMs) / 60_000
+      if (ageMin > 2) { log('二维码文件太旧（' + Math.round(ageMin) + ' 分钟前），等壳出新码再推'); return }
+      if (st2.mtimeMs <= lastQrStamp) { log('还是上一张码，等新的'); return }
+      png = await readFile(file)
+      lastQrStamp = st2.mtimeMs
+    } catch (err) { warn('读二维码图片失败（等新码）：', err?.message || err); return }
     lastNotifyAt = Date.now()
     notifyCount++
     try {
-      const { readFile } = await import('node:fs/promises')
-      const png = await readFile(cfg.qrFile || '')
+      // ⚠ 2026-10-29 主人实测：txz.qq.com/p?k=… 这个链接在浏览器里只会弹「下载 QQ」，
+      //   它是给 QQ 扫的二维码内容，不是能点的登录深链 ✗ → **回到推图片**，
+      //   但只推「刚生成、还没推过」的那张，保证到手是新鲜的（二维码 50 秒换一张，两分钟内有效）✓
+      const title = 'QQ 掉线了，扫这张码 (' + notifyCount + '/' + maxPushes + ')'
+      const hz = (s) => Buffer.from(String(s), 'utf8').toString('latin1')
       const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
         method: 'PUT',
-        headers: {
-          Title: 'QQ shell needs a QR scan (' + notifyCount + '/' + (cfg.notifyMax || 3) + ')',
-          Tags: 'rotating_light,qrcode',
-          Priority: '4',
-          Filename: 'qq-qr.png',
-        },
+        headers: { Title: hz(title), Tags: 'rotating_light,qrcode', Priority: '4', Filename: 'qq-qr.png' },
         body: png,
       })
       log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）HTTP ' + res.status + ' · uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
@@ -331,27 +369,79 @@ export async function apply(ctx, config = {}) {
     } catch (err) { warn('指令回复发送失败：', err?.message || err) }
   }
 
+  // ⚠ 2026-10-29 主人：「绑定的是预设，那在这里聊过之后，再发消息应该发到这个对话」——
+  //   以前投递目标只看 chats.json 里钉死的 sessionId，/new 之后那个聊天就永远停在那条会话，
+  //   哪怕 Web 里已经换到别的会话聊了（预设的活跃会话表 `home\xykp\preset-binder\preset-binder.json`
+  //   明明更新了）。现在改成：**只有 /session 明确绑会话才钉死**（boundBy='session'），
+  //   其余情况身份跟着预设走，每条消息现查一次预设的活跃会话 ✓
+  async function 预设活跃会话(preset) {
+    if (!preset) return ''
+    try {
+      const t = await resolveTarget('p-' + preset)
+      return (t && t.sessionId) || ''
+    } catch { return '' }
+  }
+
+  /** /new 建完会话后，把预设的活跃会话指过去（不然下次投递又跟回 Web 那条） */
+  async function 记预设活跃(preset, sessionId) {
+    if (!preset || !sessionId) return
+    try {
+      const p = join(home(), 'xykp', 'preset-binder', 'preset-binder.json')
+      let t = { version: 1, updatedAt: new Date().toISOString(), presets: {} }
+      try {
+        const j = JSON.parse(await readFile(p, 'utf8'))
+        if (j && j.presets) t = j
+      } catch { /* 第一次写 */ }
+      const cur = t.presets[preset] || { active: '', recent: [] }
+      const now = new Date().toISOString()
+      const recent = [sessionId, ...(Array.isArray(cur.recent) ? cur.recent : []).filter((x) => x !== sessionId)].slice(0, 30)
+      t.presets[preset] = { ...cur, active: sessionId, at: now, recent }
+      t.version = t.version || 1
+      t.updatedAt = now
+      await mkdir(dirname(p), { recursive: true })
+      await writeFile(p, JSON.stringify(t, null, 2), 'utf8')
+      log('预设 ' + preset + ' 的活跃会话 → ' + sessionId)
+    } catch (err) { warn('写预设活跃会话失败：', err?.message || err) }
+  }
+
   async function chatSessionId(key) {
     const all = await chatsNow()
-    const bound = all[key] && all[key].sessionId
-    if (bound && findAgent(agentsSvc, bound)) return bound
+    const rec = all[key] || {}
     const route = resolveRoute(cfg, key)
+    if (rec.boundBy !== 'session') {
+      const preset = String(rec.preset || (rec.prefs && rec.prefs.preset) || presetOfTarget(route.target || '') || '')
+      if (preset) {
+        const act = await 预设活跃会话(preset)
+        if (act) return act
+      }
+    }
+    const bound = rec.sessionId
+    if (bound && findAgent(agentsSvc, bound)) return bound
     if (!route.target) return ''
     const t = await resolveTarget(route.target)
     return t.sessionId || ''
   }
 
-  // 真正的投递目标：**先看这个聊天在 chats.json 里绑的会话**（/new、/session 切换都写这里），
-  // 没有绑定才走 mappings / defaultTarget。
-  // ⚠ 2026-10-28 主人：「我明明 /new 了，为什么消息还到那边去」—— 因为以前只有指令读 chats.json，
-  //   真正的转发只看 mappings/defaultTarget，`/new` 等于白绑 ✗
+  // 真正的投递目标：**预设优先**（身份绑预设，跟着预设的活跃会话走），
+  // 只有 /session 明确绑了某条会话（boundBy='session'）才钉死那一条。
+  // 10-28 主人：「我明明 /new 了，为什么消息还到那边去」—— 那时候只有指令读 chats.json，
+  //   转发只看 mappings/defaultTarget；10-29 又发现问题反过来了：/new 钉死会话后，
+  //   Web 里换了活跃会话，QQ 还往里投 ✗
   async function 投递目标(key) {
-    try {
-      const chats = await chatsNow()
-      const bound = String((chats[key] && chats[key].sessionId) || '')
-      if (bound) return { sessionId: bound, via: 'chats.json' }
-    } catch { /* 读不到就按路由走 */ }
+    let chats = {}
+    try { chats = await chatsNow() } catch { /* 读不到就按路由走 */ }
+    const rec = chats[key] || {}
     const route = resolveRoute(cfg, key)
+    const preset = rec.boundBy === 'session'
+      ? ''
+      : String(rec.preset || (rec.prefs && rec.prefs.preset) || presetOfTarget(route.target || '') || '')
+    if (preset) {
+      const act = await 预设活跃会话(preset)
+      const alive = act && findAgent(agentsSvc, act)
+      if (act && (alive || act)) return { sessionId: act, via: 'preset:' + preset, routeTarget: 'p-' + preset }
+    }
+    const bound = String(rec.sessionId || '')
+    if (bound) return { sessionId: bound, via: 'chats.json' }
     if (!route.target) return { sessionId: '', reason: route.reason || route.via, route: null }
     const t = await resolveTarget(route.target)
     return { ...t, routeTarget: route.target, via: 'route' }
@@ -374,7 +464,19 @@ export async function apply(ctx, config = {}) {
     const preset = prefs.preset || presetOfTarget(route.target) || ''
     // ⚠ cwd 必须是**绝对路径**（宿主会校验：session header cwd must be an absolute path）。
     //   以前 `/workspace alive-workspace` 存成名字，`/new` 直接炸 ✗ → 这里兜一下，按名字换成路径
-    let cwd = String(prefs.workspace || cfg.workspaceRoot || '')
+    // 2026-10-29：原来只用插件配置里的 workspaceRoot（默认写死 alive-workspace），
+    //   结果 `/new` 拿的不是「部署里选中的工作区」（主人指出的）。
+    //   改成：聊天偏好 → <DSH_HOME>\storages\workspace.json 里选中的工作区 → 插件配置 ✓
+    let cwd = String(prefs.workspace || '')
+    if (!cwd) {
+      try {
+        const ws = JSON.parse(await readFile(join(home(), 'storages', 'workspace.json'), 'utf8'))
+        const wsId = ws && ws.global && ws.global.defaultWorkspaceId
+        const hit = wsId && ws.tables && ws.tables.workspaces ? ws.tables.workspaces[wsId] : null
+        if (hit && hit.path) cwd = String(hit.path)
+      } catch { /* 读不到就退回插件配置 */ }
+    }
+    if (!cwd) cwd = String(cfg.workspaceRoot || '')
     if (cwd && !/^[a-zA-Z]:[\\/]/.test(cwd) && !cwd.startsWith('\\\\')) {
       try {
         const spaces = await listWorkspaces()
@@ -424,9 +526,51 @@ export async function apply(ctx, config = {}) {
       const id = newSessionId('qq')
       const meta = { cwd }
       if (preset) meta.agentPreset = preset
-      const handle = await agentsSvc.create({ sessionId: id, meta })
+      // ⚠ 2026-10-29：新 agent 不带 agentOptions 的话 options.model 是空的 →
+      //   系统提示里 {{model}} 就「has no value for this assembly」、请求前还会
+      //   「has no provider/model」。Web 那边是 api-session-controller 传的
+      //   agentOptions = agentDefaultModel.currentSelection()，这里照抄一份 ✓
+      const agentOptions = resolveAgentOptions(ctx, prefs) || undefined
+      // ⚠ 2026-10-29：以前只把预设 id 写进 meta，没有真的 mount →
+      //   新会话 header 里 agentPreset=alive，但工具集是「最小默认集」（没有 read/pwsh/edit）。
+      //   Web 那边建会话时 composition.setup 会做 `agentPresets.mount(...)`，这里照抄 ✓
+      let resolvedPreset = preset
+      let presetSetup
+      if (preset) {
+        try {
+          const presets = ctx.get('agentPresets')
+          if (presets && typeof presets.resolve === 'function') {
+            const r = await presets.resolve(preset)
+            if (r && r.id) {
+              resolvedPreset = r.id
+              if (r.broken) warn('预设 ' + preset + ' 有损坏：' + JSON.stringify(r.broken).slice(0, 300))
+              presetSetup = async (agentCtx) => { await presets.mount(agentCtx, r.id) }
+            }
+          }
+        } catch (err) { warn('挂预设 ' + preset + ' 失败：', err?.message || err) }
+      }
+      if (resolvedPreset) meta.agentPreset = resolvedPreset
+      const handle = await agentsSvc.create({
+        sessionId: id,
+        meta,
+        ...(agentOptions ? { agentOptions } : {}),
+        ...(presetSetup ? { setup: presetSetup } : {}),
+      })
       const real = handle?.agent?.session?.id || id
-      await setChatSession(key, real, { preset })
+      // ⚠ 2026-10-29：只设 cwd 会话还是「未分组」——工作区的成员表要靠 attachSession 写进去
+      //   （Web 那边建完会话也会把 session 挂到对应工作区）。这里按 cwd 反查工作区再挂上 ✓
+      try {
+        const reg = ctx.get('workspaceRegistry')
+        if (reg && typeof reg.resolveByPath === 'function') {
+          const ws = await reg.resolveByPath(cwd)
+          if (ws) await ws.attachSession(real)
+          else warn('没找到 cwd 对应的工作区（' + cwd + '），会话会显示未分组')
+        }
+      } catch (err) { warn('把新会话挂进工作区失败：', err?.message || err) }
+      await setChatSession(key, real, { preset, boundBy: 'preset' })
+      // /new 的意义就是「以后投递到这条新会话」→ 把预设的活跃会话也指过去，
+      // 不然投递按「预设优先」查活跃会话，又会被 Web 那边最后聊过的那条抢走 ✓
+      await 记预设活跃(preset, real)
       return { id: real, preset }
     } finally {
       // 临时改的部署默认，不管建没建成都改回去
@@ -552,7 +696,14 @@ export async function apply(ctx, config = {}) {
           return
         }
         if (!findAgent(agentsSvc, picked.id)) { await replyTo(key, picked.id + ' 现在没有活着的 agent（下次发消息会自动起）') }
-        await setChatSession(key, picked.id)
+        // ⚠ 2026-10-29 主人：「/session 如果绑定的预设，那切的也是**全局预设池的绑定**，不是改成绑会话」
+        if (presetName) {
+          await 记预设活跃(presetName, picked.id)
+          await setChatSession(key, picked.id, { preset: presetName, boundBy: 'preset' })
+          await replyTo(key, '切到（预设 ' + presetName + ' 的活跃会话）：' + picked.id)
+          return
+        }
+        await setChatSession(key, picked.id, { boundBy: 'session' })
         await replyTo(key, '切到：' + picked.id)
         return
       }
@@ -581,7 +732,7 @@ export async function apply(ctx, config = {}) {
           const fresh = now.find((s) => !before.has(s.id))
           if (fresh) {
             clearInterval(timer)
-            await setChatSession(key, fresh.id, { preset: '' })
+            await setChatSession(key, fresh.id, { preset: '', boundBy: 'session' })
             await replyTo(key, '新会话接上了：' + fresh.id + '\n这个聊天已经绑过去')
             return
           }
@@ -1261,6 +1412,9 @@ export async function apply(ctx, config = {}) {
 
   try {
   if (ctx.tools && typeof ctx.tools.register === 'function') {
+    // 2026-10-29 主人：qq 接口太多，合起来省 token 也更好调。
+    //   9 个工具 → qq_send / qq_read 两个（旧实现整段留着，回滚把下面的 false 改成 true、再删掉末尾两段即可）✓
+    if (false) {
     ctx.tools.register(defineTool({
       name: TP('qq_send'),
       description: '用自己 QQ 号发一条消息。chat 写成 u-<uid> 或 g-<群号>（和自己号发的消息用同一个标识）。',
@@ -1467,6 +1621,80 @@ export async function apply(ctx, config = {}) {
       async execute() {
         const s = await bridge.status()
         return { ok: s?.ok === true, status: s }
+      },
+    }))
+    }  // ← if (false)：旧的 9 个工具到此为止
+
+    // ── 合并版：qq_send / qq_read ──
+    const QQ_BRIDGE_RENDER = (_args, result) => [{ type: 'text', text: JSON.stringify(result) }]
+
+    ctx.tools.register(defineTool({
+      name: TP('qq_send'),
+      description: '发 QQ。kind 决定发什么：text(默认,用 text)/image、file、voice(用 path)/face(用 faceId,可选 text 兜底)/reply(text+msgId 引用，不填 msgId 就引用对方最后一条)。chat 写 u-<uid> 或 g-<群号>；at/atNick 只在群里有用；poke 现在发不了。',
+      parameters: {
+        chat: { type: 'string', description: 'u-<uid> / g-<群号>', required: true },
+        kind: { type: 'string', description: 'text/image/file/voice/face/reply' },
+        text: { type: 'string' },
+        path: { type: 'string' },
+        faceId: { type: 'number' },
+        msgId: { type: 'string' },
+        at: { type: 'string' },
+        atNick: { type: 'string' },
+        duration: { type: 'number' },
+      },
+      output: { schema: { type: 'object', additionalProperties: true }, render: QQ_BRIDGE_RENDER },
+      async execute(args) {
+        const key = String(args.chat || '').trim()
+        const chatType = /^[gG]-/.test(key) ? 2 : 1
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('chat 得写成 u-<uid> 或 g-<群号>')
+        const kind = String(args.kind || 'text').toLowerCase()
+        if (kind === 'image' || kind === 'file' || kind === 'voice') {
+          const p = String(args.path || '')
+          const r = kind === 'image' ? await bridge.sendImage(chatType, peerUid, p)
+            : kind === 'file' ? await bridge.sendFile(chatType, peerUid, p)
+              : await bridge.sendVoice(chatType, peerUid, p, args.duration)
+          return { ok: r?.ok === true, kind, chat: key, path: p }
+        }
+        if (kind === 'face') {
+          const r = await bridge.face(chatType, peerUid, { id: Number(args.faceId) || 0, text: String(args.text || '') })
+          return { ok: r?.ok === true, kind, chat: key }
+        }
+        const text = String(args.text ?? '')
+        if (kind === 'reply') {
+          const last = globalThis.__qqLastInbound?.get(key) || null
+          const msgId = String(args.msgId || last?.msgId || '')
+          const meta = !args.msgId && last ? { seq: last.msgSeq, time: last.time, senderUid: last.senderUid } : {}
+          const r = await bridge.reply(chatType, peerUid, msgId, text, meta)
+          return { ok: r?.ok === true, kind, chat: key, msgId }
+        }
+        const r = await bridge.send(chatType, peerUid, text, args.at, args.atNick)
+        return { ok: r?.ok === true, kind: 'text', chat: key, result: r?.result ?? null }
+      },
+    }))
+
+    ctx.tools.register(defineTool({
+      name: TP('qq_read'),
+      description: '读 QQ。kind: status(桥的登录态/收件箱，不用 chat)/history(聊天记录，要 chat)。count ≤100 默认 20；seq 从某条往前翻。',
+      parameters: {
+        kind: { type: 'string', description: 'status/history' },
+        chat: { type: 'string' },
+        count: { type: 'number' },
+        seq: { type: 'number' },
+      },
+      output: { schema: { type: 'object', additionalProperties: true }, render: QQ_BRIDGE_RENDER },
+      async execute(args) {
+        const kind = String(args.kind || 'history').toLowerCase()
+        if (kind === 'status') {
+          const s = await bridge.status()
+          return { ok: s?.ok === true, status: s }
+        }
+        const key = String(args.chat || '').trim()
+        const chatType = /^[gG]-/.test(key) ? 2 : 1
+        const peerUid = key.replace(/^[ugUG][-_]/, '')
+        if (!peerUid) throw new Error('history 要给 chat：u-<uid> 或 g-<群号>')
+        const r = await bridge.history(chatType, peerUid, Math.min(100, Number(args.count) || 20), args.seq ? Number(args.seq) : '')
+        return { ok: r?.ok !== false, chat: key, messages: r?.result ?? r }
       },
     }))
   }
