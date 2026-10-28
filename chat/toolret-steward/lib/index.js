@@ -56,7 +56,7 @@ const parametersDsl = {
       additionalProperties: false,
       properties: { id: { type: 'number' }, text: { type: 'string' } },
     },
-    description: '[{id,text}]',
+    description: '[{id:number,text}]',
   },
   recall: { type: 'array', items: { type: 'number' }, showDesc: false },
   sublines: {
@@ -66,7 +66,7 @@ const parametersDsl = {
       additionalProperties: false,
       properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
     },
-    description: '[{id,offset,limit}] lines',
+    description: '[{id:number,offset,limit}] lines',
   },
   subbytes: {
     type: 'array',
@@ -75,7 +75,7 @@ const parametersDsl = {
       additionalProperties: false,
       properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
     },
-    description: '[{id,offset,limit}] bytes',
+    description: '[{id:number,offset,limit}] bytes',
   },
   silence: { type: 'number', showDesc: false },
 }
@@ -100,11 +100,11 @@ const parametersSchema = {
         properties: { id: { type: 'number' }, text: { type: 'string' } },
         required: ['id', 'text'],
       },
-      description: '[{id,text}]',
+      description: '[{id:number,text}]',
     },
     recall: { type: 'array', items: { type: 'number' }, description: 'ids' },
-    sublines: { type: 'array', items: rangeItems, description: '[{id,offset,limit}] lines' },
-    subbytes: { type: 'array', items: rangeItems, description: '[{id,offset,limit}] bytes' },
+    sublines: { type: 'array', items: rangeItems, description: '[{id:number,offset,limit}] lines' },
+    subbytes: { type: 'array', items: rangeItems, description: '[{id:number,offset,limit}] bytes' },
     silence: { type: 'number', description: 'N notices' },
   },
 }
@@ -472,7 +472,7 @@ export function apply(ctx, config = {}) {
           order: 1,
           text:
             '工具结果：大结果在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +            '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])；steward(sublines/subbytes:[{id,offest?=0,limit?=最后}])选择其中的某几行或某些。\n' + 
-			'这些工具可以和其他工具一起调用，可以一起调用，重要的就保留或概括。',
+			'这些工具可以和 edit / read / pwsh 等调用并排发，不单独占一轮！！！',
         }),
       )
     } catch (error) {

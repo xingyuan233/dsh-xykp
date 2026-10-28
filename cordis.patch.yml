@@ -4,7 +4,6 @@
 # 约定跟 dsh-onebot-qq / dsh-base 一致：
 #   1. 这里只写「插件身份 + 中性默认」（insert 块）；
 #   2. 具体配置放 profile 的 cordis.patch.yml，用顶层 `- id: <行id>` 覆盖；
-#   3. `xykp` 是客户端门面行（空插件）—— 不加它 client.js 不会被扫到。
 #
 # ⚠ 同一个插件文件不要在这里和 profile 里各 insert 一次（双实例注册会崩）。
 - insert:
@@ -27,12 +26,12 @@
       name: 'dsh-xykp/chat/preset-binder'
     - id: memory-refine
       name: 'dsh-xykp/chat/memory-refine'
-    # 2026-10-28：被 toolret-steward 顶替（工具结果默认下一轮丢弃，可 keep/summarize）
+    - id: toolret-steward
+      name: 'dsh-xykp/chat/toolret-steward'
+      # 被 toolret-steward 取代
     - id: toolret-forget
       name: 'dsh-xykp/chat/toolret-forget'
       disabled: true
-    - id: toolret-steward
-      name: 'dsh-xykp/chat/toolret-steward'
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
 

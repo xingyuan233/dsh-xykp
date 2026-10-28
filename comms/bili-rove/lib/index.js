@@ -171,7 +171,7 @@ export function apply(ctx, config = {}) {
       },
       keyword: { type: 'string', description: 'search / crawl' },
       bvid: { type: 'string', description: 'BV 号（reply/triple 也收纯数字 aid）' },
-      uid: { type: 'string', description: 'user / user_videos / favorites / dm' },
+      uid: { type: 'string', description: 'user / user_videos / favorites / dm', showType: true },
       mediaId: { type: 'number', description: 'favorites 收藏夹 id' },
       rpid: { type: 'string', description: 'reply 要回的评论' },
       root: { type: 'string', description: 'reply 楼层根（一般不用填）' },
