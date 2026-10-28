@@ -24,14 +24,16 @@ const tick = () => new Promise((r) => setTimeout(r, 0))
 function makeAgent(session) {
   let registered = 0
   const handlers = []
+  const tools = []
   let notice = () => ''
   const agent = {
     id: 'a-' + session.id,
     session,
     counters: () => registered,
     notice: () => notice(),
+    tool: () => tools[0],
     ctx: {
-      tools: { register: () => { registered++; return () => {} } },
+      tools: { register: (t) => { registered++; tools.push(t); return () => {} } },
       systemPrompt: {
         context: (opts) => {
           if (opts && typeof opts.text === 'function') notice = opts.text
@@ -91,9 +93,12 @@ assistant(s1, [], 'ok')
 await tick()
 check('默认折叠 stub', (resultText(s1, 'c2') || '').startsWith('⟨dropped #2'), resultText(s1, 'c2'))
 
-assistant(s1, [{ id: 'd2', name: 'steward', args: { recall: [2] } }])
-await tick()
-check('recall 铺回', (resultText(s1, 'c2') || '').startsWith('[#2] YYYY'), String((resultText(s1, 'c2') || '').length))
+// 召回现在是「当场把原文作为工具结果返回」，历史节点不动（旧 stub 还在，前缀缓存不受影响）
+const recalled = await a1.tool().execute({ recall: [2] })
+check('recall 原文进工具结果', recalled.text.includes('Y'.repeat(100)), recalled.text.slice(0, 60))
+check('recall 不动历史节点', (resultText(s1, 'c2') || '').startsWith('⟨dropped #2'), resultText(s1, 'c2'))
+const missing = await a1.tool().execute({ recall: [999] })
+check('recall 未找到会报', missing.text.includes('未找到：#999'), missing.text)
 
 const s2 = new Session('s2')
 s2.append('assistant/message', { message: { role: 'assistant', content: [] } })
@@ -115,9 +120,8 @@ const a3 = makeAgent(s3)
 apply(ctxOf([a3]), { minChars: 100 })
 await tick()
 check('日志兜底前是 stub', (resultText(s3, 'c9') || '').startsWith('⟨dropped #3'))
-assistant(s3, [{ id: 'r1', name: 'steward', args: { recall: [3] } }])
-await tick()
-check('日志兜底召回成功', (resultText(s3, 'c9') || '').startsWith('[#3] QQQ'), (resultText(s3, 'c9') || '').slice(0, 12))
+const out3 = await a3.tool().execute({ recall: [3] })
+check('日志兜底召回成功', out3.text.includes('QQQ') && out3.text.includes('日志兜底'), out3.text.slice(0, 60))
 
 // silence：静默下一批通知，倒计时走完后第一次通知带「（silence 已结束）」
 const s4 = new Session('s4')

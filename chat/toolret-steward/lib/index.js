@@ -69,12 +69,12 @@ const parameters = {
   },
 }
 
-function makeTool() {
+function makeTool(takeRecall) {
   return {
     name: TOOL_NAME,
     description:
       'Decide the fate of tracked tool results. Nothing = fold them to a ⟨dropped #id⟩ stub.\n' +
-      'keep: ids to keep whole; summarize: ids to replace with your text; recall: ids to re-inflate; silence: mute the next N notices.',
+      'keep: ids to keep whole; summarize: ids to replace with your text; recall: return old results as this call’s output (history untouched); silence: mute the next N notices.',
     parameters,
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, text: { type: 'string' } } },
@@ -85,12 +85,16 @@ function makeTool() {
     async execute(args) {
       const keep = Array.isArray(args?.keep) ? args.keep : []
       const sum = Array.isArray(args?.summarize) ? args.summarize : []
-      const recall = Array.isArray(args?.recall) ? args.recall : []
+      const recall = (Array.isArray(args?.recall) ? args.recall : []).map(Number).filter((id) => Number.isFinite(id))
       const silence = Number(args?.silence)
-      return {
-        ok: true,
-        text: `⟨decided⟩ keep ${keep.join(',') || '-'} / summary ${sum.map((s) => s.id).join(',') || '-'} / recall ${recall.join(',') || '-'}${Number.isFinite(silence) && silence > 0 ? ` / silence ${Math.floor(silence)}` : ''}`,
-      }
+      const got = typeof takeRecall === 'function' && recall.length ? takeRecall(recall) : { blocks: [], lost: [] }
+      let text =
+        `⟨decided⟩ keep ${keep.join(',') || '-'} / summary ${sum.map((s) => s.id).join(',') || '-'}` +
+        (recall.length ? ` / recall ${recall.join(',')}` : '') +
+        (Number.isFinite(silence) && silence > 0 ? ` / silence ${Math.floor(silence)}` : '')
+      if (got.blocks.length) text += '\n\n' + got.blocks.join('\n\n')
+      if (got.lost.length) text += `\n未找到：${got.lost.map((id) => '#' + id).join(' ')}`
+      return { ok: true, text }
     },
   }
 }
@@ -200,22 +204,6 @@ export function apply(ctx, config = {}) {
       }
     }
 
-    /** 把一条档案里的原文铺回 surface（force 覆盖占位）。 */
-    const restore = (id, entry) => {
-      const surfaceItem = resultOfCall(agent.session, entry.callId)
-      if (!surfaceItem) return false
-      const current = textOfMessage(messageOf(agent.session, surfaceItem.event))
-      if (!current.startsWith('⟨')) return true // 还完整着，不用召回
-      try {
-        const ok = replaceResult(ctx, agent.session, surfaceItem, tag(id) + entry.text, true)
-        if (ok) log(`召回 #${id}${entry.label === 'log' ? '（日志兜底）' : ''}`)
-        return ok
-      } catch (error) {
-        warn('召回失败：', error?.message || error)
-        return false
-      }
-    }
-
     /** 档案里没有（比如宿主重启过）→ 扫会话日志：日志保留了被替换前的完整节点。 */
     const recoverFromLog = (ids) => {
       const want = new Set(ids)
@@ -241,23 +229,32 @@ export function apply(ctx, config = {}) {
       return found
     }
 
-    const applyRecall = (ids) => {
+    /** 召回：原文作为本次工具结果随请求带出去——不动历史节点，老消息前面的前缀缓存不受影响。 */
+    const recallText = (ids) => {
+      const blocks = []
       const missing = []
       for (const id of ids) {
         const entry = state.archive.get(id)
         if (entry) {
-          restore(id, entry)
+          blocks.push(`⟨#${id} ${entry.tool} · ${entry.chars} chars⟩\n${entry.text}`)
           continue
         }
         missing.push(id)
       }
-      if (missing.length === 0) return
-      const found = recoverFromLog(missing)
-      for (const [id, entry] of found) {
-        state.archive.set(id, entry)
-        restore(id, entry)
+      const lost = []
+      if (missing.length) {
+        const found = recoverFromLog(missing)
+        for (const [id, entry] of found) {
+          state.archive.set(id, entry)
+          blocks.push(`⟨#${id} ${entry.tool} · ${entry.chars} chars（日志兜底）⟩\n${entry.text}`)
+        }
+        for (const id of missing) {
+          if (found.has(id)) continue
+          lost.push(id)
+          warn(`召回 #${id} 失败：档案和日志里都没找到`)
+        }
       }
-      for (const id of missing) if (!found.has(id)) warn(`召回 #${id} 失败：档案和日志里都没找到`)
+      return { blocks, lost }
     }
 
     const finalize = (decisions) => {
@@ -308,8 +305,7 @@ export function apply(ctx, config = {}) {
             state.silenceEnded = false
             state.silenceConsumedSeq = undefined
           }
-          // 召回会 append（替换节点），事件发布中不能重入 → 挪到微任务里
-          if (decisions.recall.size) queueMicrotask(() => applyRecall(decisions.recall))
+          // 召回不走这里：由 steward 工具当场把原文作为结果返回（不动历史节点）
           finalize(decisions)
           return
         }
@@ -329,6 +325,7 @@ export function apply(ctx, config = {}) {
         if (state.seen.has(callId)) return
         const call = findCall(agent.session, callId)
         const tool = call?.name || '?'
+        if (tool === TOOL_NAME) return // steward 自己的回执/召回正文不再参与折叠
         const judged = decides(tool)
         if (!judged && !trims(tool)) return
         const item = {
@@ -365,7 +362,7 @@ export function apply(ctx, config = {}) {
 
     const disposers = []
     try {
-      disposers.push(agent.ctx.tools.register(makeTool()))
+      disposers.push(agent.ctx.tools.register(makeTool(recallText)))
     } catch (error) {
       // 同一个 agent 只挂一次；失败也不再重试，避免每 3 秒刷屏
       warn('挂载失败（tools）：', error?.message || error)
