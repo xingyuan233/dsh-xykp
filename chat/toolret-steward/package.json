@@ -1,6 +1,6 @@
 {
   "name": "dsh-toolret-steward",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "工具结果的去留管家：默认下一轮丢弃，可保留或用概括替换；黑白名单决定哪些工具参与。",
   "type": "module",

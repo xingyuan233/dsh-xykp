@@ -296,7 +296,8 @@ export function apply(ctx, config = {}) {
           const decisions = calls.length === 0
             ? { keep: new Set(), summary: new Map(), recall: new Set() }
             : decisionsOf(message)
-          if (decisions.recall.size) applyRecall(decisions.recall)
+          // 召回会 append（替换节点），事件发布中不能重入 → 挪到微任务里
+          if (decisions.recall.size) queueMicrotask(() => applyRecall(decisions.recall))
           finalize(decisions)
           return
         }
