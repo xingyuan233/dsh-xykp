@@ -47,7 +47,8 @@
    查不到（`standard/ptc/minimal/cordis` 这些内置预设被 preset-binder 的 `ignore` 列表过滤，永远不进表）
    或那个预设没有绑定对话时，走 `POST /dsh-prosecutor/send {preset, text}` ——
    宿主用 `agentPresets.resolve` 验预设（不存在就回「没有这个预设」+ 可用列表），
-   再 `sessionController.createSession({ cwd, agentPreset })` 新开一个对话，然后把消息塞进去。
+   再 `sessionController.create({ cwd?, agentPreset })` 新开一个对话（返回 `sessionId`），
+   用 `agents.get(sessionId).followup(...)` 把消息塞进去。
 
 ## 自测
 

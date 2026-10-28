@@ -341,14 +341,28 @@ export function apply(ctx, config = {}) {
               }
               try {
                 const resolved = (await ctx.agentPresets.resolve(preset)).id
-                const cwd = cfg.newSessionCwd || join(home(), '..', 'workspaces', 'default-workspace')
-                const { agent } = await ctx.sessionController.createSession({ cwd, agentPreset: resolved })
+                // sessionController.create({cwd?, agentPreset}) → { sessionId, agentPreset }
+                const request = { agentPreset: resolved }
+                if (cfg.newSessionCwd) request.cwd = cfg.newSessionCwd
+                const created = await ctx.sessionController.create(request)
+                const agent = created && created.sessionId ? ctx.agents.get(created.sessionId) : undefined
+                if (!agent) {
+                  return sendJson(res, 200, {
+                    ok: false,
+                    reason: '新对话建好了但拿不到 agent（' + ((created && created.sessionId) || '?') + '）',
+                  })
+                }
                 const message = createUserMessage({
                   content: [{ type: 'text', text }],
                   source: { kind: 'plugin:dsh-prosecutor' },
                 })
                 await agent.followup(message)
-                return sendJson(res, 200, { ok: true, via: 'created', session: agent.id, agentPreset: resolved })
+                return sendJson(res, 200, {
+                  ok: true,
+                  via: 'created',
+                  session: created.sessionId,
+                  agentPreset: created.agentPreset || resolved,
+                })
               } catch (err) {
                 if (err?.code === 'agent-preset/not-found') {
                   const avail = err?.details?.available
