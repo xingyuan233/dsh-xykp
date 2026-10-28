@@ -91,7 +91,7 @@ const parametersSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    keep: { type: 'array', items: { type: 'number' }, description: 'ids' },
+    keep: { type: 'array', items: { type: 'number' }, description: 'ids (0=all last step, -1=newest)' },
     summarize: {
       type: 'array',
       items: {
@@ -102,7 +102,7 @@ const parametersSchema = {
       },
       description: '[{id:number,text}]',
     },
-    recall: { type: 'array', items: { type: 'number' }, description: 'ids' },
+    recall: { type: 'array', items: { type: 'number' }, description: 'ids (0=all last step, -1=newest)' },
     sublines: { type: 'array', items: rangeItems, description: '[{id:number,offset,limit}] lines' },
     subbytes: { type: 'array', items: rangeItems, description: '[{id:number,offset,limit}] bytes' },
     silence: { type: 'number', description: 'N notices' },
@@ -115,7 +115,7 @@ function makeTool(takeRecall) {
   return defineTool({
     name: TOOL_NAME,
     description:
-      'Tool results of the previous step (ids in the notice). No args = fold to ⟨dropped #id⟩.\n' +
+      'Tool results of the previous step (ids in the notice). ids: 0 = all of last step, -1/-2… = newest/second newest. No args = fold to ⟨dropped #id⟩.\n' +
       'keep keeps whole · summarize swaps in text · recall re-emits as a new tagged result (history untouched) · sublines/subbytes keep offset..offset+limit lines/bytes (0-based) · silence mutes N notices.',
     parameters,
     output: {
@@ -165,6 +165,29 @@ function sliceText(item, spec) {
   const end = spec.limit ? Math.min(buf.length, start + spec.limit) : buf.length
   return `${tag(item.id)}${buf.subarray(start, end).toString('utf8')}\n…⟨#${item.id} 只留第 ${start}~${end} 字节（共 ${buf.length} 字节）⟩`
 }
+
+/** 特殊 id：0 = 上一步的全部结果，-1 = 最近一条，-2 = 倒数第二条……正数原样。 */
+export function resolveIds(raw, stepIds, archiveIds) {
+  const out = []
+  for (const value of raw) {
+    const n = Number(value)
+    if (!Number.isFinite(n)) continue
+    if (n > 0) {
+      out.push(n)
+      continue
+    }
+    if (n === 0) {
+      out.push(...stepIds)
+      continue
+    }
+    const id = archiveIds[-n - 1]
+    out.push(id === undefined ? n : id) // 找不到就留着原值，回执里会写「未找到 #-2」
+  }
+  return out
+}
+
+/** 档案里的 id 按新旧排（id 单调递增，日志兜底塞进来的旧 id 也不会插队）。 */
+const newestFirst = (state) => [...state.archive.keys()].sort((a, b) => b - a)
 
 /** tool-call 的参数是 JSON 字符串（不是对象，也不是 input 字段）。 */
 function argsOf(block) {
@@ -259,7 +282,7 @@ export function apply(ctx, config = {}) {
       return max
     }
 
-    const state = { pending: null, seq: seedSeq(), archive: new Map(), seen: new Set(), silenceLeft: 0, silenceEnded: false, silenceConsumedSeq: undefined }
+    const state = { pending: null, seq: seedSeq(), archive: new Map(), seen: new Set(), silenceLeft: 0, silenceEnded: false, silenceConsumedSeq: undefined, lastBatch: [] }
     watched.set(agent, state)
 
     /** 档案：丢了原文也能召回；按条数 FIFO。 */
@@ -297,7 +320,9 @@ export function apply(ctx, config = {}) {
     }
 
     /** 召回：原文作为本次工具结果随请求带出去——不动历史节点，老消息前面的前缀缓存不受影响。 */
-    const recallText = (ids) => {
+    const recallText = (rawIds) => {
+      // 0 = 上一步全部（finalize 已经记下 lastBatch），-1/-2… = 最近的新旧序
+      const ids = resolveIds(rawIds, state.lastBatch, newestFirst(state))
       const blocks = []
       const missing = []
       for (const id of ids) {
@@ -328,6 +353,19 @@ export function apply(ctx, config = {}) {
       const pending = state.pending
       state.pending = null
       if (!pending || pending.items.length === 0) return
+      // 0 / -1 / -2… 在这里定点成具体 id：keep / slice / summarize 都按展开后的 id 判
+      const stepIds = pending.items.map((item) => item.id)
+      state.lastBatch = stepIds
+      const archiveIds = newestFirst(state)
+      const keep = new Set(resolveIds(decisions.keep, stepIds, archiveIds))
+      const summary = new Map()
+      for (const [id, text] of decisions.summary) {
+        for (const hit of resolveIds([id], stepIds, archiveIds)) summary.set(hit, text)
+      }
+      const slice = new Map()
+      for (const [id, spec] of decisions.slice) {
+        for (const hit of resolveIds([id], stepIds, archiveIds)) slice.set(hit, spec)
+      }
       queueMicrotask(() => {
         const session = agent.session
         let folded = 0
@@ -338,12 +376,12 @@ export function apply(ctx, config = {}) {
           if (!item.judged) {
             // 不参与决策的工具：只留头尾
             text = clip(item.text, headChars) + '\n…\n' + (item.text || '').slice(-tailChars)
-          } else if (decisions.slice.has(item.id)) {
-            text = sliceText(item, decisions.slice.get(item.id))
-          } else if (decisions.keep.has(item.id)) {
+          } else if (slice.has(item.id)) {
+            text = sliceText(item, slice.get(item.id))
+          } else if (keep.has(item.id)) {
             continue
-          } else if (decisions.summary.has(item.id)) {
-            text = `⟨summary #${item.id}⟩ ${clip(decisions.summary.get(item.id), 4000)}\n(raw #${item.id}: ${item.tool} ${item.label}, ${item.chars} chars — steward(recall:[${item.id}]) 取原文)`
+          } else if (summary.has(item.id)) {
+            text = `⟨summary #${item.id}⟩ ${clip(summary.get(item.id), 4000)}\n(raw #${item.id}: ${item.tool} ${item.label}, ${item.chars} chars — steward(recall:[${item.id}]) 取原文)`
           } else if (emptyStub) {
             text = ''
           } else {
