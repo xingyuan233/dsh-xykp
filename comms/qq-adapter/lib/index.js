@@ -1029,9 +1029,7 @@ export async function apply(ctx, config = {}) {
         }
         const names = (Array.isArray(pp.names) ? pp.names.slice() : Object.keys(pp.presets || {}))
         const chat = (await chatsNow(true))[key] || {}
-        let svc = null
-        try { svc = ctx.agents || ctx.get('agents') || null } catch { svc = null }
-        const agent = svc && chat.sessionId ? findAgent(svc, chat.sessionId) : null
+        const agent = chat.sessionId ? findAgent(agentsSvc, chat.sessionId) : null
         let now = ''
         try {
           now = agent ? pp.current(agent.session) : (pp.defaultPreset || '')
