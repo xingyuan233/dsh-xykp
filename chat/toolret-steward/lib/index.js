@@ -35,74 +35,88 @@ const warn = (...args) => console.warn(PREFIX, ...args)
 
 const TOOL_NAME = 'steward'
 
-const parameters = {
+// 用宿主的 defineTool 注册：wire 上只发一行 `params: (…)` + 散文，完整 schema 留在闭包里做校验。
+// 拿不到宿主包时退回「直接给完整 JSON Schema」，避免把 DSL 原样发给 provider（会 400）。
+let defineTool = (spec) => spec
+let wireSlim = false
+try {
+  const mod = await import('@deepseek-ai/dsh-tools')
+  if (mod && typeof mod.defineTool === 'function') {
+    defineTool = mod.defineTool
+    wireSlim = true
+  }
+} catch (error) {}
+
+const parametersDsl = {
+  keep: { type: 'array', items: { type: 'number' }, showDesc: false },
+  summarize: {
+    type: 'array',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'number' }, text: { type: 'string' } },
+    },
+    description: '[{id,text}]',
+  },
+  recall: { type: 'array', items: { type: 'number' }, showDesc: false },
+  sublines: {
+    type: 'array',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
+    },
+    description: '[{id,offset,limit}] lines',
+  },
+  subbytes: {
+    type: 'array',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
+    },
+    description: '[{id,offset,limit}] bytes',
+  },
+  silence: { type: 'number', showDesc: false },
+}
+
+const rangeItems = {
+  type: 'object',
+  additionalProperties: false,
+  properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
+  required: ['id'],
+}
+
+const parametersSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    keep: {
-      type: 'array',
-      items: { type: 'number' },
-      description: 'Result ids to keep as-is (from the steward notice).',
-    },
+    keep: { type: 'array', items: { type: 'number' }, description: 'ids' },
     summarize: {
       type: 'array',
       items: {
         type: 'object',
         additionalProperties: false,
-        properties: {
-          id: { type: 'number', description: 'Result id from the steward notice.' },
-          text: { type: 'string', description: 'Your summary to keep instead of the raw result.' },
-        },
+        properties: { id: { type: 'number' }, text: { type: 'string' } },
         required: ['id', 'text'],
       },
-      description: 'Replace these results with your own summary.',
+      description: '[{id,text}]',
     },
-    sublines: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          id: { type: 'number', description: 'Result id from the steward notice.' },
-          offset: { type: 'number', description: '0-based start line.' },
-          limit: { type: 'number', description: 'Max lines to keep (default: to the end).' },
-        },
-        required: ['id'],
-      },
-      description: 'Keep only a line range of these results (no summary needed).',
-    },
-    subbytes: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          id: { type: 'number', description: 'Result id from the steward notice.' },
-          offset: { type: 'number', description: '0-based start byte.' },
-          limit: { type: 'number', description: 'Max bytes to keep (default: to the end).' },
-        },
-        required: ['id'],
-      },
-      description: 'Keep only a byte range of these results (no summary needed).',
-    },
-    recall: {
-      type: 'array',
-      items: { type: 'number' },
-      description: 'Bring dropped results back by id (older steps included).',
-    },
-    silence: {
-      type: 'number',
-      description: 'Mute the next N notices (0 = keep them coming).',
-    },
+    recall: { type: 'array', items: { type: 'number' }, description: 'ids' },
+    sublines: { type: 'array', items: rangeItems, description: '[{id,offset,limit}] lines' },
+    subbytes: { type: 'array', items: rangeItems, description: '[{id,offset,limit}] bytes' },
+    silence: { type: 'number', description: 'N notices' },
   },
 }
 
+const parameters = wireSlim ? parametersDsl : parametersSchema
+
 function makeTool(takeRecall) {
-  return {
+  return defineTool({
     name: TOOL_NAME,
     description:
-      'Decide the fate of tracked tool results. Nothing = fold them to a ⟨dropped #id⟩ stub.\n' +
-      'keep: ids to keep whole; summarize: ids to replace with your text; recall: return old results as this call’s output (a new tagged result, folds next step unless kept); sublines/subbytes [{id,offset,limit}]: keep just that line/byte range of #id; silence: mute the next N notices.',
+      'Tool results of the previous step (ids in the notice). No args = fold to ⟨dropped #id⟩.\n' +
+      'keep keeps whole · summarize swaps in text · recall re-emits as a new tagged result (history untouched) · sublines/subbytes keep offset..offset+limit lines/bytes (0-based) · silence mutes N notices.',
     parameters,
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, text: { type: 'string' } } },
@@ -125,7 +139,7 @@ function makeTool(takeRecall) {
       if (got.lost.length) text += `\n未找到：${got.lost.map((id) => '#' + id).join(' ')}`
       return { ok: true, text }
     },
-  }
+  })
 }
 
 function clip(text, max) {
@@ -444,7 +458,7 @@ export function apply(ctx, config = {}) {
             const ids = items.map((item) => '#' + item.id).join(' ')
             const tail = state.silenceEnded ? '（silence 已结束）' : ''
             state.silenceEnded = false
-            return '[steward] 上一步结果 ' + ids + ' 默认折叠；keep永久保留,summarize概括保留,recall拿回之前' + tail
+            return '[steward] 上一步结果 ' + ids + ' 默认折叠；recall拿回之前,keep永久保留,summarize概括保留,sublines/bytes切片保留' + tail
           },
         }),
       )
@@ -457,7 +471,7 @@ export function apply(ctx, config = {}) {
           name: 'toolret-steward:howto',
           order: 1,
           text:
-            '工具结果：大结果在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +            '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])。\n' + 
+            '工具结果：大结果在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +            '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])；steward(sublines/subbytes:[{id,offest?=0,limit?=最后}])选择其中的某几行或某些。\n' + 
 			'这些工具可以和其他工具一起调用，可以一起调用，重要的就保留或概括。',
         }),
       )

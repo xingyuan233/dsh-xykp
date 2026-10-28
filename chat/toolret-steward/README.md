@@ -65,6 +65,13 @@ id 是**全局单调**的（不是每轮从 1 数），并且打在**结果本�
 - 模型只回文本、不调工具时，pending 按「默认折叠」处理；
 - 依赖宿主事件 `session/event`、`systemPrompt.context` / `systemPrompt.section`，DSH 大版本升级后要复核。
 
+## 工具定义（wire 形态）
+
+走宿主 `defineTool`（`patches\core\tool-wire-slim.md`）：发给模型的只有一行
+`params: (keep?; summarize?<[{id,text}]; recall?; sublines?<[{id,offset,limit}] lines; subbytes?<…> bytes; silence?)`
+加两行散文，完整 JSON Schema 留在闭包里做校验。拿不到宿主 `@deepseek-ai/dsh-tools` 时自动退回
+「直接发完整 JSON Schema」（自测/离线环境），不会把 DSL 原样发出去。
+
 ## 文件
 
 - `lib/index.js` —— 插件主体（挂 agent、注册 `steward` 工具、打标、通知、折叠与召回）
