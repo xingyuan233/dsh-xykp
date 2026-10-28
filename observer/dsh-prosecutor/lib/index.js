@@ -12,6 +12,7 @@
 //
 // 另外给 prosecutor 进程提供一个本地端点，让它能把消息发进会话：
 //   POST /dsh-prosecutor/send { session, text } → agents.get(sid).followup(...)
+//   POST /dsh-prosecutor/send { preset, text }  → 按预设新开一个对话再 followup（binder 查不到的预设走这条）
 //
 // 出任何错只记日志，绝不拖死宿主。
 import net from 'node:net'
@@ -24,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 export const name = 'dsh-prosecutor'
-export const inject = ['timer', 'webServer', 'agents']
+export const inject = ['timer', 'webServer', 'agents', 'sessionController', 'agentPresets']
 
 const PREFIX = '[dsh-prosecutor]'
 const log = (...a) => console.log(PREFIX, ...a)
@@ -54,6 +55,8 @@ export const DEFAULTS = {
   dshPort: 3080,
   // 哈希文件，空 = <DSH_HOME>/xykp/prosecutor/.prosecutor-hash
   hashPath: '',
+  // /notify -p 找不到绑定对话时新开对话用的工作目录；空 = <DSH_HOME>/../workspaces/default-workspace
+  newSessionCwd: '',
   dryRun: false,
 }
 
@@ -327,9 +330,39 @@ export function apply(ctx, config = {}) {
               return sendJson(res, 200, { ok: false, reason: '请求不是合法 JSON' })
             }
             const session = String(b.session || '').trim()
+            const preset = String(b.preset || '').trim()
             const text = String(b.text || '').trim()
-            if (!session) return sendJson(res, 200, { ok: false, reason: '没给 session' })
             if (!text) return sendJson(res, 200, { ok: false, reason: '没给消息' })
+
+            // 只给了预设（-p 在 binder 里查不到，或那个预设没有绑定的对话）→ 按预设新开一个对话再发
+            if (!session && preset) {
+              if (!ctx.sessionController || !ctx.agentPresets) {
+                return sendJson(res, 200, { ok: false, reason: '宿主没装 sessionController/agentPresets，开不了新对话' })
+              }
+              try {
+                const resolved = (await ctx.agentPresets.resolve(preset)).id
+                const cwd = cfg.newSessionCwd || join(home(), '..', 'workspaces', 'default-workspace')
+                const { agent } = await ctx.sessionController.createSession({ cwd, agentPreset: resolved })
+                const message = createUserMessage({
+                  content: [{ type: 'text', text }],
+                  source: { kind: 'plugin:dsh-prosecutor' },
+                })
+                await agent.followup(message)
+                return sendJson(res, 200, { ok: true, via: 'created', session: agent.id, agentPreset: resolved })
+              } catch (err) {
+                if (err?.code === 'agent-preset/not-found') {
+                  const avail = err?.details?.available
+                  return sendJson(res, 200, {
+                    ok: false,
+                    reason:
+                      '没有这个预设：' + preset + (Array.isArray(avail) && avail.length ? '（可用：' + avail.join('、') + '）' : ''),
+                  })
+                }
+                return sendJson(res, 200, { ok: false, reason: '新建对话失败：' + (err?.message || err) })
+              }
+            }
+
+            if (!session) return sendJson(res, 200, { ok: false, reason: '没给 session' })
 
             // 会话 id 有带/不带 session- 前缀两种写法，都试一遍
             const ids = [session]

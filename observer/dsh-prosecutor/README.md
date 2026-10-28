@@ -30,6 +30,7 @@
     checkIntervalMinutes: 0 # 每隔多少分钟检查 DSH 存活（0 = 不主动检查）
     dshPort: 3080
     hashPath: ''            # 空 = <DSH_HOME>/xykp/prosecutor/.prosecutor-hash
+    newSessionCwd: ''       # -p 开新对话用的目录（空 = <DSH_HOME>/../workspaces/default-workspace）
     dryRun: false
 ```
 
@@ -42,6 +43,11 @@
 3. **消息端点**：`POST /dsh-prosecutor/send {session, text}` —— prosecutor 的 `/notify -m` 用它在宿主里
    `agent.followup(createUserMessage(...))` 把话塞进会话（带 `source.kind: plugin:dsh-prosecutor`，
    不然会话 projection 会崩，见 bili-reply 那次事故）。
+4. **`/notify -p <预设>`**：先查 preset-binder 的绑定表，有 active 对话就发过去；
+   查不到（`standard/ptc/minimal/cordis` 这些内置预设被 preset-binder 的 `ignore` 列表过滤，永远不进表）
+   或那个预设没有绑定对话时，走 `POST /dsh-prosecutor/send {preset, text}` ——
+   宿主用 `agentPresets.resolve` 验预设（不存在就回「没有这个预设」+ 可用列表），
+   再 `sessionController.createSession({ cwd, agentPreset })` 新开一个对话，然后把消息塞进去。
 
 ## 自测
 

@@ -325,6 +325,7 @@ async function doNotify(origin, parsed = {}) {
 
     // ② 找会话：按 -p / -s 出现的顺序试，第一个找到的用
     let target = null;
+    let createPreset = null; // -p 找不到绑定对话时记下预设，交给宿主按预设新开一个对话
     const tries = [];
     for (const [flag, value] of parsed.ops || []) {
       const v = String(value || '').trim();
@@ -332,14 +333,18 @@ async function doNotify(origin, parsed = {}) {
       if (flag === '-p') {
         const pid = findPreset(v);
         if (!pid) {
-          tries.push('-p ' + v + '：没找到这个预设');
-          continue;
+          // 内置预设（standard/ptc/minimal/cordis）被 preset-binder 的 ignore 列表过滤，
+          // 永远不进绑定表 —— 直接让宿主按预设新开一个对话
+          tries.push('-p ' + v + '：绑定表里没有（内置预设不跟踪），新开一个对话');
+          createPreset = v;
+          break;
         }
         const b = readBinder();
         const active = b && b.presets && b.presets[pid] && b.presets[pid].active;
         if (!active) {
-          tries.push('-p ' + v + '（' + pid + '）：这个预设没有绑定的对话');
-          continue;
+          tries.push('-p ' + v + '（' + pid + '）：这个预设没有绑定的对话，新开一个');
+          createPreset = pid;
+          break;
         }
         target = listSessions().find((s) => s.sid === active) || { sid: active, title: '' };
         break;
@@ -359,15 +364,20 @@ async function doNotify(origin, parsed = {}) {
     const message = String(parsed.message || '').trim();
     if (!message) {
       lines.push('消息：没给 -m，没发');
-    } else if (!target) {
-      lines.push('消息：没给 -p/-s（或都没找到），没发' + (tries.length ? '\n' + tries.join('\n') : ''));
     } else if (!dshOk) {
       lines.push('消息：DSH 没起来，没法发');
-    } else {
+    } else if (target) {
       const r = await postSend(target.sid, message);
       lines.push(r.ok
         ? '消息：已发送到「' + (target.title || target.sid) + '」'
         : '消息：发送失败（' + (r.reason || '？') + '）');
+    } else if (createPreset) {
+      const r = await postCreate(createPreset, message);
+      lines.push(r.ok
+        ? '消息：已新开「' + (r.agentPreset || createPreset) + '」对话并发送（' + (r.session || '?') + '）'
+        : '消息：新建对话没成（' + (r.reason || '？') + '）');
+    } else {
+      lines.push('消息：没给 -p/-s（或都没找到），没发' + (tries.length ? '\n' + tries.join('\n') : ''));
     }
 
     const body = `【prosecutor ${new Date().toLocaleString('zh-CN')}】\n` + lines.join('\n');
@@ -515,11 +525,11 @@ function findSession(name) {
 }
 
 // ---------- 发消息到会话（走 dsh-prosecutor 插件的本地端点）----------
-function postSend(session, text) {
+function postJson(payload, timeoutMs = 15000) {
   return new Promise((resolve) => {
     let url;
     try { url = new URL(cfg.sendEndpoint); } catch { return resolve({ ok: false, reason: 'sendEndpoint 配错了' }); }
-    const body = Buffer.from(JSON.stringify({ session, text }), 'utf8');
+    const body = Buffer.from(JSON.stringify(payload), 'utf8');
     const mod = url.protocol === 'http:' ? import_http() : import_https();
     Promise.resolve(mod).then((m) => {
       let done = false;
@@ -543,12 +553,19 @@ function postSend(session, text) {
           },
         );
         req.on('error', (e) => finish({ ok: false, reason: '连不上 DSH 插件端点：' + e.message }));
-        req.setTimeout(15000, () => { try { req.destroy(); } catch {} finish({ ok: false, reason: '插件端点 15s 没回应' }); });
+        req.setTimeout(timeoutMs, () => { try { req.destroy(); } catch {} finish({ ok: false, reason: '插件端点 ' + Math.round(timeoutMs / 1000) + 's 没回应' }); });
         req.end(body);
       } catch (e) { finish({ ok: false, reason: '发请求失败：' + e.message }); }
     });
   });
 }
+
+// 发到已有会话
+const postSend = (session, text) => postJson({ session, text });
+
+// -p 在 binder 里查不到（内置预设被 preset-binder 的 ignore 列表过滤掉了）或那个预设没有绑定对话：
+// 让宿主按这个预设新开一个对话，再把消息塞进去；预设不存在时宿主回「没有这个预设」
+const postCreate = (preset, text) => postJson({ preset, text });
 
 // ---------- 分发 ----------
 // 只认 /check、/notify 开头的消息。
