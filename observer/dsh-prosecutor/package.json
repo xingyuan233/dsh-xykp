@@ -2,7 +2,7 @@
   "name": "dsh-prosecutor",
   "version": "0.1.0",
   "private": true,
-  "description": "把 tools/prosecutor 变成插件：启动时/定时探活，没在跑就分离启动（dsh 挂了它不能挂）。",
+  "description": "把 prosecutor 变成插件（程序随插件包走）：启动时/定时探活，没在跑就分离启动（dsh 挂了它不能挂）。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

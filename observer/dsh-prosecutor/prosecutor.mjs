@@ -15,14 +15,14 @@
 // 包内版（2026-10-27）：脚本和 config.json 跟着插件包走；
 // 日志 / 状态 / pid 放 <DSH_HOME>/prosecutor/，不往 node_modules 里写。
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home';
-const RUN_DIR = join(HOME, 'prosecutor');
+const RUN_DIR = join(HOME, 'xykp', 'prosecutor');
 const CFG_PATH = join(HERE, 'config.json');
 const LOG_PATH = join(RUN_DIR, 'prosecutor.log');
 const STATE_PATH = join(RUN_DIR, 'state.json');
@@ -182,20 +182,6 @@ async function startDsh(reason, opts = {}) {
   });
 }
 
-function startSentinel(reason) {
-  log('动作：拉起哨兵（' + reason + '）');
-  const cmd = `cmd.exe /c "${cfg.sentinelScript}"`;
-  const ps = `$r = ([wmiclass]"Win32_Process").Create(${JSON.stringify(cmd)}, ${JSON.stringify(cfg.sentinelDir)}); Write-Output $r.ReturnValue`;
-  try {
-    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', timeout: 25000, windowsHide: true });
-    log('哨兵 WMI 返回 ' + String(out).trim());
-    return String(out).trim() === '0';
-  } catch (e) {
-    log('拉起哨兵失败: ' + e.message);
-    return false;
-  }
-}
-
 async function waitForPort(port, ms) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -223,13 +209,6 @@ async function doCheck(origin) {
         ? 'DSH：没在跑 → 已重启并确认在线'
         : 'DSH：没在跑 → 重启已发起，但 ' + Math.round(waitMs / 1000) + ' 秒内没起来，看 restart-status.log');
     }
-  }
-  const sentinelOk = await isPortOpen(cfg.sentinelPort);
-  if (sentinelOk) {
-    lines.push('哨兵：活着');
-  } else {
-    lines.push('哨兵：没在跑，已拉起');
-    startSentinel(origin);
   }
   const body = `【prosecutor ${new Date().toLocaleString('zh-CN')}】\n${lines.join('\n')}`;
   await notify('prosecutor 检查结果', body, 'white_check_mark,robot');
@@ -454,9 +433,8 @@ function runPowerShell(script, timeoutMs = 120000) {
 async function scriptLevelCheck() {
   const lines = [];
   const dsh = await isPortOpen(cfg.dshPort);
-  const sent = await isPortOpen(cfg.sentinelPort);
   const me = await isPortOpen(cfg.lockPort);
-  lines.push(`DSH(3080)=${dsh ? 'ok' : 'DOWN'}  哨兵(39998)=${sent ? 'ok' : 'DOWN'}  prosecutor(39997)=${me ? 'ok' : 'DOWN'}`);
+  lines.push(`DSH(${cfg.dshPort})=${dsh ? 'ok' : 'DOWN'}  prosecutor(${cfg.lockPort})=${me ? 'ok' : 'DOWN'}`);
 
   const tailOf = (file, n) => {
     try {
@@ -467,15 +445,11 @@ async function scriptLevelCheck() {
       return [];
     }
   };
-  const sentinelTail = tailOf('D:\\AI\\DeepseekHarness\\tools\\sentinel\\sentinel.log', 20);
-  const sentFail = sentinelTail.filter((l) => /探测失败|kill 失败|tick 异常|ntfy error/.test(l)).length;
-  lines.push(`哨兵最近 20 行：失败/异常 ${sentFail} 条`);
+  const logTail = tailOf(LOG_PATH, 20);
+  const logFail = logTail.filter((l) => /失败|异常|error/i.test(l)).length;
+  lines.push(`prosecutor 最近 20 行：失败/异常 ${logFail} 条`);
 
-  const napcatTail = tailOf('D:\\AI\\DeepseekHarness\\tools\\NapCat\\napcat.run.log', 40);
-  const napcatErr = napcatTail.filter((l) => /\[error\]|Login Error|异常/.test(l)).length;
-  lines.push(`NapCat 最近 40 行：error ${napcatErr} 条`);
-
-  const tasksDir = 'D:\\AI\\DeepseekHarness\\home\\tasks';
+  const tasksDir = join(HOME, 'tasks');
   let pending = [];
   try {
     pending = readdirSync(tasksDir).filter((f) => /\.(todo|pending)\.md$/i.test(f));
@@ -718,12 +692,11 @@ if (argv.includes('--once') || argv.includes('--selftest')) {
   const selftest = argv.includes('--selftest');
   log('单次模式 selftest=' + selftest);
   const dsh = await isPortOpen(cfg.dshPort);
-  const sent = await isPortOpen(cfg.sentinelPort);
-  console.log('DSH(3080)=' + dsh + '  sentinel(39998)=' + sent);
+  console.log('DSH(' + cfg.dshPort + ')=' + dsh);
   if (selftest) {
     console.log('selftest：不发通知、不重启任何服务');
   } else {
-    console.log(JSON.stringify({ dsh, sentinel: sent }));
+    console.log(JSON.stringify({ dsh }));
   }
   process.exit(0);
 }

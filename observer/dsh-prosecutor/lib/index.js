@@ -1,7 +1,7 @@
 // dsh-prosecutor · 宿主半边
 //
 // 需求（任务-2026-10-27.md 第六节 / 2026-10-27 晚补）：
-//   把 tools 里的 prosecutor 变成插件 —— 让它能跟着宿主自己启动；
+//   把 prosecutor 变成插件（程序随插件包走）—— 让它能跟着宿主自己启动；
 //   但进程本身必须 **分离启动**（detached），dsh 挂了它不能跟着挂。
 //
 // 插件做四件事：
@@ -52,7 +52,7 @@ export const DEFAULTS = {
   machineId: '',
   // DSH 的端口（检查存活用）
   dshPort: 3080,
-  // 哈希文件，空 = <DSH_HOME>/prosecutor/.prosecutor-hash
+  // 哈希文件，空 = <DSH_HOME>/xykp/prosecutor/.prosecutor-hash
   hashPath: '',
   dryRun: false,
 }
@@ -60,7 +60,7 @@ export const DEFAULTS = {
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
 
 // ⭐ 2026-10-27：prosecutor 主程序跟着插件包走（observer/dsh-prosecutor/prosecutor.mjs），
-// 不再依赖 <DSH_HOME>/../tools/prosecutor —— tools 里那份只当参考
+// 数据（日志 / pid / state / 哈希）在 <DSH_HOME>/xykp/prosecutor/
 const 包目录 = fileURLToPath(new URL('../', import.meta.url))
 
 export function defaultScriptPath() {
@@ -140,8 +140,8 @@ export function envFor(cfg = {}) {
 export function spawnDetached(opts) {
   const script = opts.scriptPath || defaultScriptPath()
   const node = opts.nodePath || process.execPath
-  // 日志写到 <DSH_HOME>/prosecutor/，不往 node_modules 包里写
-  const logDir = join(home(), 'prosecutor')
+  // 日志写到 <DSH_HOME>/xykp/prosecutor/，不往 node_modules 包里写
+  const logDir = join(home(), 'xykp', 'prosecutor')
   try {
     mkdirSync(logDir, { recursive: true })
   } catch {
@@ -174,7 +174,7 @@ export function spawnDetached(opts) {
 
 // ---------- 哈希（脚本 + config.json + 关键配置）----------
 function hashPathOf(cfg, script) {
-  return cfg.hashPath || join(home(), 'prosecutor', '.prosecutor-hash')
+  return cfg.hashPath || join(home(), 'xykp', 'prosecutor', '.prosecutor-hash')
 }
 
 export function hashOf(cfg = {}, scriptPath = '') {

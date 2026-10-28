@@ -1,7 +1,9 @@
 # dsh-prosecutor
 
-把 `tools/prosecutor` 变成插件（清单里的 `observer/dsh-prosecutor`）：
+把 `prosecutor.mjs` 变成插件（清单里的 `observer/dsh-prosecutor`）：
 **宿主启动时探一下它在不在，不在就拉起来；之后每 10 分钟再探一次。**
+
+数据（日志 / pid / state / 哈希）放在 `<DSH_HOME>/xykp/prosecutor/`。
 
 ## 关键点
 
@@ -17,7 +19,7 @@
   name: dsh-xykp/observer/dsh-prosecutor
   config:
     port: 39997
-    scriptPath: ''          # 空 = <DSH_HOME>/../tools/prosecutor/prosecutor.mjs
+    scriptPath: ''          # 空 = 插件包内的 prosecutor.mjs
     nodePath: ''            # 空 = 当前 node 的 execPath
     probeTimeoutMs: 1500
     intervalMinutes: 10     # 多久探一次「prosecutor 还在不在」
@@ -27,7 +29,7 @@
     machineId: ''           # 机器标识（指令后面跟的标识要跟它一样）
     checkIntervalMinutes: 0 # 每隔多少分钟检查 DSH 存活（0 = 不主动检查）
     dshPort: 3080
-    hashPath: ''            # 空 = <scriptDir>/.prosecutor-hash
+    hashPath: ''            # 空 = <DSH_HOME>/xykp/prosecutor/.prosecutor-hash
     dryRun: false
 ```
 
