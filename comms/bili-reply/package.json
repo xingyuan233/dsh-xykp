@@ -1,6 +1,6 @@
 {
   "name": "dsh-bili-reply",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "B站回复推送：绑定预设/会话（预设优先），定时拉 @ 和回复，新条目推到绑定会话。",
   "type": "module",

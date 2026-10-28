@@ -90,7 +90,7 @@ export function createFetcher(cfg = {}, factory) {
 
     // ── 昵称缓存：at/reply 自带昵称，私信没有就从缓存/接口补 ──
     try {
-      const cachePath = cfg.namesCachePath || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'bili-duty', 'names-cache.json')
+      const cachePath = cfg.namesCachePath || join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'xykp', 'bilibili', 'names-cache.json')
       const cache = await loadCache(cachePath)
       let dirty = false
       for (const it of out) {

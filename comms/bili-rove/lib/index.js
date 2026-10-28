@@ -9,7 +9,7 @@
 //   · 不做自动刷、不做定时轮询 —— 什么时候刷由我自己判断
 //   · 不做自动回复 —— 那是 bili-reply 的事
 //   · 读操作 cookie 失效可以回退匿名；写操作**绝不重试**（避免重复发评论/私信）
-//   · cookie / 凭证 / 配置都只读写 <DSH_HOME>/bili-duty 里的数据文件
+//   · cookie / 凭证 / 配置都只读写 <DSH_HOME>/xykp/bilibili 里的数据文件
 import { DEFAULTS as FALLBACK_DEFAULTS } from './fallback.js'
 import { DEFAULTS as ACCOUNT_DEFAULTS, resolveCookie, readCredential, cookieOf, dataDirOf } from './account.js'
 import { DEFAULTS as NTFY_DEFAULTS } from './ntfy.js'
@@ -124,7 +124,7 @@ export function apply(ctx, config = {}) {
   // ── bili_login ───────────────────────────────────────────────────────────
   ctx.tools.register(defineTool({
     name: 'bili_login',
-    description: 'B站扫码登录：qr = 生成二维码并推 ntfy（whale-bilibili-login-channel），然后等扫码；check = 检查当前凭证是否有效。cookie 失效时先调这个。',
+    description: 'B站扫码登录：qr 生成二维码推 ntfy（whale-bilibili-login-channel）后等扫码，check 查凭证。cookie 失效时先调这个。',
     parameters: {
       action: {
         type: 'string',
@@ -156,38 +156,39 @@ export function apply(ctx, config = {}) {
   // ── bili_rove ────────────────────────────────────────────────────────────
   ctx.tools.register(defineTool({
     name: 'bili_rove',
-    description:
-      'B站主动操作（带 cookie）：search 搜视频 / video 详情 / subtitles 字幕 / frames 截帧 / comments 评论 / danmaku 弹幕 / ' +
-      'user 用户资料 / user_videos 用户投稿 / favorites 收藏夹 / hot 热门 / rank 排行 / reply 回评论 / dm 私信（带 text 发、不带读）/ ' +
-      'dm_sessions 私信会话 / dm_recent 读私信 / triple 点赞投币收藏 / dynamic 发动态 / received_at 收到的@ / received_replies 收到的回复 / crawl 批量扫。' +
-      'frames 会把真帧作为图片返回（meta.source 是 preview/videoshot 才是真帧，cover 只是封面）。',
+    description: [
+      'B站操作（带 cookie）。action 决定做什么，括号里是它要带的参数：',
+      '读 —— search(keyword,page,pageSize,order) / video、subtitles、comments、danmaku(bvid) / frames(bvid,count,mode) / user、user_videos(uid) / favorites(uid,mediaId) / hot / rank(rid) / received_at / received_replies / crawl(keyword,maxVideos,commentsPerVideo,getSubtitles)',
+      '写 —— reply(bvid,rpid,root,text) / dm(uid,text；不带 text 读) / dm_sessions(size) / dm_recent(size,pages) / triple(bvid,mode,coinNum) / dynamic(text)',
+      'frames 返回真帧图片，meta.source 是 preview/videoshot 才是真帧（cover 只是封面）。',
+    ].join('\n'),
     parameters: {
       action: {
         type: 'string',
         required: true,
         enum: [...READ_ACTIONS, 'reply', 'dm', 'triple', 'dynamic'],
-        description: '要做的操作',
+        description: '要做什么',
       },
-      keyword: { type: 'string', description: 'search / crawl 的关键词' },
-      bvid: { type: 'string', description: 'video / subtitles / frames / comments / danmaku / reply / triple 用的 BV 号（reply/triple 也接受纯数字 aid）' },
-      uid: { type: 'string', description: 'user / user_videos / favorites / dm 用的 UID' },
-      mediaId: { type: 'number', description: 'favorites 查某个收藏夹内容时用' },
-      rpid: { type: 'string', description: 'reply 要回的评论 rpid（楼中楼）' },
-      root: { type: 'string', description: 'reply 的楼层根 rpid（一般不用填）' },
-      text: { type: 'string', description: 'reply / dm / dynamic 要发的内容' },
+      keyword: { type: 'string', description: 'search / crawl' },
+      bvid: { type: 'string', description: 'BV 号（reply/triple 也收纯数字 aid）' },
+      uid: { type: 'string', description: 'user / user_videos / favorites / dm' },
+      mediaId: { type: 'number', description: 'favorites 收藏夹 id' },
+      rpid: { type: 'string', description: 'reply 要回的评论' },
+      root: { type: 'string', description: 'reply 楼层根（一般不用填）' },
+      text: { type: 'string', description: 'reply / dm / dynamic 内容' },
       mode: { type: 'string', description: 'frames: auto/extract；triple: like/coin/fav/like_fav/triple' },
-      count: { type: 'number', description: 'frames 取几帧（1-12，默认 8）' },
-      num: { type: 'number', description: 'comments / danmaku 取多少条' },
-      page: { type: 'number', description: '翻页（默认 1）' },
-      pageSize: { type: 'number', description: '每页多少' },
-      order: { type: 'string', description: 'search / user_videos 的排序' },
-      size: { type: 'number', description: 'dm_sessions / dm_recent 的条数' },
-      pages: { type: 'number', description: 'dm_recent 往前翻几页' },
-      rid: { type: 'number', description: 'rank 的分区 id（0 = 全站）' },
-      coinNum: { type: 'number', description: 'triple 投币枚数（1-2）' },
-      maxVideos: { type: 'number', description: 'crawl 扫几条视频' },
-      commentsPerVideo: { type: 'number', description: 'crawl 每条视频读几条评论' },
-      getSubtitles: { type: 'boolean', description: 'crawl 要不要读字幕（默认 true）' },
+      count: { type: 'number', description: 'frames 1-12（默认 8）' },
+      num: { type: 'number', description: 'comments / danmaku 条数' },
+      page: { type: 'number', description: '页码（默认 1）' },
+      pageSize: { type: 'number', description: '每页条数' },
+      order: { type: 'string', description: 'search / user_videos 排序' },
+      size: { type: 'number', description: 'dm_sessions / dm_recent 条数' },
+      pages: { type: 'number', description: 'dm_recent 往前翻' },
+      rid: { type: 'number', description: 'rank 分区（0 = 全站）' },
+      coinNum: { type: 'number', description: 'triple 投币 1-2' },
+      maxVideos: { type: 'number', description: 'crawl 视频数' },
+      commentsPerVideo: { type: 'number', description: 'crawl 每条视频评论数' },
+      getSubtitles: { type: 'boolean', description: 'crawl 读字幕（默认 true）' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: {} },

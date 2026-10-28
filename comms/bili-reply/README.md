@@ -27,7 +27,7 @@ B 站「被回复 / 被 @ / 收到私信」这一半（清单里的 `comms/bili-
     tickMinutes: 3             # 处理间隔（分钟）
     maxQueue: 120              # 本地队列最多留几条
     keepUids: [3546798887013093]   # 这些 B站 uid 的条目不会被随机淘汰（默认主人自己）
-    queuePath: ''              # 空 = <DSH_HOME>/bili-duty/reply-queue.json
+    queuePath: ''              # 空 = <DSH_HOME>/xykp/bilibili/reply-queue.json
     namesTtlHours: 168         # 昵称缓存有效期（小时）
     namesMaxFetchPerRun: 5     # 每轮（拉取时补名 / 后台重读）最多查几个新昵称
     namesRefreshBatch: 0       # 后台重读每批查几个（0 = 跟 namesMaxFetchPerRun 一样）

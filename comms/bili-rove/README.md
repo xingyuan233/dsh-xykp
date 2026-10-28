@@ -52,24 +52,24 @@ B 站**主动**那半边（清单里的 `comms/bili-rove`，原名 walk，改成
 
 ## 数据（只碰数据，不碰代码）
 
-默认目录 `<DSH_HOME>/bili-duty`：
+默认目录 `<DSH_HOME>/xykp/bilibili`（`dataDir` 可覆盖）：
 
 | 文件 | 用途 |
 |---|---|
 | `bili_credential.json` | 登录凭证（`sessdata`/`bili_jct`/`buvid3`/`dedeuserid`） |
 | `bili-login-state.json` | 上次登录检查 / 推送限流状态 |
-| `config.json` | 旧配置（留着，bili-reply 等还读） |
 | `names-cache.json` | 昵称缓存（bili-reply 用） |
-| `out/` | 历史报告（bili-reply / 刷 B 站留下的数据） |
+| `reply-queue.json` | 待推送队列（bili-reply 用） |
 
-`dataDir` 可以覆盖；凭证读取优先级：**配置 `cookie` > 环境变量 `BILIBILI_SESSDATA` > `bili_credential.json`**。
+凭证读取优先级：**配置 `cookie` > 环境变量 `BILIBILI_SESSDATA` > `bili_credential.json`**。
+bili-reply 读的是同一个文件，没有第二份存储。
 
 ## 配置
 
 ```yaml
 - id: bili-rove
   config:
-    dataDir: ''                    # 空 = <DSH_HOME>/bili-duty
+    dataDir: ''                    # 空 = <DSH_HOME>/xykp/bilibili
     cookie: ''                     # 直接写死（不推荐）
     cookieEnv: BILIBILI_SESSDATA   # 环境变量名
     ntfyTopic: whale-bilibili-login-channel

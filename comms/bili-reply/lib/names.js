@@ -3,7 +3,7 @@
 // 需求（2026-10-27 10:50）：缓存 uid 到昵称，每条记时间；过了 TTL 可以更新；
 // 再给一个「手动重置缓存（重读一遍）」的接口。
 //
-// 缓存文件默认 <DSH_HOME>/bili-duty/names-cache.json：
+// 缓存文件默认 <DSH_HOME>/xykp/bilibili/names-cache.json：
 //   { "501919726": { "name": "星鸢233", "at": 1793068800000 } }
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'

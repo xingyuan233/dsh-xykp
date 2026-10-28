@@ -1,5 +1,6 @@
 // bili-reply · 读 cookie
-// 优先级：配置 > 环境变量 BILIBILI_SESSDATA > bili-duty/bili_credential.json > tools/bili-bot/cookie.json
+// 唯一存储位置：<DSH_HOME>/xykp/bilibili/bili_credential.json
+// 覆盖顺序：配置 cookie > 环境变量 BILIBILI_SESSDATA > 上面的凭证文件
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -7,10 +8,15 @@ import { join } from 'node:path'
 export const DEFAULTS = {
   cookie: '',
   cookieEnv: 'BILIBILI_SESSDATA',
-  dutyConfigPath: '',
+  // 凭证文件（空 = <DSH_HOME>/xykp/bilibili/bili_credential.json）
+  credPath: '',
 }
 
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
+
+export const credPathOf = (cfg = {}) =>
+  String(cfg.credPath || cfg.dutyConfigPath || '').trim() ||
+  join(home(), 'xykp', 'bilibili', 'bili_credential.json')
 
 async function readJson(path, fallback) {
   try {
@@ -40,12 +46,6 @@ export async function resolveCookie(cfg = {}) {
   const fromEnv = String(process.env[env] || '').trim()
   if (fromEnv) return fromEnv
 
-  const dutyPath = cfg.dutyConfigPath || join(home(), 'bili-duty', 'bili_credential.json')
-  const duty = await readJson(dutyPath, null)
-  const fromDuty = fromCredential(duty)
-  if (fromDuty) return fromDuty
-
-  const botPath = cfg.botCookiePath || join(home(), '..', 'tools', 'bili-bot', 'cookie.json')
-  const bot = await readJson(botPath, null)
-  return fromCredential(bot)
+  const cred = await readJson(credPathOf(cfg), null)
+  return fromCredential(cred)
 }

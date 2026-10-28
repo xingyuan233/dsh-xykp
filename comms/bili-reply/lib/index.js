@@ -49,7 +49,7 @@ export const DEFAULTS = {
   // （2026-10-27：refresh 从「一次最多 5 个」改成排队分批，直到全查完）
   namesRefreshBatch: 0,
   namesRefreshEveryMinutes: 2,
-  // 本地队列文件，空 = <DSH_HOME>/bili-duty/reply-queue.json
+  // 本地队列文件，空 = <DSH_HOME>/xykp/bilibili/reply-queue.json
   queuePath: '',
   // 拉哪几路：at（@ 我的）/ reply（回复我的）
   kinds: ['at', 'reply', 'dm'],
@@ -131,7 +131,7 @@ async function tick(ctx, cfg, deps) {
   if (!target.sessionId) {
     return { skipped: true, reason: target.reason || '没有绑定目标' }
   }
-  const queuePath = cfg.queuePath || join(home(), 'bili-duty', 'reply-queue.json')
+  const queuePath = cfg.queuePath || join(home(), 'xykp', 'bilibili', 'reply-queue.json')
   const q = await deps.loadQueue(queuePath, cfg.queueName)
 
   // 队列里早前没查到昵称的（私信不带昵称），缓存里现在有了就直接补上
@@ -189,7 +189,7 @@ export function apply(ctx, config = {}) {
   // 以前 refresh 是一次请求里最多查 5 个（namesMaxFetchPerRun 挡住），查不完还得再点。
   // 现在 refresh 只负责「把全部标过期 + 排队」，真正的查名字在后台一批一批做，
   // 每批 namesRefreshBatch 个、隔 namesRefreshEveryMinutes 分钟，直到查完（每批失败的最多重试 3 批）。
-  const namesPath = () => cfg.namesCachePath || join(home(), 'bili-duty', 'names-cache.json')
+  const namesPath = () => cfg.namesCachePath || join(home(), 'xykp', 'bilibili', 'names-cache.json')
   const 重读批大小 = () => Math.max(1, Number(cfg.namesRefreshBatch) || Number(cfg.namesMaxFetchPerRun) || 5)
   const 重读间隔分钟 = () => Math.max(0.05, Number(cfg.namesRefreshEveryMinutes) || 2)
   const 待重读 = new Set()
@@ -264,7 +264,7 @@ export function apply(ctx, config = {}) {
       if (String(c.source || 'bili') === 'none') return fetchItemsNone()
       const cookie = await resolveCookie(c)
       if (!cookie) {
-        warn('没有 cookie，这一轮不拉（配置 cookie / 环境变量 / bili-duty/config.json 都空）')
+        warn('没有 cookie，这一轮不拉（配置 cookie / 环境变量 / xykp/bilibili/bili_credential.json 都空）')
         return []
       }
       return fetcher({ cookie, kinds: c.kinds })

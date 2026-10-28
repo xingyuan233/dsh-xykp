@@ -1,6 +1,6 @@
 // bili-rove · 账号数据
 //
-// 只碰 <DSH_HOME>/bili-duty 里的**数据文件**（凭证 / 配置 / 缓存），
+// 只碰 <DSH_HOME>/xykp/bilibili 里的**数据文件**（凭证 / 配置 / 缓存），
 // 不再依赖 tools/bili-bot 或 duty 里的 Python 脚本。
 //
 // 凭证格式沿用 B站 MCP 的四个字段（小写）：
@@ -10,7 +10,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const DEFAULTS = {
-  // 数据目录（空 = <DSH_HOME>/bili-duty）
+  // 数据目录（空 = <DSH_HOME>/xykp/bilibili）
   dataDir: '',
   // 直接写死的 cookie（不推荐）
   cookie: '',
@@ -22,7 +22,7 @@ export const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
 
 export function dataDirOf(cfg = {}) {
   const literal = String(cfg.dataDir || '').trim()
-  return literal || join(home(), 'bili-duty')
+  return literal || join(home(), 'xykp', 'bilibili')
 }
 
 export const credPathOf = (cfg = {}) => join(dataDirOf(cfg), 'bili_credential.json')
@@ -78,7 +78,7 @@ export const csrfOf = (cred) => String((cred && cred.bili_jct) || '')
 export const uidOf = (cred) => Number((cred && cred.dedeuserid) || 0)
 
 /**
- * cookie 读取优先级：配置 > 环境变量 > bili-duty/bili_credential.json。
+ * cookie 读取优先级：配置 > 环境变量 > xykp/bilibili/bili_credential.json。
  * 返回 cookie 字符串（可能是空串）。
  */
 export async function resolveCookie(cfg = {}) {
