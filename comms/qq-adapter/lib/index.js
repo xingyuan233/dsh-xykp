@@ -569,10 +569,12 @@ export async function apply(ctx, config = {}) {
       } catch (err) { warn('把新会话挂进工作区失败：', err?.message || err) }
       await setChatSession(key, real, { preset, boundBy: 'preset' })
       // 这个聊天里设过的权限预设，/new 出来的新会话也照用（没设就什么都不做）
+      // ⚠ pp.set 要的是 session 对象（内部会 session.append + permissionState），给 id 会炸
       try {
         const wantPerm = prefs && prefs.permission
-        const pp = wantPerm ? ctx.get('permissionPresets') : null
-        if (pp && typeof pp.set === 'function') pp.set(real, wantPerm)
+        const sessionObj = handle?.agent?.session || null
+        const pp = wantPerm && sessionObj ? ctx.get('permissionPresets') : null
+        if (pp && typeof pp.set === 'function') pp.set(sessionObj, wantPerm)
       } catch (err) { warn('新会话套权限预设失败：', err?.message || err) }
       // /new 的意义就是「以后投递到这条新会话」→ 把预设的活跃会话也指过去，
       // 不然投递按「预设优先」查活跃会话，又会被 Web 那边最后聊过的那条抢走 ✓
