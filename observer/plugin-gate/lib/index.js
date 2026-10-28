@@ -149,16 +149,16 @@ function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: "gate_scan",
-    description: "Installation safety gate for plugins: scan a plugin source (a local directory, or an npm package via the npm: prefix) for malicious install scripts, dangerous permissions and file writes, credential reads, obfuscation, and network callbacks, then return a verdict (BLOCK / WARN / PASS) with per-line evidence. Use it BEFORE installing any plugin from a marketplace or registry. Examples: target \"npm:dsh-plugin-focus\", target \"./downloaded-plugin\", or an absolute directory path.",
+    description: "Scan a plugin source before installing it (local dir, or npm:pkg[@ver]) and return BLOCK / WARN / PASS with per-line hits. Read-only; never executes the scanned code.",
     parameters: {
       target: {
         type: "string",
         required: true,
-        description: "Where to scan. A local directory path, or an npm spec prefixed with npm: (e.g. npm:dsh-plugin-focus, npm:dsh-plugin-focus@1.0.1).",
+        description: "Local dir or npm:pkg[@ver].",
       },
       includeNodeModules: {
         type: "boolean",
-        description: "Optional override: descend into node_modules when scanning a directory (default off).",
+        description: "Descend into node_modules (default off).",
       },
     },
     output: {
@@ -254,7 +254,7 @@ function apply(ctx, config) {
   }));
   ctx.tools.register(defineTool({
     name: "gate_guard",
-    description: "Data-protection guard: before ANY destructive operation, evaluate a shell command (gate_guard with command) or a file target (gate_guard with path + action) and get a BLOCK / WARN / PASS verdict with reasons. BLOCK = device/root-level destruction — refuse. WARN = recursive, outside-workspace, or critical file — confirm the exact target first. PASS = no destructive signature. Use it before rm -rf, Remove-Item -Recurse, rmdir /s, del /f /s, format, dd, mkfs, or deleting/overwriting files.",
+    description: "Check a destructive command or file delete before running it. BLOCK = refuse; WARN = confirm the exact target; PASS = no destructive signature.",
     parameters: {
       command: { type: "string", description: "要评估的 shell 命令（如 rm -rf ./node_modules）" },
       path: { type: "string", description: "要删除/覆盖的文件或目录路径" },
@@ -294,15 +294,15 @@ function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: "gate_diff",
-    description: "Compare a fresh scan of a target against the stored baseline (.dsh/gate-baseline.json in the session workspace): report findings that are NEW, RESOLVED, CHANGED (count differs) or UNCHANGED since the last baseline, plus the verdict transition. Use it after a fix to confirm the risk actually went away and nothing new appeared; pass update=true to store this scan as the new baseline. Findings are fingerprinted by rule + severity + file, so line shifts do not create false 'new' entries.",
+    description: "Diff a fresh scan against the stored baseline: NEW / RESOLVED / CHANGED / UNCHANGED plus verdict transition. update=true stores this scan as the new baseline.",
     parameters: {
       target: {
         type: "string",
         required: true,
-        description: "Where to scan: a local directory path, or an npm spec prefixed with npm: (e.g. npm:dsh-plugin-focus).",
+        description: "Local dir or npm:pkg.",
       },
-      update: { type: "boolean", description: "Store this scan as the new baseline (default false)." },
-      includeNodeModules: { type: "boolean", description: "Descend into node_modules when scanning a directory." },
+      update: { type: "boolean", description: "Store as new baseline (default false)." },
+      includeNodeModules: { type: "boolean", description: "Descend into node_modules." },
     },
     output: {
       schema: {
@@ -355,17 +355,17 @@ function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: "gate_report",
-    description: "Scan a target and render a structured report — Markdown (default) or JSON — with findings grouped by severity and category, hosts, recommendations, and an optional baseline diff. Set write=true to store it in the session workspace (default .dsh/gate-report.md). Use it to attach evidence to a ticket, a PR or a CI job.",
+    description: "Render a scan as Markdown (default) or JSON: severity groups, hosts, recommendations, optional baseline diff. write=true saves it to the workspace.",
     parameters: {
       target: {
         type: "string",
         required: true,
-        description: "Where to scan: a local directory path, or an npm spec prefixed with npm:.",
+        description: "Local dir or npm:pkg.",
       },
-      format: { type: "string", enum: ["md", "json"], description: "Report format (default md)." },
-      write: { type: "boolean", description: "Write the report to the session workspace (default false)." },
-      path: { type: "string", description: "Custom write path inside the session workspace (optional)." },
-      withBaseline: { type: "boolean", description: "Include the baseline diff when a baseline exists (default true)." },
+      format: { type: "string", enum: ["md", "json"], description: "md (default) or json." },
+      write: { type: "boolean", description: "Write to the workspace (default false)." },
+      path: { type: "string", description: "Output path in the workspace." },
+      withBaseline: { type: "boolean", description: "Include baseline diff if present (default true)." },
       includeNodeModules: { type: "boolean", description: "Descend into node_modules when scanning a directory." },
     },
     output: {
