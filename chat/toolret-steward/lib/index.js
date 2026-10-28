@@ -193,20 +193,62 @@ export function apply(ctx, config = {}) {
       }
     }
 
+    /** 把一条档案里的原文铺回 surface（force 覆盖占位）。 */
+    const restore = (id, entry) => {
+      const surfaceItem = resultOfCall(agent.session, entry.callId)
+      if (!surfaceItem) return false
+      const current = textOfMessage(messageOf(agent.session, surfaceItem.event))
+      if (!current.startsWith('⟨')) return true // 还完整着，不用召回
+      try {
+        return replaceResult(ctx, agent.session, surfaceItem, tag(id) + entry.text, true)
+      } catch (error) {
+        warn('召回失败：', error?.message || error)
+        return false
+      }
+    }
+
+    /** 档案里没有（比如宿主重启过）→ 扫会话日志：日志保留了被替换前的完整节点。 */
+    const recoverFromLog = (ids) => {
+      const want = new Set(ids)
+      const found = new Map()
+      const re = /^\[#(\d+)\] /
+      let seq = 0
+      for (;;) {
+        const event = agent.session.eventAt(seq)
+        if (!event) break
+        seq++
+        if (event.type !== 'tool/result') continue
+        const message = messageOf(agent.session, event)
+        if (!message || message.role !== 'tool') continue
+        const text = textOfMessage(message)
+        const m = re.exec(text)
+        if (!m) continue
+        const id = Number(m[1])
+        if (!want.has(id)) continue
+        const callId = message.toolCallId || message.source?.callId
+        if (!callId) continue
+        found.set(id, { callId, tool: '?', label: 'log', chars: text.length, text: text.slice(m[0].length) })
+      }
+      return found
+    }
+
     const applyRecall = (ids) => {
+      const missing = []
       for (const id of ids) {
         const entry = state.archive.get(id)
-        if (!entry) continue
-        const surfaceItem = resultOfCall(agent.session, entry.callId)
-        if (!surfaceItem) continue
-        const current = textOfMessage(messageOf(agent.session, surfaceItem.event))
-        if (!current.startsWith('⟨')) continue // 还完整着，不用召回
-        try {
-          replaceResult(ctx, agent.session, surfaceItem, tag(id) + entry.text, true)
-        } catch (error) {
-          warn('召回失败：', error?.message || error)
+        if (entry) {
+          restore(id, entry)
+          continue
         }
+        missing.push(id)
       }
+      if (missing.length === 0) return
+      const found = recoverFromLog(missing)
+      for (const [id, entry] of found) {
+        state.archive.set(id, entry)
+        restore(id, entry)
+      }
+      for (const id of missing) if (!found.has(id)) warn(`召回 #${id} 失败：档案和日志里都没找到`)
     }
 
     const finalize = (decisions) => {

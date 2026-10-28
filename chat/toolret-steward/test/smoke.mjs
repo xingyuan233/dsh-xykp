@@ -101,5 +101,18 @@ s2.append('tool/result', { message: { role: 'tool', toolCallId: 'c3', content: [
 await tick()
 check('续号 #10', (resultText(s2, 'c3') || '').startsWith('[#10] '), (resultText(s2, 'c3') || '').slice(0, 12))
 
+// 日志兜底：模拟宿主重启（新实例、档案为空），surface 已经是 stub，日志里还有 [#3] 原节点
+const s3 = new Session('s3')
+s3.append('assistant/message', { message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c9', name: 'pwsh', arguments: '{}' }] } })
+s3.append('tool/result', { message: { role: 'tool', toolCallId: 'c9', content: [{ type: 'text', text: '[#3] ' + 'Q'.repeat(3000) }] } })
+s3.append('tool/result', { message: { role: 'tool', toolCallId: 'c9', content: [{ type: 'text', text: '⟨dropped #3 pwsh · 3005 chars⟩' }] } }, { surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 } })
+const a3 = makeAgent(s3)
+apply(ctxOf([a3]), { minChars: 100 })
+await tick()
+check('日志兜底前是 stub', (resultText(s3, 'c9') || '').startsWith('⟨dropped #3'))
+assistant(s3, [{ id: 'r1', name: 'steward', args: { recall: [3] } }])
+await tick()
+check('日志兜底召回成功', (resultText(s3, 'c9') || '').startsWith('[#3] QQQ'), (resultText(s3, 'c9') || '').slice(0, 12))
+
 console.log(fail === 0 ? '\n全部通过' : `\n失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
