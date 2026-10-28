@@ -25,6 +25,7 @@ import {
   diffLock,
   changelogLines,
   appendChangelog,
+  appendPerPresetChangelog,
   metaOf,
   localStamp,
   readSnapshot,
@@ -201,6 +202,12 @@ async function boot(ctx, config) {
         lines.push('', `${stamp}  ${item.id} diff：`, item.text)
       }
       appendChangelog(changelogPath, lines)
+      // 每份留痕也写进预设自己的文件夹（.changelog.log），总索引那份当目录用
+      try {
+        appendPerPresetChangelog(dir, diff, diffs, next)
+      } catch (err) {
+        warn('写各预设留痕失败：', err?.message || err)
+      }
       log('预设变动已留痕：\n' + lines.join('\n'))
     } else {
       log(`指纹没变（${localStamp()}）`)

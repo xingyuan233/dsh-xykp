@@ -568,6 +568,12 @@ export async function apply(ctx, config = {}) {
         }
       } catch (err) { warn('把新会话挂进工作区失败：', err?.message || err) }
       await setChatSession(key, real, { preset, boundBy: 'preset' })
+      // 这个聊天里设过的权限预设，/new 出来的新会话也照用（没设就什么都不做）
+      try {
+        const wantPerm = prefs && prefs.permission
+        const pp = wantPerm ? ctx.get('permissionPresets') : null
+        if (pp && typeof pp.set === 'function') pp.set(real, wantPerm)
+      } catch (err) { warn('新会话套权限预设失败：', err?.message || err) }
       // /new 的意义就是「以后投递到这条新会话」→ 把预设的活跃会话也指过去，
       // 不然投递按「预设优先」查活跃会话，又会被 Web 那边最后聊过的那条抢走 ✓
       await 记预设活跃(preset, real)
@@ -1012,7 +1018,59 @@ export async function apply(ctx, config = {}) {
       }
 
       if (spec.name === 'permission') {
-        await replyTo(key, '/permission 还在接（权限预设那条 entry 我还没定位到），先别依赖它')
+        // 2026-10-29 接上了：宿主里那条 entry 叫 permission-presets（服务名 permissionPresets）
+        let pp = null
+        try { pp = ctx.get('permissionPresets') || null } catch { pp = null }
+        if (!pp || typeof pp.apply !== 'function') {
+          await replyTo(key, '权限预设服务没挂上（宿主里没找到 permissionPresets），先别依赖它')
+          return
+        }
+        const names = (Array.isArray(pp.names) ? pp.names.slice() : Object.keys(pp.presets || {}))
+        const chat = (await chatsNow(true))[key] || {}
+        let svc = null
+        try { svc = ctx.agents || ctx.get('agents') || null } catch { svc = null }
+        const agent = svc && chat.sessionId ? findAgent(svc, chat.sessionId) : null
+        let now = ''
+        try {
+          now = agent ? pp.current(agent.session) : (pp.defaultPreset || '')
+        } catch { now = '' }
+        if (!body) {
+          await replyTo(key, '当前权限预设：' + (now || '?') +
+            '\n\n可选（' + names.length + '）：\n' +
+            names.map((n, i) => (i + 1) + '. ' + n + (n === now ? '  ← 现在这个' : '')).join('\n') +
+            '\n\n/permission <序号|名字> 立刻换这个会话的；加 -d 改部署默认（重启后对新的会话生效）')
+          return
+        }
+        let chosen = body
+        if (/^\d+$/.test(body)) {
+          const pick = names[Number(body) - 1]
+          if (!pick) { await replyTo(key, '序号越界：一共 ' + names.length + ' 个，发 /permission 看列表'); return }
+          chosen = pick
+        }
+        if (!names.includes(chosen)) {
+          await replyTo(key, '没有这个权限预设：' + chosen + '（可用 ' + names.join(' / ') + '）')
+          return
+        }
+        if (wantDefault) {
+          const entry = entryOf('permission-presets')
+          if (!entry) { await replyTo(key, '找不到 permission-presets 这条 entry'); return }
+          await editor.edit(entry, (c) => ({ ...(c || {}), defaultPreset: chosen }))
+          await replyTo(key, '部署默认权限预设 → ' + chosen + '（重启后生效；当前会话不变）')
+          return
+        }
+        if (!agent) {
+          const all = await chatsNow(true)
+          all[key] = { ...(all[key] || {}), prefs: { ...(all[key]?.prefs || {}), permission: chosen } }
+          await writeChats(all); chatCache.data = all
+          await replyTo(key, '这个会话现在没起来，先记成偏好：下次 /new 用权限预设 ' + chosen)
+          return
+        }
+        try {
+          pp.apply(agent.session, chosen, (policy) => ctx.approval.setPolicy(agent, policy))
+          await replyTo(key, '权限预设 → ' + chosen)
+        } catch (err) {
+          await replyTo(key, '切权限预设失败：' + (err?.message || err))
+        }
         return
       }
     }

@@ -168,6 +168,36 @@ export function appendChangelog(changelogPath, lines) {
   appendFileSync(changelogPath, lines.join('\n') + '\n', 'utf8')
 }
 
+/**
+ * 每个预设自己的留痕：`<dir>/<id>/.changelog.log`
+ * —— 谁变了就写进谁的文件夹（总索引那份继续留着当目录）。
+ * 只写**还存在的**预设文件夹：removed 的只在总索引里记一笔，不凭空造目录。
+ * 文件名带点，扫描时会跳过（见 scan 里 startsWith('.') 那条），不会自己触发下一轮。
+ */
+export function appendPerPresetChangelog(dir, diff, diffs, nextPresets, date = new Date()) {
+  const stamp = localStamp(date)
+  const bucket = new Map()
+  const push = (id, lines) => {
+    if (!id || !lines.length) return
+    if (!existsSync(join(dir, id))) return
+    if (!bucket.has(id)) bucket.set(id, [])
+    bucket.get(id).push(...lines)
+  }
+  for (const id of diff.added) {
+    push(id, changelogLines({ added: [id], changed: [], removed: [] }, nextPresets, date))
+  }
+  for (const c of diff.changed) {
+    push(c.id, changelogLines({ added: [], changed: [c], removed: [] }, nextPresets, date))
+  }
+  for (const item of diffs) {
+    if (!item || !item.id) continue
+    push(item.id, ['', `${stamp}  ${item.id} diff：`, String(item.text || '').trimEnd()])
+  }
+  for (const [id, lines] of bucket) {
+    appendFileSync(join(dir, id, '.changelog.log'), lines.join('\n') + '\n', 'utf8')
+  }
+}
+
 // ---------- 上次读取的快照（每个预设文件夹一个隐藏文件）----------
 // 光有指纹只能知道「变了」，不知道「变成什么样」；快照就是拿来出 diff 的。
 export function snapshotPath(dir, id) {
