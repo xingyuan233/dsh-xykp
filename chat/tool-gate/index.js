@@ -23,6 +23,8 @@ import { join } from 'node:path'
 
 import Schema from '@deepseek-ai/schemastery'
 
+import * as __R from './registry.js'
+
 export const name = 'tool-gate'
 export const inject = ['tools', 'agents']
 
@@ -61,30 +63,21 @@ function textOf(node) {
 }
 
 export function apply(ctx, config = {}) {
-  const rules = { ...(config.rules || {}) }
-  try {
-    const extra = config.configPath ? JSON.parse(readFileSync(config.configPath, 'utf8')) : null
-    if (extra && typeof extra === 'object') Object.assign(rules, extra)
-  } catch (error) {
-    warn('读额外配置失败：', error?.message || error)
-  }
+  // 规则和「被扣下的定义」都放 registry（bili-rove 是静态 import 它，跟加载顺序无关）
+  const rules = __R.loadRules(config.rules || {})
 
   /** 工具名 -> 定义（被扣着的） */
-  const withheld = new Map()
+  const withheld = {
+    get: (n) => __R.taken(n),
+    keys: () => __R.withheldNames(),
+    has: (n) => !!__R.taken(n),
+    set: () => {},
+  }
   /** 工具名 -> 规则的编译版 */
   const compiled = new Map()
-  for (const [toolName, raw] of Object.entries(rules)) {
-    if (!raw || typeof raw !== 'object') continue
-    const keys = (Array.isArray(raw.keys) ? raw.keys : []).map((k) => String(k).trim()).filter(Boolean)
-    if (!keys.length) continue
-    compiled.set(toolName, {
-      keys,
-      lowerKeys: keys.map((k) => k.toLowerCase()),
-      cooldown: Number.isFinite(raw.cooldown) ? Number(raw.cooldown) : 8,
-      system: Math.max(1, Number.isFinite(raw.system) ? Number(raw.system) : 1),
-      limit: Number.isFinite(raw.limit) && Number(raw.limit) > 0 ? Number(raw.limit) : Infinity,
-      systemText: typeof raw.systemText === 'string' ? raw.systemText : '',
-    })
+  for (const toolName of Object.keys(rules)) {
+    const cmp = __R.ruleOf(toolName)
+    if (cmp) compiled.set(toolName, cmp)
   }
 
   /** sid -> 状态 */
@@ -150,6 +143,7 @@ export function apply(ctx, config = {}) {
   const service = {
     /** 有规则就扣着（返回 true），没规则就返回 false 让调用方自己注册 */
     offer(def) {
+      if (__R.offer(def)) return true
       const toolName = String(def?.name || '').trim()
       if (!toolName) return false
       if (!compiled.has(toolName)) return false

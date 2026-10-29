@@ -10,6 +10,7 @@
 //   · 不做自动回复 —— 那是 bili-reply 的事
 //   · 读操作 cookie 失效可以回退匿名；写操作**绝不重试**（避免重复发评论/私信）
 //   · cookie / 凭证 / 配置都只读写 <DSH_HOME>/xykp/bilibili 里的数据文件
+import { offer as gateOffer } from '../../../chat/tool-gate/registry.js'
 import { DEFAULTS as FALLBACK_DEFAULTS } from './fallback.js'
 import { DEFAULTS as ACCOUNT_DEFAULTS, resolveCookie, readCredential, cookieOf, dataDirOf } from './account.js'
 import { DEFAULTS as NTFY_DEFAULTS } from './ntfy.js'
@@ -124,8 +125,8 @@ export function apply(ctx, config = {}) {
   // 2026-10-29：交给 tool-gate 决定「先扣着还是照常注册」——
   //   配了门控规则的工具（比如 bili_rove），一开始不出现在工具列表里，等对话里出现关键词再推出来
   const registerTool = (def) => {
-    const gate = globalThis.__toolGate || (() => { try { return ctx.get('toolGate') } catch { return null } })()
-    if (gate && typeof gate.offer === 'function' && gate.offer(def)) return
+    // 静态 import registry：不管 tool-gate 插件是不是后加载，规则都能读到（配了规则就先扣着）
+    if (gateOffer(def)) return
     ctx.tools.register(def)
   }
 
