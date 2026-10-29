@@ -28,7 +28,7 @@ const log = (...a) => console.log('[context-refresh]', ...a)
 const warn = (...a) => console.warn('[context-refresh]', ...a)
 
 export const Config = Schema.object({
-  everyTokens: Schema.number().default(60000).description('累计多少 token 提醒一次；0 = 关'),
+  everyTokens: Schema.number().default(200000).description('累计多少 token 提醒一次；0 = 关'),
   withPrefix: Schema.boolean().default(true).description('提醒里带预设要点'),
   withTools: Schema.boolean().default(true).description('提醒里带工具名清单'),
   presetDir: Schema.string().default('').description('预设目录（空 = 默认）'),
