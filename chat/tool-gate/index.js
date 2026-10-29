@@ -175,11 +175,12 @@ export function apply(ctx, config = {}) {
   try {
     ctx.on('agent/inbox/inserted', (payload) => {
       try {
-        const agent = payload?.agent || payload?.target?.agent
+        const agent = payload?.agent
         const st = stateOf(agent)
         if (st) st.turn += 1
-        const msgs = payload?.messages || payload?.inserted || payload?.items || []
-        const text = (Array.isArray(msgs) ? msgs : [msgs]).map(textOf).join('\n')
+        // 事件 payload 是 { agent, message }（单数，挨条发）；以前写成 messages，扫到的是空串
+        const list = payload?.messages || payload?.inserted || (payload?.message ? [payload.message] : [])
+        const text = (Array.isArray(list) ? list : [list]).map(textOf).join('\n')
         scan(agent, text)
       } catch (error) {
         warn('inbox 扫描失败：', error?.message || error)
