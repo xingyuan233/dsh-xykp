@@ -334,22 +334,22 @@ const parameters = {
     action: {
       type: 'string',
       enum: ['all', 'balance', 'usage', 'session'],
-      description: 'balance 查账号余额；usage 查某时间段的 token 用量；session 查当前会话累计；all = 三者都查（默认）。',
+      description: '默认 all',
     },
     since: {
       type: 'string',
-      description: 'usage 的起始时间：today / 7d / 24h / 30m / YYYY-MM-DD / ISO。默认 7d。',
+      description: 'usage 用；today / 7d / 24h / 30m / YYYY-MM-DD，默认 7d',
     },
     until: {
       type: 'string',
-      description: 'usage 的结束时间，格式同 since，默认现在。',
+      description: '同 since，默认现在',
     },
-    provider: { type: 'string', description: '只统计 provider 名包含这个子串的调用（如 deepseek-account）。' },
-    model: { type: 'string', description: '只统计 model 名包含这个子串的调用（如 deepseek-flash）。' },
+    provider: { type: 'string', description: 'provider 名包含这个子串' },
+    model: { type: 'string', description: 'model 名包含这个子串' },
     group_by: {
       type: 'string',
       enum: ['day', 'model'],
-      description: 'usage 明细按天还是按模型分组，默认 day。',
+      description: 'usage 明细按天还是按模型，默认 day',
     },
   },
 }
