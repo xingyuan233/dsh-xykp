@@ -33,9 +33,12 @@ export const name = 'memory-refine'
 export const inject = ['systemPrompt', 'agents', 'timer', 'tools', 'webServer', 'sessions', 'sessionTitle', 'llm']
 
 const CFG_DIR = process.env.DSH_HOME || join(homedir(), '.dsh')
-const STORE_DIR = join(CFG_DIR, 'fish-memory')
-const BACKUP_DIR = join(CFG_DIR, 'fish-memory-backup')
-const CFG_PATH = join(CFG_DIR, 'fish-memory-config.json')
+// 2026-10-29：主人要求「插件数据统一放到 home\xykp 下面」
+//   旧位置 home\fish-memory* 已经拷过来了，这里只改指向（旧的留着当备份，确认没问题再删）
+const DATA_DIR = join(CFG_DIR, 'xykp')
+const STORE_DIR = join(DATA_DIR, 'fish-memory')
+const BACKUP_DIR = join(DATA_DIR, 'fish-memory-backup')
+const CFG_PATH = join(DATA_DIR, 'fish-memory-config.json')
 const DAY = 86400000
 // ⭐⭐ 2026-09-21（反馈：「别人导入会踩什么坑」时改的）：**时区不能再写死北京** ✗
 //   原来写死 +8。实测：换纽约、换东京，日期显示一模一样 ——
@@ -202,7 +205,7 @@ function fitPolicy(input, base, pin) {
 }
 
 // 诊断日志（console 看不见，写文件最可靠）
-const DIAG = join(CFG_DIR, 'fish-memory-diag.log')
+const DIAG = join(DATA_DIR, 'fish-memory-diag.log')
 function diag(msg) {
   try {
     mkdirSync(STORE_DIR, { recursive: true })

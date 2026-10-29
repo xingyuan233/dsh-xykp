@@ -17,7 +17,8 @@ export function homeDir() {
 }
 
 export function chatsPath() {
-  return join(homeDir(), 'qq-adapter', 'chats.json')
+  // 2026-10-29：数据统一搬到 home\xykp 下面（旧的 home\qq-adapter 已经拷过来了）
+  return join(homeDir(), 'xykp', 'qq-adapter', 'chats.json')
 }
 
 export function sessionsRoot() {

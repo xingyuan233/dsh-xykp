@@ -186,7 +186,8 @@ export async function apply(ctx, config = {}) {
   const agentsSvc = ctx.agents
   const INST = String(cfg.instanceId || 'default')
   const TP = (n) => String(cfg.toolPrefix || '') + n
-  const seenFile = () => cfg.seenPath || join(home(), 'qq-adapter', 'seen-' + INST + '.json')
+  // 2026-10-29：插件数据统一搬到 home\xykp 下面（旧的 home\qq-adapter 已经拷过来了）
+  const seenFile = () => cfg.seenPath || join(home(), 'xykp', 'qq-adapter', 'seen-' + INST + '.json')
 
   let seen = await readJson(seenFile(), { ids: [], cursor: 0 })
   if (!Array.isArray(seen.ids)) seen.ids = []

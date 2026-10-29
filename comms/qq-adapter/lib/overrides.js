@@ -16,7 +16,8 @@ import { join } from 'node:path'
 
 export function overridePath() {
   const home = process.env.DSH_HOME || join(homedir(), '.dsh')
-  return join(home, 'qq-adapter', 'ui-config.json')
+  // 2026-10-29：插件数据统一搬到 home\xykp 下面（旧的 home\qq-adapter 已经拷过来了）
+  return join(home, 'xykp', 'qq-adapter', 'ui-config.json')
 }
 
 /** 读一份覆盖配置；文件不存在就返回空对象 */
