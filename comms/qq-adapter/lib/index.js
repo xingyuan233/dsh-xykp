@@ -1074,7 +1074,14 @@ export async function apply(ctx, config = {}) {
           return
         }
         try {
-          pp.apply(agent.session, chosen, (policy) => ctx.approval.setPolicy(agent, policy))
+          // ⚠ 本插件 inject 里只有 agents/tools → 直接读 ctx.approval 会抛
+          //   「cannot get property approval without inject」；ctx.get 拿服务不受 inject 限制
+          const appr = (() => { try { return ctx.get('approval') } catch { return null } })()
+          pp.apply(agent.session, chosen, (policy) => {
+            try {
+              if (appr && typeof appr.setPolicy === 'function') appr.setPolicy(agent, policy)
+            } catch (e) { warn('同步 approval 策略失败：', e?.message || e) }
+          })
           await replyTo(key, '权限预设 → ' + chosen)
         } catch (err) {
           await replyTo(key, '切权限预设失败：' + (err?.message || err))
