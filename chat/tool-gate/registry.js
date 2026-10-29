@@ -7,11 +7,34 @@
 // 规则文件：<DSH_HOME>/xykp/tool-gate.json
 //   { "bili_rove": { "keys": ["B站","bilibili"], "cooldown": 8, "system": 1, "limit": 3 } }
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const CONFIG_PATH = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'xykp', 'tool-gate.json')
+// 找 DSH_HOME：环境变量优先；没有就从本文件位置往上爬
+// （正常情况下是 <home>\profiles\web\node_modules\dsh-xykp\chat\tool-gate\registry.js）
+function resolveHome() {
+  if (process.env.DSH_HOME) return process.env.DSH_HOME
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (let i = 0; i < 8; i += 1) {
+    if (existsSync(join(dir, 'xykp'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return join(homedir(), '.dsh')
+}
+
+const CONFIG_PATH = join(resolveHome(), 'xykp', 'tool-gate.json')
+const DEBUG_LOG = join(dirname(CONFIG_PATH), 'tool-gate.log')
+
+function dbg(msg) {
+  try {
+    appendFileSync(DEBUG_LOG, new Date().toISOString() + ' ' + msg + '\n', 'utf8')
+  } catch {}
+}
+dbg('registry 初始化 · DSH_HOME=' + (process.env.DSH_HOME || '(未设置)') + ' · 配置=' + CONFIG_PATH)
 
 let rules = null
 const withheld = new Map()
@@ -50,6 +73,7 @@ export function ruleOf(toolName) {
 
 /** 有规则就扣下，返回 true；没规则返回 false（调用方照常注册） */
 export function offer(def) {
+  dbg('offer(' + (def && def.name) + ') 规则=' + (ruleOf(def && def.name) ? '有' : '无'))
   const toolName = String(def?.name || '').trim()
   if (!toolName) return false
   if (!ruleOf(toolName)) return false
