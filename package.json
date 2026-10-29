@@ -28,6 +28,8 @@
     "./senses/screenshot": "./senses/screenshot/index.js",
     "./senses/keymouse": "./senses/keymouse/index.js",
     "./comms/bili-rove": "./comms/bili-rove/lib/index.js",
+    "./comms/qq-adapter": "./comms/qq-adapter/lib/index.js",
+    "./comms/qq-adapter/client": "./comms/qq-adapter/lib/client.js",
     "./storage/log-cleaner": "./storage/log-cleaner/lib/index.js",
     "./storage/session-delete": "./storage/session-delete/lib/index.js",
     "./observer/plugin-gate": "./observer/plugin-gate/lib/index.js",
