@@ -32,7 +32,6 @@ export const Config = Schema.object({
   withPrefix: Schema.boolean().default(true).description('提醒里带预设要点'),
   withTools: Schema.boolean().default(true).description('提醒里带工具名清单'),
   presetDir: Schema.string().default('').description('预设目录（空 = 默认）'),
-  hintAtPercent: Schema.number().default(50).description('上下文用到百分之多少主动说一声（0 = 不说）'),
 })
 
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -103,7 +102,6 @@ export function apply(ctx, config = {}) {
     log('everyTokens=0，不启用')
     return
   }
-  const hintAt = Math.max(0, Number(config.hintAtPercent ?? 50))
   const dir = presetDirOf(config)
   const mounted = new Map() // sid -> off
 
@@ -133,23 +131,13 @@ export function apply(ctx, config = {}) {
   function mount(agent) {
     const sid = String(agent?.session?.id || agent?.id || '')
     if (!sid || mounted.has(sid)) return
-    const state = { lastAt: tokensOf(ctx, agent), pending: false, hinted: new Set() }
+    const state = { lastAt: tokensOf(ctx, agent), pending: false }
     try {
       const off = agent.ctx.systemPrompt.section({
         name: 'context-refresh',
         order: 10500,
         text: () => {
           const now = tokensOf(ctx, agent)
-          // 2026-10-29：上下文用量到线了主动说一声（主人定的 50% 该搬家），不用等我自己想起去查
-          if (hintAt > 0) {
-            const surface = Number(ctx.get('sessionProjections')?.stateOf(agent.session, 'contextPressure')?.surfaceTokens) || 0
-            const window = Number(ctx.get('sessionProjections')?.stateOf(agent.session, 'contextPressure')?.contextWindow) || 1048576
-            const pct = window > 0 ? Math.round((surface / window) * 100) : 0
-            if (pct >= hintAt && !state.hinted.has(hintAt)) {
-              state.hinted.add(hintAt)
-              return '【上下文】已用 ' + pct + '%（' + Math.round(surface / 1000) + 'K / ' + Math.round(window / 1000) + 'K）—— 到线了，考虑 memory_movctx 换个对话继续'
-            }
-          }
           if (!state.pending && now - state.lastAt >= every) {
             state.pending = true
             state.lastAt = now
