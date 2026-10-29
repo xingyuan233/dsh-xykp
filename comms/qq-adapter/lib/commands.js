@@ -32,7 +32,7 @@ export const COMMANDS = [
   { name: 'level', needsOwner: true, usage: '/level [序号|id] [-d]', group: '配置', help: '查看/设置推理等级；-d 同时改默认' },
   { name: 'workspace', needsOwner: true, usage: '/workspace [路径|序号] [-d]', group: '配置', help: '查看/切换工作区；-d 同时改默认' },
   { name: 'preset', needsOwner: true, usage: '/preset [id|序号] [-d]', group: '配置', help: '查看/切换 agent 预设；-d 同时改默认' },
-  { name: 'permission', needsOwner: true, usage: '/permission [序号|名字] [-d]', group: '配置', help: '切换权限预设（不带参数=看列表）；-d 改部署默认，重启后生效' },
+  { name: 'permission', needsOwner: true, usage: '/permission [c|w|f|序号|名字] [-d]', group: '配置', help: 'c=只读 / w=工作区内 / f=完全；不带参数看列表；-d 改部署默认（重启后生效）' },
 
   // ── 适配层（qq-adapter 自己的配置）──
   { name: 'cfg-default', needsOwner: true, usage: '/cfg-default [p-预设|s-会话|QQ号]', group: '适配层', help: '查看/设置这个聊天的默认目标' },

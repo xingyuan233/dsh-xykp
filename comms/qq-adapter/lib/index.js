@@ -1042,11 +1042,11 @@ export async function apply(ctx, config = {}) {
           return
         }
         let chosen = body
-        // 顺手给几个短写（以前 usage 里写的 c|w|f 就是这三个）
+        // 短写（2026-10-29 主人确认：c = const 只读，w = workspace 工作区，f = full 完全）
         const ALIAS = {
-          c: 'danger-full-access', full: 'danger-full-access', complete: 'danger-full-access', 完全: 'danger-full-access',
+          c: 'read-only', const: 'read-only', read: 'read-only', 只读: 'read-only',
           w: 'workspace-write', write: 'workspace-write', 工作区: 'workspace-write',
-          f: 'read-only', free: 'read-only', read: 'read-only', 只读: 'read-only',
+          f: 'danger-full-access', full: 'danger-full-access', 完全: 'danger-full-access',
         }
         const aliasKey = ALIAS[chosen] ? chosen : ALIAS[String(chosen).toLowerCase()]
         if (aliasKey && names.includes(ALIAS[aliasKey])) chosen = ALIAS[aliasKey]
