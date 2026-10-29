@@ -53,7 +53,7 @@ function textOf(node) {
       return
     }
     if (typeof v === 'object') {
-      for (const key of ['text', 'content', 'thinking', 'delta', 'message', 'messages']) {
+      for (const key of ['text', 'content', 'thinking', 'delta', 'message', 'messages', 'frame', 'chunk']) {
         if (key in v) walk(v[key], depth + 1)
       }
     }
@@ -202,7 +202,7 @@ export function apply(ctx, config = {}) {
         // 从会话面上取最后几个节点更可靠）——这样「我自己的输出里提到关键词」也能触发
         try {
           const nodes = agent?.session?.surface?.nodes || []
-          const tail = nodes.slice(-3).map((n) => textOf(n)).join('\n')
+          const tail = nodes.slice(-6).map((n) => textOf(n)).join('\n')
           if (tail) scan(agent, tail)
         } catch {}
       } catch (error) {
@@ -218,7 +218,7 @@ export function apply(ctx, config = {}) {
     try {
       ctx.on('agent/assistant-stream', (payload) => {
         try {
-          scan(payload?.agent, textOf(payload?.chunk || payload?.delta || payload?.text || payload))
+          scan(payload?.agent, textOf(payload?.frame || payload))
         } catch {}
       })
     } catch (error) {
