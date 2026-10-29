@@ -198,6 +198,13 @@ export function apply(ctx, config = {}) {
         if (st && Number.isFinite(payload?.turn) && payload.turn > st.turn) st.turn = Number(payload.turn)
         const text = (payload?.messages || []).map(textOf).join('\n')
         scan(agent, text)
+        // 2026-10-29：也扫一眼**自己上一轮说的话**（assistant-stream 的 payload 形状不一定稳，
+        // 从会话面上取最后几个节点更可靠）——这样「我自己的输出里提到关键词」也能触发
+        try {
+          const nodes = agent?.session?.surface?.nodes || []
+          const tail = nodes.slice(-3).map((n) => textOf(n)).join('\n')
+          if (tail) scan(agent, tail)
+        } catch {}
       } catch (error) {
         warn('pre-step 扫描失败：', error?.message || error)
       }
