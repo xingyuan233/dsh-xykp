@@ -166,10 +166,15 @@ export function apply(ctx, config = {}) {
       return Array.from(withheld.keys())
     },
   }
-  ctx.provide ? ctx.provide('toolGate', service) : (ctx.toolGate = service)
+  // 暴露给别的插件：走全局变量最稳（cordis 各版本的服务注册 API 不一样，之前那行会抛，整个插件挂不上）
   try {
-    ctx.set ? ctx.set('toolGate', service) : null
+    globalThis.__toolGate = service
   } catch {}
+  try {
+    if (typeof ctx.provide === 'function') ctx.provide('toolGate', service)
+  } catch (error) {
+    warn('ctx.provide 不可用（不影响，走全局变量）：', error?.message || error)
+  }
 
   // ── 消息一进来就扫（比 pre-step 早：用户消息刚进收件箱那一刻，工具就能赶上同一轮的第一个请求）──
   try {

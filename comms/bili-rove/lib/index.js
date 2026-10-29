@@ -124,7 +124,7 @@ export function apply(ctx, config = {}) {
   // 2026-10-29：交给 tool-gate 决定「先扣着还是照常注册」——
   //   配了门控规则的工具（比如 bili_rove），一开始不出现在工具列表里，等对话里出现关键词再推出来
   const registerTool = (def) => {
-    const gate = (() => { try { return ctx.get('toolGate') } catch { return null } })()
+    const gate = globalThis.__toolGate || (() => { try { return ctx.get('toolGate') } catch { return null } })()
     if (gate && typeof gate.offer === 'function' && gate.offer(def)) return
     ctx.tools.register(def)
   }
