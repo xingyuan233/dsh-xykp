@@ -121,8 +121,16 @@ export function apply(ctx, config = {}) {
     call: (req) => backend.call(req),
   }
 
+  // 2026-10-29：交给 tool-gate 决定「先扣着还是照常注册」——
+  //   配了门控规则的工具（比如 bili_rove），一开始不出现在工具列表里，等对话里出现关键词再推出来
+  const registerTool = (def) => {
+    const gate = (() => { try { return ctx.get('toolGate') } catch { return null } })()
+    if (gate && typeof gate.offer === 'function' && gate.offer(def)) return
+    ctx.tools.register(def)
+  }
+
   // ── bili_login ───────────────────────────────────────────────────────────
-  ctx.tools.register(defineTool({
+  registerTool(defineTool({
     name: 'bili_login',
     description: 'B站扫码登录：qr 生成二维码推 ntfy（whale-bilibili-login-channel）后等扫码，check 查凭证。cookie 失效时先调这个。',
     parameters: {
@@ -154,7 +162,7 @@ export function apply(ctx, config = {}) {
   }))
 
   // ── bili_rove ────────────────────────────────────────────────────────────
-  ctx.tools.register(defineTool({
+  registerTool(defineTool({
     name: 'bili_rove',
     description: [
       'B站操作（带 cookie）。action 决定做什么，括号里是它要带的参数：',

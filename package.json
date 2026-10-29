@@ -23,6 +23,7 @@
     "./chat/memory-refine": "./chat/memory-refine/lib/index.js",
     "./chat/token-reporter": "./chat/token-reporter/index.js",
     "./chat/context-refresh": "./chat/context-refresh/index.js",
+    "./chat/tool-gate": "./chat/tool-gate/index.js",
     "./chat/toolret-steward": "./chat/toolret-steward/lib/index.js",
     "./senses/screenshot": "./senses/screenshot/index.js",
     "./senses/keymouse": "./senses/keymouse/index.js",
