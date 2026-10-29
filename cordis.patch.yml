@@ -47,6 +47,9 @@
     # ── comms
     - id: bili-reply
       name: 'dsh-xykp/comms/bili-reply'
+    # QQ 通道（配置在 profile 覆盖）
+    - id: qq-adapter
+      name: 'dsh-xykp/comms/qq-adapter'
     - id: bili-rove
       name: 'dsh-xykp/comms/bili-rove'
 
