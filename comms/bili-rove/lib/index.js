@@ -10,7 +10,7 @@
 //   · 不做自动回复 —— 那是 bili-reply 的事
 //   · 读操作 cookie 失效可以回退匿名；写操作**绝不重试**（避免重复发评论/私信）
 //   · cookie / 凭证 / 配置都只读写 <DSH_HOME>/xykp/bilibili 里的数据文件
-import { offer as gateOffer } from '../../../chat/tool-gate/registry.js'
+import { offer as gateOffer } from '../../../chat/tooldesc-control/registry.js'
 import { DEFAULTS as FALLBACK_DEFAULTS } from './fallback.js'
 import { DEFAULTS as ACCOUNT_DEFAULTS, resolveCookie, readCredential, cookieOf, dataDirOf } from './account.js'
 import { DEFAULTS as NTFY_DEFAULTS } from './ntfy.js'

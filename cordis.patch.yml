@@ -34,6 +34,8 @@
       disabled: true
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
+    - id: tooldesc-control
+      name: 'dsh-xykp/chat/tooldesc-control'
 
     # ── senses
     - id: senses-screenshot
