@@ -4627,23 +4627,32 @@ export function apply(ctx) {
 
   // ---------- 设置页的路由 ----------
   try {
-    const mroute = (path, handler) =>
-      ctx.effect(() =>
-        ctx.webServer.register({
-          kind: 'exact',
-          path: path,
-          handler: async (req, res) => {
-            try {
-              await handler(req, res)
-            } catch (error) {
+    // 2026-10-29：改名之后前端 bundle（构建产物）里还是老路径 /dsh-fish-memory/*，
+    //   重建前端太重 → 服务端挂个别名，新旧路径都能用（等哪天重建了再把别名删掉）
+    const mroute = (path, handler) => {
+      const paths = [path]
+      if (path.startsWith('/dsh-memory-refine/')) {
+        paths.push('/dsh-fish-memory/' + path.slice('/dsh-memory-refine/'.length))
+      }
+      for (const p of paths) {
+        ctx.effect(() =>
+          ctx.webServer.register({
+            kind: 'exact',
+            path: p,
+            handler: async (req, res) => {
               try {
-                res.writeHead(500, { 'content-type': 'application/json' })
-                res.end(JSON.stringify({ ok: false, error: String(error && error.message) }))
-              } catch (e2) {}
-            }
-          },
-        }),
-      )
+                await handler(req, res)
+              } catch (error) {
+                try {
+                  res.writeHead(500, { 'content-type': 'application/json' })
+                  res.end(JSON.stringify({ ok: false, error: String(error && error.message) }))
+                } catch (e2) {}
+              }
+            },
+          }),
+        )
+      }
+    }
 
     // 预设级的记忆开关（「使用记忆的预设」那一块）
     mroute('/dsh-memory-refine/presets', async (req, res) => {
