@@ -34,6 +34,9 @@
       disabled: true
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
+    # 工具懒加载 + 说明变更通知 + 上下文重贴（三合一），配置在 profile 里覆盖
+    - id: tooldesc-control
+      name: 'dsh-xykp/chat/tooldesc-control'
 
     # ── senses
     - id: senses-screenshot
