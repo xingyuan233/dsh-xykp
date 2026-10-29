@@ -358,9 +358,9 @@ function toolDefinition(ctx, config) {
   return {
     name: 'token_report',
     description:
-      '查 token 用量和账号余额：action=balance 查当前账号余额（平台登录态或 DEEPSEEK_API_KEY）；' +
-      'action=usage 查 DSH 在某个时间段的 token 用量（可过滤 provider/model，数据来自本机会话日志）；' +
-      'action=session 查当前会话累计与上下文占用。默认 all。',
+      'token_report(action?, since?, until?, provider?, model?, group_by?)\n' +
+      '查 token：balance=账号余额；usage=某时间段用量（本机会话日志，可按 provider/model 过滤，默认 7d）；' +
+      'session=本会话累计+上下文占用。默认 all。',
     parameters,
     output: {
       schema: {

@@ -1,6 +1,6 @@
 # chat/memory-refine
 
-长期记忆：关键词召回 + 每轮注入 + 自己记/自己删。宿主端从 dsh-fish-memory 1.2.6 搬来，改了这些：
+长期记忆：关键词召回 + 每轮注入 + 自己记/自己删。宿主端从 dsh-memory-refine 1.2.6 搬来，改了这些：
 
 ## 已改（宿主端）
 
@@ -26,7 +26,7 @@
 
 ## 数据位置
 
-沿用原来的 `home\fish-memory\`（`preset_<id>.json` 是预设池），配置 `home\fish-memory-config.json`。
+沿用原来的 `home\memory-refine\`（`preset_<id>.json` 是预设池），配置 `home\memory-refine-config.json`。
 切换时会把 `presets.alive` 置为 `true`，免得现有记忆停摆。
 
 ## 2026-10-27 · 客户端两处小修（`plugins/client.js`）

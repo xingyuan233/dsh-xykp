@@ -34,11 +34,11 @@ export const inject = ['systemPrompt', 'agents', 'timer', 'tools', 'webServer', 
 
 const CFG_DIR = process.env.DSH_HOME || join(homedir(), '.dsh')
 // 2026-10-29：主人要求「插件数据统一放到 home\xykp 下面」
-//   旧位置 home\fish-memory* 已经拷过来了，这里只改指向（旧的留着当备份，确认没问题再删）
+//   旧位置 home\memory-refine* 已经拷过来了，这里只改指向（旧的留着当备份，确认没问题再删）
 const DATA_DIR = join(CFG_DIR, 'xykp')
-const STORE_DIR = join(DATA_DIR, 'fish-memory')
-const BACKUP_DIR = join(DATA_DIR, 'fish-memory-backup')
-const CFG_PATH = join(DATA_DIR, 'fish-memory-config.json')
+const STORE_DIR = join(DATA_DIR, 'memory-refine')
+const BACKUP_DIR = join(DATA_DIR, 'memory-refine-backup')
+const CFG_PATH = join(DATA_DIR, 'memory-refine-config.json')
 const DAY = 86400000
 // ⭐⭐ 2026-09-21（反馈：「别人导入会踩什么坑」时改的）：**时区不能再写死北京** ✗
 //   原来写死 +8。实测：换纽约、换东京，日期显示一模一样 ——
@@ -205,7 +205,7 @@ function fitPolicy(input, base, pin) {
 }
 
 // 诊断日志（console 看不见，写文件最可靠）
-const DIAG = join(DATA_DIR, 'fish-memory-diag.log')
+const DIAG = join(DATA_DIR, 'memory-refine-diag.log')
 function diag(msg) {
   try {
     mkdirSync(STORE_DIR, { recursive: true })
@@ -270,7 +270,7 @@ const lastSig = new Map()
 //     每天那份   只留**当天最早**那一版
 //   最后是靠「每天那份」正好是当天最早，才整条救回来 ✗（运气好而已）
 //   → 凡是**真销毁**的动作（清空、批量清掉），动之前**另存一份带时间戳的**，
-//     放在 `fish-memory\销毁前\` 里，只留最近 20 份 ✓
+//     放在 `memory-refine\销毁前\` 里，只留最近 20 份 ✓
 function 销毁前另存(sid) {
   try {
     const src = storePath(sid)
@@ -682,25 +682,25 @@ function makeMovCtxTool(ctx) {
   return defineTool({
     name: 'memory_movctx',
     description:
-      '把当前这段对话压成一份「上下文交接」，然后用**同一个预设 / 模型 / 工作区 / 权限预设**开一个新对话，并让它接着聊。' +
-      '上下文用掉一半左右、或者觉得注意力开始散、或者要换个大话题时用它 —— 新对话第一轮会注入这份交接（一份只注入一次）。' +
-      '原来的对话原样留着，随时能回去看；这一条主要在预设绑了记忆的时候效果最好（交接是按预设排队的）。',
+      'memory_movctx(extra?, note?, start?, preset?)\n' +
+      '把当前对话压成交接，用同一个预设/模型/工作区/权限开个新对话接着聊（交接只注入一次，老对话原样留着）。\n' +
+      '上下文过半、注意力散了、要换大话题时用；预设绑了记忆时效果最好。',
     parameters: {
       extra: {
         type: 'string',
-        description: '额外补充（可选）：新对话开头要特别注意的事，比如「刚才那个文件改到一半」「别动 X 配置」。',
+        description: '新对话要注意的事（写到一半的文件、别动的配置）',
       },
       note: {
         type: 'string',
-        description: '新对话开跑的第一句话（可选），默认「（接上一个对话的交接，继续）」。',
+        description: '新对话第一句话，默认「（接上一个对话的交接，继续）」',
       },
       start: {
         type: 'boolean',
-        description: '是否立刻让新对话开始跑（默认 true）。false = 只建好挂在那儿，等对方自己开口。',
+        description: '立刻开跑（默认 true）',
       },
       preset: {
         type: 'string',
-        description: '要挪进哪个预设（可选，默认就用当前这个预设）。',
+        description: '挪进哪个预设（默认当前这个）',
       },
     },
     output: {
@@ -1513,7 +1513,7 @@ async function 问模型(ctx, agent, 系统, 用户, 最多, 指定) {
     messages = [
       createUserMessage({
         content: [{ type: 'text', text: 用户 }],
-        source: { kind: 'plugin', plugin: 'dsh-fish-memory' },
+        source: { kind: 'plugin', plugin: 'dsh-memory-refine' },
       }),
     ]
   } catch (error) {
@@ -3374,40 +3374,32 @@ function makeRememberTool(ctx, 固定sid = '', 启用 = true) {
   return defineTool({
     name: 'memory_ins',
     description:
-      '插入一条新记忆（以后每轮都可能想起来）。' +
-      '**一条只装一件事** —— 一件事 = 一个属性、一个约定、一次事件；' +
-      '「她身高一米七、体重52.5、平时侧睡」是**三件事**，分三次记（或一次说清一条），别挤在一条里。' +
-      '只记长期有价值的事：她明确说的重要的话、约定、她的喜好、她的状态（生病/很累/很开心）、你们之间发生的事。' +
-      '不要记日常琐事（吃了什么、今天天气怎样）、不要记你自己做过的事、不要记重复的东西。' +
-      '**要更新一条旧记忆**：先用 `memory_rm` 删掉旧的，再用这个记新的（或直接合并成一条新的）。' +
-      '同一条一天最多记一次。**记的时候安静地记，不要在回复里说「记下了」「我记住了」这种话** —— 那很像在汇报工作。',
+      'memory_ins(text, importance?, tags?, 取代?, 事实键?)\n' +
+      '插一条记忆（以后每轮可能想起来）。一条只装一件事；只记长期有价值的（她重要的话/约定/喜好/状态/你们之间的事），' +
+      '不记日常琐事、不记自己做过的事、不记重复的。\n' +
+      '更新旧记忆：memory_rm 删掉旧的再记，或填「取代」指认旧那条。安静地记，别在回复里说「记下了」。',
     parameters: {
       text: {
         type: 'string',
         required: true,
         description:
-          '要记住的事，一句话说清。**人称**：你自己是「我」，用户是「' + userPronoun() + '」，' +
-          '别人和别的 AI 直接写名字 —— 别把别人也写成「' + userPronoun() + '」。',
+          '一句话说清。人称：我是「我」，用户是「' + userPronoun() + '」，别人和别的 AI 直接写名字',
       },
       importance: {
         type: 'number',
-        description: '0 = 随口提过；0.5 = 比较重要；1 = 非常重要（约定、关系、她的核心状态）。不确定就写 0.5。',
+        description: '0-1，默认 0.5；1 = 约定 / 关系 / 核心状态',
       },
       tags: {
         type: 'array',
         items: { type: 'string' },
-        description: '几个关键词，方便以后被想起来（比如 ["睡觉","熬夜","约定"]）。',
+        description: '几个关键词',
       },
       // ⭐⭐ 2026-09-23：「过期条目标作废」的来源二 —— **只有它自己知道**的那部分 ✓
       //   像「拼团开了」更新「拼团还没开」，本地算法判不出来（两句话词面上不像），
       //   但它记的时候**心里清楚**这条是在更新哪条 → 顺手填一下就行，零额外开销 ✓
       取代: {
         type: 'string',
-        description:
-          '可选。如果这次记的**是在更新一件以前记过的事**（状态变了：还没→已经、暂时→现在能了、' +
-          '第几晚→第几晚），把**旧那条**的大意或原文片段填这儿（比如「拼团还没开」）。' +
-          '那条会标成「已被取代」—— 不再被想起来，但东西还留着、能撤销。' +
-          '**不是在更新旧的就别填**（只是相关、是另一件事，填了会把好记忆埋掉）。',
+        description: '这次在**更新**一件旧事时，填旧那条的原文片段（那条标「已被取代」，不再被想起、可撤销）。不是更新就别填',
       },
       // ⭐⭐ 2026-09-23（反馈第二点）：**事实键** —— 「同一个 key 只留最新一条」✓
       //   跟「取代」的区别：
@@ -3417,18 +3409,9 @@ function makeRememberTool(ctx, 固定sid = '', 启用 = true) {
       事实键: {
         type: 'string',
         description:
-          '可选。这条讲的是**哪一件事**，用「对象.方面」写，像 `她.身高`、`她.职业`、`约定.身边位置`。' +
-          '**同一个键 = 同一件事** → 以后只留最新那条，旧的自动标「已被取代」（还留得住、能恢复）。' +
-          '⚠ **键里不许写具体的值**：写 `她.身高`，不许写 `她.身高170` —— 写了值身高一变键就变，永远对不上。' +
-          '⚠ **键要稳**（过一年还这么叫：`她.睡姿` ✓、`她.最近睡姿` ✗）。' +
-          // ⚠⚠ 2026-09-24（真数据审出来的两处）——
-          //   工具说明里也得写，不然「记的时候顺手填」这一路照样填歪 ✗
-          '⚠⚠ **不许用「万能键」**：`…话.内容`、`…相关`、`…其他`、`…的事` 这种什么都能装的一个都不许用 —— ' +
-          '那会把几句毫不相干的话归成一件、收起来好几条。' +
-          '⚠⚠ **每天都会记的流水不许给键**（作息、吃了什么、当天做了什么）—— ' +
-          '那些是一件一件的事，不是同一个值的不同版本；给了同一个键就等于把流水删到只剩最后一天。' +
-          '口诀：**这个键是给「会变的那一个值」用的吗？** 是就给，不是就留空。' +
-          '⚠ 一次性的、以后不会再变的（某天发生的事），**留空就好** —— 拿不准就别填，别硬编。',
+          '这条讲的是哪一件事，「对象.方面」，像 她.身高、约定.身边位置。同键只留最新（旧的标「已被取代」，可恢复）。\n' +
+          '键里别写具体的值（写 她.身高，不写 她.身高170）；键要稳（她.睡姿 ✓ 她.最近睡姿 ✗）；' +
+          '不许万能键（…话.内容 / …相关 / …其他）；每天都会记的流水不许给键（作息、吃了什么）；拿不准就留空',
       },
     },
     output: {
@@ -3624,13 +3607,12 @@ function makeMemoryRmTool(ctx, 固定sid = '', 启用 = true) {
   return defineTool({
     name: 'memory_rm',
     description:
-      '删掉一条记忆（不再被想起来，但还留在「已删除」里，可撤销）。' +
-      'id 就是注入时每条前面的 `#xxxxxxxx`（前八位就够），也可以用原文片段定位。' +
-      '想「更新」一条记忆：先用这个删掉旧的，再用 `memory_ins` 记新的（或者把旧的整合成一条新的）。',
+      'memory_rm(id?, text?, reason?)\n' +
+      '删一条记忆（进「已删除」，可撤销）。更新记忆时先删旧的再用 memory_ins 记新的。',
     parameters: {
-      id: { type: 'string', description: '记忆 id：注入里每条前面的 #xxxxxxxx（前缀匹配就行）' },
-      text: { type: 'string', description: '或者给原文片段（和 id 二选一）' },
-      reason: { type: 'string', description: '可选，为什么删（比如「过时了」「合并进新的」）' },
+      id: { type: 'string', description: '注入里每条前面的 #xxxxxxxx（前八位够）' },
+      text: { type: 'string', description: '或给原文片段（和 id 二选一）' },
+      reason: { type: 'string', description: '为什么删（过时了 / 合并进新的）' },
     },
     output: {
       schema: {
@@ -3796,7 +3778,7 @@ function buildMemoryList(ctx) {
     // 不然新开的对话在列表里根本不出现，也就没有开关可点 ✗
     // ⚠ 但**被她归档的不要露** —— 归档了就该像归档了的样子（反馈）
     // ⚠⚠ 2026-09-21 再加一道：**DSH 里已经没有这个会话了，就别露** ——
-    //     记忆库是独立文件（.dsh\fish-memory\<会话id>.json），删会话不会连带删它，
+    //     记忆库是独立文件（.dsh\memory-refine\<会话id>.json），删会话不会连带删它，
     //     不拦的话列表里会堆一堆幽灵（反馈：那 11 条就是这么来的）
     const 归档的 = 归档名单(ctx)
     const 已知 = 已知会话ids(ctx)
@@ -3976,7 +3958,7 @@ const rel = (t, now) => { if(!t) return '（没记时间）'; const days=Math.fl
 const impName = (v) => v>=1?'非常重要':v>=0.5?'比较重要':'随口提过'
 
 async function load(){
-  const r = await fetch('/dsh-fish-memory/list', {cache:'no-store'})
+  const r = await fetch('/dsh-memory-refine/list', {cache:'no-store'})
   const d = await r.json()
 
   const now = Date.now()
@@ -4034,7 +4016,7 @@ async function load(){
 
 async function toggle(sid){
   const on = document.getElementById('btn_'+sid).textContent.indexOf('已开启') < 0
-  await fetch('/dsh-fish-memory/toggle', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({session:sid, on:on})})
+  await fetch('/dsh-memory-refine/toggle', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({session:sid, on:on})})
   load()
 }
 
@@ -4042,7 +4024,7 @@ async function save(){
   const keys = ['baseHalfLifeDays','emotionHalfLifeDays','threshold','maxItems','dailyQuota','rarityK','queryGate']
   const policy = {}
   for (const k of keys) policy[k] = Number(document.getElementById('p_'+k).value)
-  await fetch('/dsh-fish-memory/policy', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(policy)})
+  await fetch('/dsh-memory-refine/policy', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(policy)})
   document.getElementById('saved').textContent = '✓ 存好了'
   setTimeout(load, 300)
 }
@@ -4664,7 +4646,7 @@ export function apply(ctx) {
       )
 
     // 预设级的记忆开关（「使用记忆的预设」那一块）
-    mroute('/dsh-fish-memory/presets', async (req, res) => {
+    mroute('/dsh-memory-refine/presets', async (req, res) => {
       let presets = []
       try {
         const reg = ctx.get('agentPresets')
@@ -4679,7 +4661,7 @@ export function apply(ctx) {
       res.end(JSON.stringify({ ok: true, presets, bind: bindPresetList() }))
     })
 
-    mroute('/dsh-fish-memory/presets/toggle', async (req, res) => {
+    mroute('/dsh-memory-refine/presets/toggle', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -4700,12 +4682,12 @@ export function apply(ctx) {
       return 回话(200, { ok: true, preset: id, on: !!b.on })
     })
 
-    mroute('/dsh-fish-memory/page', (req, res) => {
+    mroute('/dsh-memory-refine/page', (req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       res.end(MEMORY_PAGE)
     })
 
-    mroute('/dsh-fish-memory/list', (req, res) => {
+    mroute('/dsh-memory-refine/list', (req, res) => {
       // 走 buildMemoryList，别再抄一份（抄的那份会跟这边分叉）✓
       const out = buildMemoryList(ctx)
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -4718,7 +4700,7 @@ export function apply(ctx) {
     //   remember 是模型自己记，**受会话开关管**（关着就不记）
     //   这个是**她在设置页后台手动加** —— 她是最高权限，**开关关着也照样能加** ✓
     //   （开关管的是「他自己记不记、注不注入」，管不到她手动写）
-    mroute('/dsh-fish-memory/add', async (req, res) => {
+    mroute('/dsh-memory-refine/add', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -4777,7 +4759,7 @@ export function apply(ctx) {
       return 回(200, { ok: true, id, count: data.memories.length })
     })
 
-    mroute('/dsh-fish-memory/toggle', async (req, res) => {
+    mroute('/dsh-memory-refine/toggle', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -4811,7 +4793,7 @@ export function apply(ctx) {
     //   于是她 851 条里有 212 条「看着有日期」的全漏了。强化后能补回 170 条 ✓
     //   ⚠ 只补**没有** at 的；已经有日期的一律不动 ✓（不覆盖任何已有信息）
     //   ⚠ 动数据之前先备份 ✓
-    mroute('/dsh-fish-memory/backfill-dates', async (req, res) => {
+    mroute('/dsh-memory-refine/backfill-dates', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -4860,7 +4842,7 @@ export function apply(ctx) {
     //   这个路由：拿模型一条条判「该不该一直记得」，判成 1 的就设成 stable_profile。
     //   ⚠ 判过的打 `stableChecked`，下次不再重复问（省 token）✓
     //   ⚠ 动数据前**先备份** ✓
-    mroute('/dsh-fish-memory/backfill-stable', async (req, res) => {
+    mroute('/dsh-memory-refine/backfill-stable', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5023,7 +5005,7 @@ export function apply(ctx) {
 
     // 设「她自己叫什么」和「用户的称呼」。
     // 设完顺手把那个会话已有的记忆也洗一遍 —— 老记忆不用手工改 ✓
-    mroute('/dsh-fish-memory/names', async (req, res) => {
+    mroute('/dsh-memory-refine/names', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5229,7 +5211,7 @@ export function apply(ctx) {
       )
     }
 
-    mroute('/dsh-fish-memory/duplicates', async (req, res) => {
+    mroute('/dsh-memory-refine/duplicates', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5263,7 +5245,7 @@ export function apply(ctx) {
     //   ⚠⚠ 2026-09-22 修（反馈：「把一些别的对的事实给删了」）：
     //     原来只收一份 id 名单，**服务端不验** —— 客户端算错了就真删错 ✗
     //     现在服务端**自己再算一遍相似度**：不像的**一条都不收**，并且报出来 ✓
-    mroute('/dsh-fish-memory/duplicates/merge', async (req, res) => {
+    mroute('/dsh-memory-refine/duplicates/merge', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5333,7 +5315,7 @@ export function apply(ctx) {
     // ⚠ 删记忆 —— 只给设置页用。
     // 插件**没有**给模型注册任何删除工具，所以模型那边调不到这个能力 ✓
     // 而且「删」是收进 deleted 里（不是销毁），手滑也找得回来 ✓
-    mroute('/dsh-fish-memory/delete', async (req, res) => {
+    mroute('/dsh-memory-refine/delete', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5502,7 +5484,7 @@ export function apply(ctx) {
     })
 
     // ⚠ 改记忆 —— 也只给设置页用（跟删除一样，模型那边没有这个工具）✓
-    mroute('/dsh-fish-memory/edit', async (req, res) => {
+    mroute('/dsh-memory-refine/edit', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5546,7 +5528,7 @@ export function apply(ctx) {
     })
 
     // 自动找「她」的称呼 —— 她懒得一个个手打 ✓
-    mroute('/dsh-fish-memory/names/scan', async (req, res) => {
+    mroute('/dsh-memory-refine/names/scan', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5583,7 +5565,7 @@ export function apply(ctx) {
     })
 
     // 扫旧档案 → 只出候选，**不落库** ✓
-    mroute('/dsh-fish-memory/import/scan', async (req, res) => {
+    mroute('/dsh-memory-refine/import/scan', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5670,7 +5652,7 @@ export function apply(ctx) {
     })
 
     // 落库 —— 挑完点「导入」才走这里 ✓
-    mroute('/dsh-fish-memory/import/apply', async (req, res) => {
+    mroute('/dsh-memory-refine/import/apply', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5777,7 +5759,7 @@ export function apply(ctx) {
     })
 
     // ⭐ 撤销一整批导入 —— 也是**收起来**（进 deleted），不是销毁 ✓
-    mroute('/dsh-fish-memory/import/undo', async (req, res) => {
+    mroute('/dsh-memory-refine/import/undo', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5818,7 +5800,7 @@ export function apply(ctx) {
     })
 
     // 列一个目录下的子文件夹 —— 给她「选」，不用手打 ✓
-    mroute('/dsh-fish-memory/dirs', async (req, res) => {
+    mroute('/dsh-memory-refine/dirs', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5858,7 +5840,7 @@ export function apply(ctx) {
     })
 
     // 列出 DSH 里能用哪些模型 —— 给她选 ✓
-    mroute('/dsh-fish-memory/models', async (req, res) => {
+    mroute('/dsh-memory-refine/models', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -5928,7 +5910,7 @@ export function apply(ctx) {
       return join(CFG_DIR, '生成的档案.md')
     }
 
-    mroute('/dsh-fish-memory/gen-sessions', async (req, res) => {
+    mroute('/dsh-memory-refine/gen-sessions', async (req, res) => {
       const 回 = (o) => {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
         res.end(JSON.stringify(o))
@@ -6011,7 +5993,7 @@ export function apply(ctx) {
       }
     })
 
-    mroute('/dsh-fish-memory/gen-plan', async (req, res) => {
+    mroute('/dsh-memory-refine/gen-plan', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6046,7 +6028,7 @@ export function apply(ctx) {
     })
 
     // ⚠⚠ 这一步**调模型、花钱**。界面必须一批一批调，跑完一批存一批。
-    mroute('/dsh-fish-memory/gen-run', async (req, res) => {
+    mroute('/dsh-memory-refine/gen-run', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6095,7 +6077,7 @@ export function apply(ctx) {
       }
     })
 
-    mroute('/dsh-fish-memory/gen-save', async (req, res) => {
+    mroute('/dsh-memory-refine/gen-save', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6147,7 +6129,7 @@ export function apply(ctx) {
     })
 
     // 提炼：把导入进来的档案原文改写成真正的记忆 —— 一次一批，界面循环调 ✓
-    mroute('/dsh-fish-memory/refine', async (req, res) => {
+    mroute('/dsh-memory-refine/refine', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6310,7 +6292,7 @@ export function apply(ctx) {
 //     挂在对话那一轮上会把那一轮卡死。她的死规矩，也对。
 //   ⚠ 动之前**先另存一份**（跟清空/批量清掉同一个道理）——
 //     归并那一步会标「已被取代」，标错了一片就得能整份退回来 ✗
-mroute('/dsh-fish-memory/wash-keys', async (req, res) => {
+mroute('/dsh-memory-refine/wash-keys', async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
   let b = {}
@@ -6465,7 +6447,7 @@ mroute('/dsh-fish-memory/wash-keys', async (req, res) => {
 //   ⚠ 界面上给一个「把补的键全摘掉」——
 //     几百条自动补键，她要是看着不对，得能一键回到洗之前。
 //     ⚠ 只摘「这一轮之外没人动过」的：她手工填的键不许被这个按钮抹掉 ✗
-mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
+mroute('/dsh-memory-refine/wash-keys/undo', async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
   let b = {}
@@ -6513,7 +6495,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
 // 提炼改坏了怎么办 —— 退回原文 ✓
     // 单条：{ session, id }；整批：{ session, all: true }
     // 退回之后它会重新变成「没提炼的」，想再提一遍随时可以
-    mroute('/dsh-fish-memory/refine/undo', async (req, res) => {
+    mroute('/dsh-memory-refine/refine/undo', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6549,7 +6531,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
 
     // 把「跳过」的重新放回队列 —— 模型偶尔整批回不出东西，那些不该永远躺着 ✓
     // 只放回**没改写过的**（跳过的原文还在）；改写过的走「退回原文」那条路
-    mroute('/dsh-fish-memory/refine/retry', async (req, res) => {
+    mroute('/dsh-memory-refine/refine/retry', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6583,7 +6565,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     // 把记忆复制到**另一个会话** —— 她想在新对话里测（新对话没有上下文，最干净）✓
     // { session: 从哪来, to: 到哪去 }
     // ⚠ 会**覆盖**目标那边的记忆（覆盖前 saveStore 会自动备份一份 .bak）
-    mroute('/dsh-fish-memory/copy-to', async (req, res) => {
+    mroute('/dsh-memory-refine/copy-to', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6633,7 +6615,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     const 存档目录 = join(CFG_DIR, 'memory-archives')
     const 存档格式 = 'dsh-xykp.memory'
 
-    mroute('/dsh-fish-memory/archive/export', async (req, res) => {
+    mroute('/dsh-memory-refine/archive/export', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6673,7 +6655,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       res.end(JSON.stringify(out))
     })
 
-    mroute('/dsh-fish-memory/archive/import', async (req, res) => {
+    mroute('/dsh-memory-refine/archive/import', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6721,7 +6703,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 从其他会话或预设导入（拉过来，合并，不覆盖）----
-    mroute('/dsh-fish-memory/pull', async (req, res) => {
+    mroute('/dsh-memory-refine/pull', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6768,7 +6750,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 会话列表（给「从会话提炼并导入」挑）----
-    mroute('/dsh-fish-memory/conversations', (req, res) => {
+    mroute('/dsh-memory-refine/conversations', (req, res) => {
       let list = []
       try {
         const 标题 = ctx.get('sessionTitle')
@@ -6789,7 +6771,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 从会话提炼并导入：用当前对话的模型，不单独指定 ----
-    mroute('/dsh-fish-memory/summary/import', async (req, res) => {
+    mroute('/dsh-memory-refine/summary/import', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6880,7 +6862,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 整体修改：人称替换 / 自定义提示词 ----
-    mroute('/dsh-fish-memory/rename', async (req, res) => {
+    mroute('/dsh-memory-refine/rename', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6916,7 +6898,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       res.end(JSON.stringify(out))
     })
 
-    mroute('/dsh-fish-memory/prompt', async (req, res) => {
+    mroute('/dsh-memory-refine/prompt', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -6939,7 +6921,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 转移到下一个对话（仅预设；一次性）----
-    mroute('/dsh-fish-memory/transfer/next', async (req, res) => {
+    mroute('/dsh-memory-refine/transfer/next', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7011,7 +6993,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 交接历史：生成就留着，除非手动删（2026-10-27 主人提的）----
-    mroute('/dsh-fish-memory/transfer/history', async (req, res) => {
+    mroute('/dsh-memory-refine/transfer/history', async (req, res) => {
       let out = { ok: false, message: '？' }
       try {
         const c = loadCfg()
@@ -7048,7 +7030,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       res.end(JSON.stringify(out))
     })
 
-    mroute('/dsh-fish-memory/transfer/history/delete', async (req, res) => {
+    mroute('/dsh-memory-refine/transfer/history/delete', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7083,7 +7065,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 转移到文档：概括导出，路径固定、可改 ----
-    mroute('/dsh-fish-memory/transfer/doc', async (req, res) => {
+    mroute('/dsh-memory-refine/transfer/doc', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7117,7 +7099,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 存档列表（给「从存档导入」快速选）----
-    mroute('/dsh-fish-memory/archive/list', (req, res) => {
+    mroute('/dsh-memory-refine/archive/list', (req, res) => {
       let files = []
       try {
         if (existsSync(存档目录)) {
@@ -7139,7 +7121,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // ---- 整体修改：让模型按格式改一遍，先出预览，不直接落库 ----
-    mroute('/dsh-fish-memory/rewrite', async (req, res) => {
+    mroute('/dsh-memory-refine/rewrite', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7183,7 +7165,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       res.end(JSON.stringify(out))
     })
 
-    mroute('/dsh-fish-memory/rewrite/apply', async (req, res) => {
+    mroute('/dsh-memory-refine/rewrite/apply', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7224,7 +7206,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       res.end(JSON.stringify(out))
     })
 
-    mroute('/dsh-fish-memory/rewrite/undo', async (req, res) => {
+    mroute('/dsh-memory-refine/rewrite/undo', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7248,7 +7230,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // 先验一下宿主模型通不通（诊断用）✓
-    mroute('/dsh-fish-memory/llm-check', async (req, res) => {
+    mroute('/dsh-memory-refine/llm-check', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7267,7 +7249,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
     })
 
     // 给记忆扩词 —— 一次一批，界面循环调它，显示进度 ✓
-    mroute('/dsh-fish-memory/expand', async (req, res) => {
+    mroute('/dsh-memory-refine/expand', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let b = {}
@@ -7331,7 +7313,7 @@ mroute('/dsh-fish-memory/wash-keys/undo', async (req, res) => {
       res.end(JSON.stringify(out))
     })
 
-    mroute('/dsh-fish-memory/policy', async (req, res) => {
+    mroute('/dsh-memory-refine/policy', async (req, res) => {
       let body = ''
       for await (const chunk of req) body += chunk
       let patch = {}
