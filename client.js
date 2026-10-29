@@ -4971,6 +4971,154 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       return { apply: apply, inject: inject };
     })();
 
+    // ── QQ 通道（qq-adapter 的运行时覆盖 ui-config.json）──
+    // 2026-10-29：把原来 39273/adapter-ui 那页搬进设置左侧栏；后端走 /dsh-qq-adapter/overrides
+    const QQ_GROUPS = [
+      ['mention', '@ 我才转进会话'],
+      ['all', '群里每条都转'],
+    ]
+
+    function QQSection() {
+      const [ov, setOv] = React.useState(null)
+      const [err, setErr] = React.useState('')
+      const [msg, setMsg] = React.useState('')
+      React.useEffect(() => {
+        fetch('/dsh-qq-adapter/overrides', { cache: 'no-store' })
+          .then((r) => r.json())
+          .then((j) => {
+            if (j && j.ok) setOv(j.overrides || {})
+            else setErr(String((j && j.error) || '读不到覆盖配置'))
+          })
+          .catch((e) => setErr(String(e)))
+      }, [])
+      const set = (k, v) => setOv((o) => ({ ...(o || {}), [k]: v }))
+      const save = async () => {
+        setMsg('保存中…')
+        setErr('')
+        try {
+          const r = await fetch('/dsh-qq-adapter/overrides', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(ov || {}),
+          })
+          const j = await r.json()
+          if (j && j.ok) {
+            setOv(j.overrides || {})
+            setMsg('已保存（下一轮 tick 生效，不用重启）')
+          } else {
+            setMsg('')
+            setErr(String((j && j.error) || '保存失败'))
+          }
+        } catch (e) {
+          setMsg('')
+          setErr(String(e))
+        }
+      }
+      const box = {
+        width: '100%',
+        padding: '6px 8px',
+        borderRadius: '6px',
+        border: '1px solid var(--dsw-alias-border-l2, #444)',
+        background: 'transparent',
+        color: 'inherit',
+        fontSize: '13px',
+      }
+      const row = { display: 'grid', gridTemplateColumns: '220px 1fr', gap: '10px', alignItems: 'center', marginBottom: '8px' }
+      const lab = { fontSize: '13px', color: 'var(--dsw-alias-label-secondary, #aaa)' }
+      const mono = { ...box, minHeight: '64px', fontFamily: 'ui-monospace, monospace' }
+      if (err && !ov) return React.createElement('div', { style: { padding: '12px', color: '#f88' } }, '读不到：' + err)
+      if (!ov) return React.createElement('div', { style: { padding: '12px', opacity: 0.7 } }, '读取中…')
+      return React.createElement(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: '820px' } },
+        React.createElement('h3', { style: { margin: 0, fontSize: '15px' } }, 'QQ 通道（热改，不用重启）'),
+        React.createElement(
+          'div',
+          { style: row },
+          React.createElement('div', { style: lab }, '合并窗口 coalesceSeconds（秒）'),
+          React.createElement('input', {
+            style: box,
+            type: 'number',
+            value: ov.coalesceSeconds ?? 10,
+            onChange: (e) => set('coalesceSeconds', Number(e.target.value) || 0),
+          }),
+        ),
+        React.createElement(
+          'div',
+          { style: row },
+          React.createElement('div', { style: lab }, '群聊唤醒 groupWake'),
+          React.createElement(
+            'select',
+            { style: box, value: ov.groupWake || 'all', onChange: (e) => set('groupWake', e.target.value) },
+            QQ_GROUPS.map(([v, t]) => React.createElement('option', { key: v, value: v }, t)),
+          ),
+        ),
+        React.createElement(
+          'div',
+          { style: row },
+          React.createElement('div', { style: lab }, '默认目标 defaultTarget'),
+          React.createElement('input', {
+            style: box,
+            value: ov.defaultTarget || '',
+            placeholder: 'p-alive 或 s-会话id',
+            onChange: (e) => set('defaultTarget', e.target.value),
+          }),
+        ),
+        React.createElement(
+          'div',
+          { style: row },
+          React.createElement('div', { style: lab }, '快速通道 fastUids（每行一个）'),
+          React.createElement('textarea', {
+            style: mono,
+            value: (ov.fastUids || []).join('\n'),
+            onChange: (e) => set('fastUids', e.target.value.split('\n').map((s) => s.trim()).filter(Boolean)),
+          }),
+        ),
+        React.createElement(
+          'div',
+          { style: row },
+          React.createElement('div', { style: lab }, '映射 mappings（每行：chat target）'),
+          React.createElement('textarea', {
+            style: mono,
+            value: (ov.mappings || []).map((m) => String(m.chat) + ' ' + String(m.target)).join('\n'),
+            onChange: (e) =>
+              set(
+                'mappings',
+                e.target.value
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                  .map((s) => {
+                    const i = s.indexOf(' ')
+                    return i < 0 ? { chat: s, target: '' } : { chat: s.slice(0, i), target: s.slice(i + 1).trim() }
+                  }),
+              ),
+          }),
+        ),
+        React.createElement(
+          'div',
+          { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
+          React.createElement(
+            'button',
+            {
+              onClick: save,
+              style: {
+                padding: '6px 16px',
+                borderRadius: '8px',
+                border: '1px solid var(--dsw-alias-border-l2, #444)',
+                background: 'var(--dsw-alias-bg-l2, #222)',
+                color: 'inherit',
+                cursor: 'pointer',
+              },
+            },
+            '保存',
+          ),
+          msg ? React.createElement('span', { style: { fontSize: '12px', opacity: 0.8 } }, msg) : null,
+          err ? React.createElement('span', { style: { fontSize: '12px', color: '#f88' } }, err) : null,
+        ),
+      )
+    }
+
     function apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
@@ -4994,6 +5142,18 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
         }
       } catch (e) {
         console.warn('[dsh-xykp] session-delete 初始化失败：', e)
+      }
+
+      // QQ 通道设置（qq-adapter 的运行时覆盖）
+      try {
+        slots.inject('settings.section', () =>
+          slots.register(
+            { name: 'settings.section', id: 'qq-adapter', order: 52, label: () => 'QQ 通道' },
+            () => React.createElement(QQSection),
+          ),
+        )
+      } catch (e) {
+        console.warn('[dsh-xykp] QQ 通道设置页注册失败：', e)
       }
     }
 
