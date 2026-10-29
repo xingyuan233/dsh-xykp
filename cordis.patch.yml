@@ -50,5 +50,5 @@
     # ── observer
     - id: dsh-prosecutor
       name: 'dsh-xykp/observer/dsh-prosecutor'
-    - id: gate
+    - id: plugin-gate
       name: 'dsh-xykp/observer/plugin-gate'

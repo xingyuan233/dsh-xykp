@@ -85,25 +85,29 @@ function toolNames(agent) {
 }
 
 function tokensOf(ctx, agent) {
+  // 2026-10-29：看的是**当前上下文长度**，不是累计用量。
+  // （累计用量每步都会涨几十万，拿它比阈值等于每步都触发。）
   try {
     const registry = ctx.get ? ctx.get('sessionProjections') : null
     if (!registry || !agent.session) return 0
-    const usage = registry.stateOf(agent.session, 'tokenUsage')
-    const t = usage?.totals || {}
-    return (t.uncachedInputTokens || 0) + (t.cacheReadTokens || 0) + (t.outputTokens || 0)
+    const pressure = registry.stateOf(agent.session, 'contextPressure')
+    const used = pressure?.projectedTokens ?? pressure?.pressureTokens
+    if (Number.isFinite(Number(used))) return Number(used)
+    return 0
   } catch {
     return 0
   }
 }
 
 export function apply(ctx, config = {}) {
-  const every = Math.max(0, Number(config.everyTokens ?? 60000))
+  const every = Math.max(0, Number(config.everyTokens ?? 200000))
   if (!every) {
     log('everyTokens=0，不启用')
     return
   }
   const dir = presetDirOf(config)
-  const mounted = new Map() // sid -> off
+  const mounted = (globalThis.__ctxRefreshMounted ||= new Map()) // sid -> off（模块级，防重复挂）
+  const sharedState = (globalThis.__ctxRefreshState ||= new Map()) // sid -> state（几个定时器共用同一道闸）
 
   function reminderFor(agent) {
     const preset = (() => {
@@ -114,7 +118,7 @@ export function apply(ctx, config = {}) {
         return ''
       }
     })()
-    const parts = ['【提醒 · 隔太久了，把开头再贴一遍】']
+    const parts = ['〔上下文提醒 · 把开头要点再带一遍〕']
     if (preset) parts.push('当前预设：' + preset)
     if (config.withPrefix !== false && preset) {
       const prefix = readPresetPrefix(dir, preset)
@@ -131,34 +135,42 @@ export function apply(ctx, config = {}) {
   function mount(agent) {
     const sid = String(agent?.session?.id || agent?.id || '')
     if (!sid || mounted.has(sid)) return
-    const state = { lastAt: tokensOf(ctx, agent), pending: false }
-    try {
-      const off = agent.ctx.systemPrompt.section({
-        name: 'context-refresh',
-        order: 10500,
-        text: () => {
-          const now = tokensOf(ctx, agent)
-          if (!state.pending && now - state.lastAt >= every) {
-            state.pending = true
-            state.lastAt = now
-            try {
-              log('提醒一次：' + sid + '（累计 ' + now + ' tokens）')
-            } catch {}
-          }
-          if (!state.pending) return ''
-          state.pending = false
-          try {
-            return reminderFor(agent)
-          } catch (error) {
-            warn('生成提醒失败：', error?.message || error)
-            return ''
-          }
-        },
-      })
-      mounted.set(sid, off)
-    } catch (error) {
-      warn('挂提醒段失败（' + sid + '）：', error?.message || error)
-    }
+    // 2026-10-29：不再往 systemPrompt 里塞（那会重写请求开头、把前缀缓存整段作废），
+    // 改成走 tool-gate 的统一通知通道（steer 一条消息，前缀一个字不动）。
+    const state = sharedState.get(sid) || { lastAt: tokensOf(ctx, agent), busy: false, lastFiredAt: 0 }
+    sharedState.set(sid, state)
+    const timer = setInterval(() => {
+      try {
+        if (state.busy) return
+        const now = tokensOf(ctx, agent)
+        if (now - state.lastAt < every) return
+        state.busy = true
+        state.lastAt = now
+        state.lastFiredAt = Date.now()
+        let text = ''
+        try {
+          text = reminderFor(agent)
+        } catch (error) {
+          warn('生成提醒失败：', error?.message || error)
+          state.busy = false
+          return
+        }
+        // 2026-10-29：不 steer（那会凭空多一轮「收到执行请求」），改成排队，
+        // 等下一条用户消息进来时由 tool-gate 一起贴到开头。
+        try {
+          globalThis.__toolGate?.queueNotice?.(text)
+          log('排队重贴：' + sid + '（累计 ' + now + ' tokens）')
+        } catch (error) {
+          warn('排队失败：', error?.message || error)
+        } finally {
+          state.busy = false
+        }
+      } catch (error) {
+        warn('重贴检查失败：', error?.message || error)
+      }
+    }, 60_000)
+    if (typeof timer.unref === 'function') timer.unref()
+    mounted.set(sid, () => clearInterval(timer))
   }
 
   function sweep() {

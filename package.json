@@ -24,6 +24,7 @@
     "./chat/token-reporter": "./chat/token-reporter/index.js",
     "./chat/context-refresh": "./chat/context-refresh/index.js",
     "./chat/tool-gate": "./chat/tool-gate/index.js",
+    "./chat/tooldesc-control": "./chat/tooldesc-control/index.js",
     "./chat/toolret-steward": "./chat/toolret-steward/lib/index.js",
     "./senses/screenshot": "./senses/screenshot/index.js",
     "./senses/keymouse": "./senses/keymouse/index.js",

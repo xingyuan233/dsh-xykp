@@ -95,6 +95,57 @@ export function apply(ctx, config = {}) {
     return rule.lowerKeys.some((k) => lower.includes(k))
   }
 
+  // ── 推送状态落盘（2026-10-29）──
+  // 重启会把门控状态清掉：同一个会话里本来已经推出来的工具又被扣回去 → 请求开头的 tools 少一个 →
+  // 前缀缓存整段作废。所以把「哪个会话推过哪些工具」写盘，重启后第一轮照旧推回来。
+  const statePath = () => {
+    const base = globalThis.process?.env?.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
+    return base + '\\xykp\\tool-gate-state.json'
+  }
+  const fsx = () => globalThis.process?.getBuiltinModule?.('node:fs')
+  const readStateFile = () => {
+    try {
+      return JSON.parse(fsx().readFileSync(statePath(), 'utf8')) || {}
+    } catch {
+      return {}
+    }
+  }
+  const sidOf = (agent) => String(agent?.session?.id || agent?.id || '')
+  const persistPushed = (agent, toolName) => {
+    const sid = sidOf(agent)
+    if (!sid) return
+    try {
+      const all = readStateFile()
+      const list = new Set(Array.isArray(all[sid]) ? all[sid] : [])
+      list.add(toolName)
+      all[sid] = [...list]
+      fsx().writeFileSync(statePath(), JSON.stringify(all, null, 2))
+    } catch (error) {
+      warn('落盘推送状态失败：', error?.message || error)
+    }
+  }
+  const restorePushed = (agent) => {
+    const sid = sidOf(agent)
+    if (!sid) return
+    const st = stateOf(agent)
+    if (!st) return
+    const saved = readStateFile()[sid]
+    if (!Array.isArray(saved)) return
+    for (const name of saved) {
+      if (st.registered.has(name)) continue
+      const def = withheld.get(name)
+      if (!def) continue
+      try {
+        agent.ctx.tools.register(def)
+        st.registered.add(name)
+        st.pushed[name] = st.pushed[name] || 1
+        log('恢复推过的 ' + name + '（重启后不抖工具表）')
+      } catch (error) {
+        warn('恢复 ' + name + ' 失败：', error?.message || error)
+      }
+    }
+  }
+
   function tryPush(agent, toolName) {
     const rule = compiled.get(toolName)
     const def = withheld.get(toolName)
@@ -116,16 +167,12 @@ export function apply(ctx, config = {}) {
     st.lastTurn[toolName] = st.turn
     st.systemCount[toolName] = (st.systemCount[toolName] || 0) + 1
     log('推出 ' + toolName + '（第 ' + st.pushed[toolName] + ' 次，turn=' + st.turn + '）')
+    persistPushed(agent, toolName)
+    if (!pendingUnlocks.includes(toolName)) pendingUnlocks.push(toolName)
+    // 2026-10-29：工具的「系统说明」也不再往 systemPrompt 里塞（那等于重写请求开头、废掉前缀缓存），
+    // 攒进下一轮那条消息通知里，跟「已解锁」一起说明。
     if (rule.systemText && (st.systemCount[toolName] - 1) % rule.system === 0) {
-      try {
-        agent.ctx.systemPrompt.section({
-          name: 'tool-gate-' + toolName,
-          order: 10400,
-          text: () => rule.systemText,
-        })
-      } catch (error) {
-        warn('挂 ' + toolName + ' 的说明段失败：', error?.message || error)
-      }
+      pendingUnlockTexts[toolName] = String(rule.systemText)
     }
     return true
   }
@@ -139,8 +186,60 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // ── 统一的通知通道（2026-10-29）──
+  // 往当前会话 steer 一条消息：不碰请求开头（前缀缓存照旧），下一轮第一屏就能看到。
+  // 注意：steer 会被宿主当成一次「收到执行请求」，凭空多一轮回复——所以**闲话一律走 queueNotice**，
+  // 只有真的要立刻说的时候才用 notify。
+  const pendingExtras = []
+  const NOTICE_KIND = 'tool-gate:notice'
+  async function notify(agent, text) {
+    if (!agent || !text) return false
+    const note = {
+      id: globalThis.crypto?.randomUUID?.() ?? ('gate-notice-' + Date.now()),
+      role: 'user',
+      source: { kind: NOTICE_KIND },
+      content: [{ type: 'text', text }],
+    }
+    try {
+      if (typeof agent.steer === 'function') await agent.steer(note)
+      else if (typeof agent.followup === 'function') await agent.followup(note)
+      else return false
+      return true
+    } catch (error) {
+      warn('通知发出失败：', error?.message || error)
+      return false
+    }
+  }
+
+  // 本轮新解锁的工具：攒着，下一轮消息开头一并告诉模型（不往 systemPrompt 里塞，前缀不动）
+  const pendingUnlocks = []
+  const pendingUnlockTexts = Object.create(null)
+
+  // 工具说明变更（tool-desc-pin 记在 globalThis.__ykpToolDescChanges）
+  // 内置工具（pwsh / read / edit …）会被 wire 精简改写文案，那不是「人改了说明」，按规则忽略。
+  const DESC_WINDOW_MS = 10 * 60 * 1000
+  const pendingDescNotices = () => {
+    const pending = globalThis.__ykpToolDescChanges
+    if (!Array.isArray(pending) || pending.length === 0) return []
+    const ignore = new Set(config.descNoticeIgnore || [])
+    return pending.filter((change) => {
+      if (!change || change.sent) return false
+      if (ignore.has(change.name)) return false
+      // 内置工具（pwsh/read/edit…）的文案会被 wire 精简改写，冻结补丁会给它们打 builtin，跳过
+      if (change.builtin) return false
+      const at = Date.parse(change.at || '')
+      return Number.isFinite(at) ? Date.now() - at < DESC_WINDOW_MS : true
+    })
+  }
+
   // ── 给别的插件用的服务 ──
   const service = {
+    /** 统一通知通道：别的插件（比如 context-refresh）想跟用户说句话就走这里 */
+    notify,
+    /** 攒一条闲话，等下一条用户消息进来时一起带到开头（不单独开一轮回复） */
+    queueNotice: (text) => {
+      if (text && !pendingExtras.includes(String(text))) pendingExtras.push(String(text))
+    },
     /** 有规则就扣着（返回 true），没规则就返回 false 让调用方自己注册 */
     offer(def) {
       if (__R.offer(def)) return true
@@ -170,17 +269,60 @@ export function apply(ctx, config = {}) {
     warn('ctx.provide 不可用（不影响，走全局变量）：', error?.message || error)
   }
 
+  // 重入守卫：发通知本身就是往收件箱插消息，会同步再触发本 handler
+  let dispatching = false
+
   // ── 消息一进来就扫（比 pre-step 早：用户消息刚进收件箱那一刻，工具就能赶上同一轮的第一个请求）──
   try {
     ctx.on('agent/inbox/inserted', (payload) => {
       try {
+        if (dispatching) return
         const agent = payload?.agent
         const st = stateOf(agent)
         if (st) st.turn += 1
         // 事件 payload 是 { agent, message }（单数，挨条发）；以前写成 messages，扫到的是空串
         const list = payload?.messages || payload?.inserted || (payload?.message ? [payload.message] : [])
+        restorePushed(agent)
         const text = (Array.isArray(list) ? list : [list]).map(textOf).join('\n')
         scan(agent, text)
+        // 工具说明变更：同一套通知通道发一条独立消息（不碰前缀）
+        const notes = pendingDescNotices()
+        const unlocks = pendingUnlocks.splice(0, pendingUnlocks.length)
+        const extras = pendingExtras.splice(0, pendingExtras.length)
+        if (notes.length || unlocks.length || extras.length) {
+          // 同步占位：notify → steer 会同步插消息、再触发本 handler；
+          // sent 若等到 .then 才置位，二次进入时会重发同一批 → 无限递归（2026-10-29 爆栈）
+          for (const change of notes) change.sent = true
+          dispatching = true
+          const parts = []
+          for (const name of unlocks) {
+            const extra = pendingUnlockTexts[name]
+            delete pendingUnlockTexts[name]
+            const def = withheld.get(name)
+            const desc = typeof def?.description === 'string' ? def.description : ''
+            parts.push(['〔已解锁工具 · ' + name + '〕',
+              '关键词命中，这个工具现在可以用了，说明如下：',
+              desc].join('\n'))
+            if (extra) parts.push(String(extra))
+          }
+          for (const change of notes) {
+            parts.push(['〔工具说明已更新 · ' + change.name + '〕',
+              '请求开头的工具定义保持不变（为了复用缓存），以这段为新说明：',
+              String(change.after || '')].join('\n'))
+          }
+          notify(agent, parts.concat(extras).join('\n\n')).then((ok) => {
+            dispatching = false
+            if (!ok) {
+              for (const change of notes) change.sent = false
+              return
+            }
+            log('推送通知：解锁 ' + unlocks.length + ' 个，说明变更 ' + notes.length + ' 条')
+          }).catch((error) => {
+            dispatching = false
+            for (const change of notes) change.sent = false
+            warn('推送通知失败：', error?.message || error)
+          })
+        }
       } catch (error) {
         warn('inbox 扫描失败：', error?.message || error)
       }
@@ -218,7 +360,10 @@ export function apply(ctx, config = {}) {
     try {
       ctx.on('agent/assistant-stream', (payload) => {
         try {
-          scan(payload?.agent, textOf(payload?.frame || payload))
+          const frame = payload?.frame ?? payload
+          // 2026-10-29：思考（reasoning）帧的结构和正文不一样，textOf 只认几种 key，取不全；
+          // 再扫一遍原始 JSON，关键词藏在哪个字段里都能撞上。
+          scan(payload?.agent, textOf(frame) + '\n' + JSON.stringify(frame ?? {}))
         } catch {}
       })
     } catch (error) {
