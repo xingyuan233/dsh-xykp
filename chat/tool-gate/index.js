@@ -171,13 +171,31 @@ export function apply(ctx, config = {}) {
     ctx.set ? ctx.set('toolGate', service) : null
   } catch {}
 
-  // ── 每步都扫一遍 ──
+  // ── 消息一进来就扫（比 pre-step 早：用户消息刚进收件箱那一刻，工具就能赶上同一轮的第一个请求）──
+  try {
+    ctx.on('agent/inbox/inserted', (payload) => {
+      try {
+        const agent = payload?.agent || payload?.target?.agent
+        const st = stateOf(agent)
+        if (st) st.turn += 1
+        const msgs = payload?.messages || payload?.inserted || payload?.items || []
+        const text = (Array.isArray(msgs) ? msgs : [msgs]).map(textOf).join('\n')
+        scan(agent, text)
+      } catch (error) {
+        warn('inbox 扫描失败：', error?.message || error)
+      }
+    })
+  } catch (error) {
+    warn('挂 inbox 失败：', error?.message || error)
+  }
+
+  // ── 每步再扫一遍（工具结果回传、补漏）──
   try {
     ctx.on('agent/pre-step', (payload, next) => {
       try {
         const agent = payload?.agent
         const st = stateOf(agent)
-        if (st && Number.isFinite(payload?.turn)) st.turn = Number(payload.turn)
+        if (st && Number.isFinite(payload?.turn) && payload.turn > st.turn) st.turn = Number(payload.turn)
         const text = (payload?.messages || []).map(textOf).join('\n')
         scan(agent, text)
       } catch (error) {
