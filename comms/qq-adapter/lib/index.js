@@ -19,7 +19,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { chatKeyOf, resolveRoute, parseTargetRef, formatIncoming, DEFAULTS as ROUTER_DEFAULTS } from './router.js'
 import { createBridge } from './bridge.js'
 import { toSilk, cleanupSilk } from './silk.js'
-import { readOverride, pickRouting } from './overrides.js'
+import { readOverride, pickRouting, overridePath } from './overrides.js'
 import { COMMANDS, COMMAND_INDEX, helpText, parseCommand, parseSessionArgs, isOwner } from './commands.js'
 import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ago, listWorkspaces, presetPools } from './session-store.js'
 
@@ -1773,6 +1773,46 @@ export async function apply(ctx, config = {}) {
     }))
   }
   } catch (err) { warn('注册工具失败（不影响分流）：', err?.message || err) }
+
+  // ── 设置页用：读写运行时覆盖（home\xykp\qq-adapter\ui-config.json）──
+  // 2026-10-29：把原来 39273/adapter-ui 那个独立页面搬进 DSH 设置页
+  try {
+    // ⚠ inject 里没有 webServer → 直接读 ctx.webServer 会抛，用 ctx.get
+    const webServer = (() => { try { return ctx.get('webServer') } catch { return null } })()
+    if (webServer && typeof webServer.register === 'function') {
+      const route = (path, handler) =>
+        ctx.effect(() => webServer.register({ kind: 'exact', path, handler }))
+      route('/dsh-qq-adapter/overrides', async (req, res) => {
+        const send = (code, body) => {
+          try {
+            res.writeHead(code, { 'content-type': 'application/json' })
+            res.end(JSON.stringify(body))
+          } catch (e) { /* 连接没了就算了 */ }
+        }
+        try {
+          const file = overridePath()
+          if (req.method === 'GET') {
+            const all = await readOverride()
+            return send(200, { ok: true, instance: INST, overrides: all[INST] || all.default || {} })
+          }
+          if (req.method !== 'POST') return send(405, { ok: false, error: '只能 GET / POST' })
+          let body = ''
+          for await (const chunk of req) body += chunk
+          const patch = JSON.parse(body || '{}')
+          const all = await readOverride()
+          all[INST] = { ...(all[INST] || all.default || {}), ...patch }
+          await mkdir(dirname(file), { recursive: true })
+          await writeFile(file, JSON.stringify(all, null, 2), 'utf8')
+          return send(200, { ok: true, instance: INST, overrides: all[INST] })
+        } catch (err) {
+          return send(500, { ok: false, error: String(err?.message || err) })
+        }
+      })
+      log('设置页端点已挂：/dsh-qq-adapter/overrides')
+    } else {
+      warn('宿主没有 webServer，设置页改动端没挂上（不影响分流）')
+    }
+  } catch (err) { warn('挂设置页端点失败（不影响分流）：', err?.message || err) }
 }
 
 export const _internal = { resolveTarget, deliver, SOURCE_KIND }

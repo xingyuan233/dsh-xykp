@@ -19,8 +19,7 @@ window.__ModuleLoader__.load({
     const exports = module.exports
 
     const NAMESPACES = [
-      { ns: 'qq-adapter', title: 'QQ 通道 · 樱 3793339506（39272）', prefix: 'qq_' },
-      { ns: 'qq-adapter-whale', title: 'QQ 通道 · 鲸鱼娘 2909433072（39273）', prefix: 'qq2_' },
+      { ns: 'qq-adapter', title: 'QQ 通道 · 鲸鱼娘 2909433072（39273）', prefix: 'qq_' },
     ]
 
     const SCALARS = [
@@ -34,9 +33,13 @@ window.__ModuleLoader__.load({
       ['pollMs', '轮询间隔（毫秒）', 'number'],
       ['skipBacklog', '启动时跳过积压', 'boolean'],
       ['autoStartShell', '桥挂了自动拉起壳', 'boolean'],
+      ['notifyTopic', '登录失效时推二维码的 ntfy 主题', 'string'],
+      ['notifyEveryMinutes', '推码间隔（分钟）', 'number'],
+      ['notifyMax', '最多推几次', 'number'],
     ]
 
     const ARRAYS = [
+      ['ownerUids', '能发管理指令的人（每行一个 u-…）'],
       ['blocked', '禁用的私聊/群聊（每行一个 u-… / g-…）'],
       ['allowed', '启用的私聊/群聊（白名单模式用）'],
       ['mappings', '自定义映射（每行：u-uid → p-预设 或 s-会话id）'],
