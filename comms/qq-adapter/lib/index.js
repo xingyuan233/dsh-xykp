@@ -25,8 +25,8 @@ import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ag
 
 export const name = 'qq-adapter'
 
-/** 必须先拿到 agents（推消息进会话）；tools 没有也能跑（自测环境） */
-export const inject = ['agents', 'tools']
+/** 必须先拿到 agents（推消息进会话）；tools 没有也能跑（自测环境）；systemPrompt 用来塞「QQ 通道权限不够怎么办」 */
+export const inject = ['agents', 'tools', 'systemPrompt']
 
 /** 这条 user/message 的来源（宿主要求每条消息都有 source.kind） */
 export const SOURCE_KIND = 'plugin:qq-adapter'
@@ -76,6 +76,7 @@ export const Config = Schema.object({
   shellDir: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell').description('shell 工作目录'),
   ffmpegPath: Schema.string().default('ffmpeg').description('发语音时转 PCM 用的 ffmpeg（PATH 里没有就给绝对路径）'),
   silkEncoderPath: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\tools\\\\silk\\\\silk_encode.exe').description('silk 编码器路径（自编的 silk_encode.exe）'),
+  permissionNote: Schema.boolean().default(true).description('往系统提示词里塞「QQ 通道权限不够怎么办」那段'),
 })
 
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -186,6 +187,32 @@ export async function apply(ctx, config = {}) {
   const agentsSvc = ctx.agents
   const INST = String(cfg.instanceId || 'default')
   const TP = (n) => String(cfg.toolPrefix || '') + n
+  // 2026-10-29：把 home\AGENTS.md 里的「QQ 通道权限不够怎么办」搬进系统提示词。
+  // 为什么要进提示词：QQ 那边没人点审批卡，走一次 Web 审批这一轮就卡死，
+  // 这条规矩得每轮都在视野里，不能只躺在 AGENTS.md 里等模型自己去翻。
+  if (cfg.permissionNote !== false) {
+    try {
+      const 权限说明 = [
+        '## QQ 通道权限不够怎么办',
+        '',
+        '- 这条只对**从 QQ 通道来的指令**生效（主人在 QQ 里发消息，人大概率不在电脑边）。',
+        '  遇到**权限不足**（workspace-write 拦下的写操作、需要审批的命令等）时，**绝对不要**去走 Web 端权限申请 / 审批卡：',
+        '  没人会点，会把这一轮对话直接卡死。',
+        '- 正确做法：立刻在 QQ 里发一段纯文字，说明「需要什么权限、要改哪个文件 / 要跑哪条命令」，',
+        '  然后**停手**等主人发 `/permission` 放开；开了之后接着干。',
+        '- Web 会话（主人就坐在电脑前）不受这条影响，照常用审批。',
+      ].join('\n')
+      ctx.systemPrompt.section({
+        name: 'qq-adapter:permission-note',
+        order: 10300,
+        text: () => 权限说明,
+      })
+      log('系统提示词已注入「QQ 通道权限不够怎么办」')
+    } catch (error) {
+      warn('注入系统提示词失败：', error?.message || error)
+    }
+  }
+
   // 2026-10-29：插件数据统一搬到 home\xykp 下面（旧的 home\qq-adapter 已经拷过来了）
   const seenFile = () => cfg.seenPath || join(home(), 'xykp', 'qq-adapter', 'seen-' + INST + '.json')
 

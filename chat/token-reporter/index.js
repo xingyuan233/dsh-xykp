@@ -8,22 +8,21 @@
 // 默认全关：config.enabled=false 时什么都不注册、不发请求。
 //
 // config 示例（profile 的 cordis.patch.yml）：
-//   - insert:
-//       - id: token-reporter
-//         name: 'dsh-xykp/chat/token-reporter'
-//         config:
-//           enabled: true
-//           tool: true                 # 注册 token_report 工具
-//           prompt:                    # 每轮塞进系统提示的摘要（默认关）
-//             enabled: true
-//             order: 880
-//             header: '[token]'
-//             fields: [turn, session, context, cache, cost]
-//           cost:                      # 可选：元 / 百万 token，用于估算
-//             input: 2
-//             cacheRead: 0.2
-//             output: 3
-//           sessionsRoot: ''           # 默认 $DSH_HOME/sessions
+//   - id: token-reporter
+//     name: 'dsh-xykp/chat/token-reporter'
+//     config:
+//       enabled: true
+//       tool: true                 # 注册 token_report 工具
+//       prompt:                    # 每轮塞进系统提示的摘要（默认关）
+//         enabled: true
+//         order: 880
+//         header: '[token]'
+//         fields: [turn, session, context, cache, cost]
+//       cost:                      # 可选：元 / 百万 token，用于估算
+//         input: 1
+//         cacheRead: 0.02
+//         output: 4
+//       sessionsRoot: ''           # 默认 $DSH_HOME/sessions
 
 import { join } from 'node:path'
 import { scanUsage } from './usage.js'
