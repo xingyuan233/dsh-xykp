@@ -1012,3 +1012,26 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
 - `/new`（`createSessionFor`）：`preset = 聊天偏好.preset || 目标里的 p-xxx || ''`（空 = 宿主部署默认），
   `cwd = 聊天偏好.workspace || cfg.workspaceRoot`。**不读当前会话的 header**
 - 继承只属于「搬家」：`/compact`、`memory_movctx`（那个本来就按原会话 cwd/预设建新会话 ✓）
+
+---
+
+## 18.18 2026-10-29 凌晨那一轮（鲸鱼娘自己记的）
+
+### (1) resume 不带 agentOptions → 重启后老会话全废
+症状：宿主重启后，之前 /new 建好、还绑在 QQ 上的会话每一轮都直接
+`agent "session-…" has no provider/model`，	urn/end 就是 error，请求根本没发出去。
+原因：create() 传了 agentOptions，deliver() 里重启后 resume 那条分支只给了 esumeSessionId。
+改法：抽出 `resolveAgentOptions(ctx, prefs)`，create / resume / 以后的入口都调它。
+（05:25 重启验证：老会话恢复正常）
+
+### (2) /permission 接上真东西
+- 服务名 `permissionPresets`；切预设 = `pp.apply(agent.session, name, policy => ctx.approval.setPolicy(agent, policy))`
+- `/permission` 不带参数 = 列表（带序号 + 标出当前那个）；`/permission 2` / `/permission 完全权限` 直接切
+- `-d` 改部署默认：`entryOf('permission-presets').defaultPreset`（重启后对新会话生效）
+- 聊天里设过的会存进 `chats.json` 的 `prefs.permission`，`/new` 建完新会话再 `pp.set(sessionObj, name)`
+  ⚠ `pp.set/apply` 收的是 **session 对象**（内部 `session.append` + `permissionState`），给 id 会炸
+- 权限门：`permission` 在 `stateChanging` 名单里，所以群聊要 owner；usage 改成 `/permission [序号|名字] [-d]`
+
+### (3) 两处容易踩的坑
+- agent 只能从 `agentsSvc`（= `ctx.agents`）拿，别 `ctx.get('agents')` 兜圈子
+- 本会话的回答会自动投递回 QQ：**别再用 qq_send 发同一段**，不然群里两条一样的
