@@ -107,12 +107,91 @@ function framesContent(value) {
   return blocks
 }
 
+/** 一条 image 结果 → 一个 image block */
+function imageBlocks(value) {
+  const blocks = []
+  for (const image of value.images) {
+    blocks.push({
+      type: 'image',
+      attachment: {
+        attachmentId: image.attachmentId,
+        mediaType: image.mediaType,
+        bytes: image.bytes,
+        width: image.width,
+        height: image.height,
+        ...(image.name === undefined ? {} : { name: image.name }),
+      },
+    })
+  }
+  return blocks
+}
+
+/** comments 带图的结果：评论 JSON 照常给，图片跟在后面，各带一条 <comment_image> 说明 */
+function commentsContent(value) {
+  const text = JSON.stringify({ ok: value.ok, mode: value.mode, data: value.data }, null, 2)
+  const lines = []
+  value.images.forEach((image, i) => {
+    lines.push(
+      '<comment_image n="' + String(i + 1) + '" rpid="' + String(image.rpid || '') + '" user="' + String(image.user || '') + '">' +
+        String(image.caption || '') + '</comment_image>',
+    )
+  })
+  if (Array.isArray(value.image_errors) && value.image_errors.length) {
+    lines.push('<image_errors>' + JSON.stringify(value.image_errors) + '</image_errors>')
+  }
+  return [{ type: 'text', text: lines.length ? text + '\n\n' + lines.join('\n') : text }, ...imageBlocks(value)]
+}
+
 function roveRender(args, value) {
-  if (value && Array.isArray(value.images) && value.meta && value.meta.bvid) return framesContent(value)
+  if (value && Array.isArray(value.images) && value.meta && value.meta.bvid) {
+    return value.meta.source === 'comments' ? commentsContent(value) : framesContent(value)
+  }
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 }
 
 const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// 评论区带图的楼层，一次最多回几张（避免一次塞满上下文）
+const COMMENT_IMAGE_MAX = 3
+const COMMENT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+function imageMediaTypeOf(url, contentType) {
+  const type = String(contentType || '').split(';')[0].trim().toLowerCase()
+  if (type.startsWith('image/')) return type
+  const lower = String(url).toLowerCase()
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  return 'image/jpeg'
+}
+
+async function downloadCommentImage(url, signal) {
+  const r = await fetch(url.startsWith('//') ? 'https:' + url : url, {
+    redirect: 'follow',
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' },
+    ...(signal ? { signal } : {}),
+  })
+  if (!r.ok) throw new Error('下载图片失败 (HTTP ' + r.status + ')')
+  return { data: new Uint8Array(await r.arrayBuffer()), mediaType: imageMediaTypeOf(url, r.headers.get('content-type')) }
+}
+
+/** 从 comments 结果里按楼层顺序挑带图的评论 */
+function pickCommentPictures(data, max) {
+  const out = []
+  const list = data && Array.isArray(data.comments) ? data.comments : []
+  for (const comment of list) {
+    for (const pic of comment.pictures || []) {
+      if (out.length >= max) return out
+      out.push({
+        url: pic.url,
+        rpid: comment.rpid,
+        user: comment.user || '',
+        caption: String(comment.content || '').slice(0, 60),
+      })
+    }
+  }
+  return out
+}
 
 export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
@@ -167,7 +246,7 @@ export function apply(ctx, config = {}) {
     name: 'bili_rove',
     description: [
       'B站操作（带 cookie）。action 决定做什么，括号里是它要带的参数：',
-      '读 —— search(keyword,page,pageSize,order) / video、subtitles、comments、danmaku(bvid) / frames(bvid,count,mode) / user、user_videos(uid) / favorites(uid,mediaId) / hot / rank(rid) / received_at / received_replies / crawl(keyword,maxVideos,commentsPerVideo,getSubtitles)',
+      '读 —— search(keyword,page,pageSize,order) / video、subtitles、danmaku(bvid) / comments(bvid；带图的楼层会附前 3 张图) / frames(bvid,count,mode) / user、user_videos(uid) / favorites(uid,mediaId) / hot / rank(rid) / received_at / received_replies / crawl(keyword,maxVideos,commentsPerVideo,getSubtitles)',
       '写 —— reply(bvid,rpid,root,text) / dm(uid,text；不带 text 读) / dm_sessions(size) / dm_recent(size,pages) / triple(bvid,mode,coinNum) / dynamic(text)',
       'frames 返回真帧图片，meta.source 是 preview/videoshot 才是真帧（cover 只是封面）。',
     ].join('\n'),
@@ -232,6 +311,39 @@ export function apply(ctx, config = {}) {
           return value
         } catch (e) {
           return { ok: false, error: 'BILI_ROVE_FRAMES_FAILED：' + String(e?.message || e) }
+        }
+      }
+
+      if (action === 'comments') {
+        // 文字照常走 runRead；楼层里有图就把前几张下载下来，走附件通道给模型真看
+        const result = await runRead(action, a, cfg, deps)
+        const picked = pickCommentPictures(result.data, COMMENT_IMAGE_MAX)
+        if (picked.length === 0) return result
+        const attachments = ctx.get('attachments')
+        if (attachments === undefined) return result
+        const images = []
+        const imageErrors = []
+        for (const item of picked) {
+          try {
+            const { data, mediaType } = await downloadCommentImage(item.url, exec?.signal)
+            if (data.length > COMMENT_IMAGE_MAX_BYTES) throw new Error('图片过大（' + String(data.length) + ' bytes）')
+            const limits = attachments.imageLimits
+            if (limits && Array.isArray(limits.mediaTypes) && !limits.mediaTypes.includes(mediaType)) {
+              throw new Error('附件服务不支持 ' + mediaType)
+            }
+            const ref = await attachments.saveImage({ data, mediaType, name: 'bili-comment-' + String(item.rpid) })
+            images.push({ ...ref, rpid: item.rpid, user: item.user, caption: item.caption })
+          } catch (e) {
+            imageErrors.push({ rpid: item.rpid, url: item.url, error: String(e?.message || e) })
+          }
+        }
+        const bvid = String(a.bvid || '').trim()
+        if (images.length === 0) return { ...result, image_errors: imageErrors }
+        return {
+          ...result,
+          images,
+          ...(imageErrors.length ? { image_errors: imageErrors } : {}),
+          meta: { bvid, source: 'comments' },
         }
       }
 

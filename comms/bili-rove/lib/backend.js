@@ -31,6 +31,35 @@ function form(obj) {
   return u
 }
 
+function httpsOf(url) {
+  const s = String(url || '')
+  return s.startsWith('//') ? 'https:' + s : s
+}
+
+/** 评论区图片：B站放在 content.pictures（img_src / img_width / img_height） */
+function picturesOf(content) {
+  const list = content && Array.isArray(content.pictures) ? content.pictures : []
+  const out = []
+  for (const pic of list) {
+    const url = httpsOf(pic && (pic.img_src || pic.url))
+    if (!url) continue
+    out.push({ url, width: Number(pic.img_width) || 0, height: Number(pic.img_height) || 0 })
+  }
+  return out
+}
+
+/** 评论区表情：content.emote 是 { "[表情名]": { text, url } }，摊平成数组 */
+function emotesOf(content) {
+  const map = content && content.emote && typeof content.emote === 'object' ? content.emote : {}
+  const out = []
+  for (const item of Object.values(map)) {
+    const url = httpsOf(item && item.url)
+    if (!url) continue
+    out.push({ text: String((item && item.text) || ''), url })
+  }
+  return out
+}
+
 /**
  * @param {object} cfg - { baseUrl, userAgent, timeoutMs }
  * @param {(opts:object)=>object} [factory] - 方便自测替换
@@ -155,6 +184,10 @@ export function createBackend(cfg = {}, factory) {
           reply_count: r.rcount || 0,
           time: r.ctime || 0,
         }
+        const pictures = picturesOf(content)
+        if (pictures.length) c.pictures = pictures
+        const emotes = emotesOf(content)
+        if (emotes.length) c.emotes = emotes
         const tops = []
         for (const sub of (r.replies || []).slice(0, 2)) {
           tops.push({ user: (sub.member || {}).uname || '', content: (sub.content || {}).message || '', like: sub.like || 0 })

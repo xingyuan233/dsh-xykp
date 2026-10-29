@@ -16,7 +16,7 @@ B 站**主动**那半边（清单里的 `comms/bili-rove`，原名 walk，改成
 | | `video` | 视频详情 |
 | | `subtitles` | AI 字幕（带串号校验） |
 | | `frames` | 截帧 → **真图片**，`mode`: `auto` / `extract`，`count` 1-12 |
-| | `comments` | 热门评论（`num`） |
+| | `comments` | 热门评论（`num`）；楼层带图的会附**前 3 张真图**，评论里也有 `pictures` / `emotes` |
 | | `danmaku` | 弹幕（`num`） |
 | | `user` / `user_videos` | 用户资料 / 投稿列表 |
 | | `favorites` | 收藏夹列表；带 `mediaId` 查某个收藏夹内容 |
@@ -87,6 +87,7 @@ bili-reply 读的是同一个文件，没有第二份存储。
 - **截帧**：`meta.source` 为 `preview` / `videoshot` 才是真帧，`cover` 只是封面；雪碧图用 ffmpeg 切单帧，黑空格子按体积判掉
 - **请求节奏**：provider 自带最小间隔 + `-412` 退避阶梯，别在外面绕过它狂发
 - 评论接口第一次经常吃风控 → 隔 1.5s 重试一次
+- **评论图片**：B站把图放在 `content.pictures`（`img_src`/`img_width`/`img_height`），表情在 `content.emote`，`content.message` 里没有 —— 只取 message 就会"评论没图"。现在 backend 会归一化这两个字段；工具层再按楼层顺序下载前 3 张（单张 ≤8MB），走 `attachments.saveImage` 变成 image block，文本里用 `<comment_image n=... rpid=...>` 对应，下载失败进 `image_errors` 不整体报错。`crawl` 复用同一套归一化，只是不下载图。
 
 ## 自测
 
@@ -94,4 +95,5 @@ bili-reply 读的是同一个文件，没有第二份存储。
 node test/backend-test.mjs     # 离线：action 映射 / 写接口 csrf / 参数校验
 node test/fallback-test.mjs    # 离线：回退状态机 / 凭证优先级
 node test/real-smoke.mjs       # 联网：读接口全跑（用本机 cookie）
+node test/comment-images-test.mjs # 离线：评论 pictures/emote 归一化 + 图片块渲染
 ```
