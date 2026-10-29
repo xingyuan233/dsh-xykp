@@ -1042,6 +1042,14 @@ export async function apply(ctx, config = {}) {
           return
         }
         let chosen = body
+        // 顺手给几个短写（以前 usage 里写的 c|w|f 就是这三个）
+        const ALIAS = {
+          c: 'danger-full-access', full: 'danger-full-access', complete: 'danger-full-access', 完全: 'danger-full-access',
+          w: 'workspace-write', write: 'workspace-write', 工作区: 'workspace-write',
+          f: 'read-only', free: 'read-only', read: 'read-only', 只读: 'read-only',
+        }
+        const aliasKey = ALIAS[chosen] ? chosen : ALIAS[String(chosen).toLowerCase()]
+        if (aliasKey && names.includes(ALIAS[aliasKey])) chosen = ALIAS[aliasKey]
         if (/^\d+$/.test(body)) {
           const pick = names[Number(body) - 1]
           if (!pick) { await replyTo(key, '序号越界：一共 ' + names.length + ' 个，发 /permission 看列表'); return }
