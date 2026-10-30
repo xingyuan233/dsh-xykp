@@ -7,12 +7,16 @@
   var path = p.mainModule.require('path')
   var os = p.mainModule.require('os')
   var CP = p.mainModule.require('child_process')
-  var WS = 'D:\\AI\\DeepseekHarness\\workspaces\\alive-workspace'
+  // 代码在插件包里；运行时数据（日志/二维码/命令/媒体/成员缓存）一律放 home\xykp\qq-adapter。
+  // 2026-10-30：原来放 workspaces\alive-workspace，被清理一次整条桥就瘫了。
+  var CODE = 'D:\\AI\\DeepseekHarness\\plugins\\comms\\qq-adapter\\bridge'
+  var WS = 'D:\\AI\\DeepseekHarness\\home\\xykp\\qq-adapter'
+  try { fs.mkdirSync(WS, { recursive: true }) } catch (e) { }
   // 多实例：loader 可以在 eval 之前塞 global.__QQ_BOOT = { port, tag, log, cmd, res, uin }
   // 这样同一个脚本能跑第二个账号（不同端口、不同日志），互不打架。
   var BOOT = (typeof global !== 'undefined' && global.__QQ_BOOT) || {}
   var LOG = BOOT.log || (WS + '\\qq-bridge.log')
-  var SELF = WS + '\\qq-bridge-script.js'
+  var SELF = CODE + '\\qq-bridge-script.js'
   var CMD = BOOT.cmd || (WS + '\\qq-cmd.json')
   var RES = BOOT.res || (WS + '\\qq-cmd-result.json')
   var TAG = '[' + p.pid + ']'
@@ -69,7 +73,7 @@
   var APPID = 537391628
   var QUA = 'V1_WIN_NQ_9.9.36_53644_GW_B'
   var DATA_ROOT = BOOT.dataRoot || 'D:\\下载\\缓存\\qq聊天消息\\Tencent Files'
-  var OWN = BOOT.own || (WS + '\\qq-nt')
+  var OWN = BOOT.own || (WS + '\\nt')
   var GLOBAL_PATH = OWN + '\\global'
   var PORT = Number(BOOT.port) || 39272
   var QUICK_UIN = String(BOOT.uin || '3793339506')
@@ -277,7 +281,7 @@
             try {
               var cp = p.mainModule.require('child_process')
               fs.writeFileSync(WS + '\\qq-qr-url.txt', String(url || ''))
-              cp.execFile('python', [WS + '\\make-qr.py', String(url || ''), BOOT.qrFile || (WS + '\\qq-qr-fresh.png')], function (err) {
+              cp.execFile('python', [CODE + '\\make-qr.py', String(url || ''), BOOT.qrFile || (WS + '\\qq-qr-fresh.png')], function (err) {
                 if (err) w('[qq] render qr err ' + err.message)
                 else w('[qq] QR rendered (crisp) ' + (Date.now() - S.qrAt) + 'ms')
               })
@@ -1188,7 +1192,7 @@
         // ---------- 设置页（分流覆盖配置） ----------
         if (url.indexOf('/adapter-ui') === 0) {
           try {
-            var html = fs.readFileSync(WS + '\\qq-adapter-ui.html', 'utf8')
+            var html = fs.readFileSync(CODE + '\\qq-adapter-ui.html', 'utf8')
             try { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(html) } catch (e) { }
             return
           } catch (e) { return reply(500, { ok: false, err: '读不到 qq-adapter-ui.html: ' + e.message }) }

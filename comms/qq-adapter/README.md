@@ -3,8 +3,20 @@
 QQ 自研适配层（不用 NapCat、不用 OneBot）：在 QQ 客户端主进程里自己 init session，收/发消息，
 再按分流规则把消息送进 DSH 的会话或预设。
 
-配套的「桥」是 `workspaces/alive-workspace/qq-bridge-script.js`（跑在 QQ 进程里，暴露
-`127.0.0.1:39272` 的 HTTP）；本插件是 DSH 这边的另一半。
+配套的「桥」是 `bridge/qq-bridge-script.js`（跑在 QQ 进程里，暴露 `127.0.0.1:39273` 的 HTTP）；
+本插件是 DSH 这边的另一半。
+
+## 文件放哪（2026-10-30 起）
+
+| 东西 | 位置 |
+|---|---|
+| 桥脚本 / 二维码重编码 / 壳加载器 | 插件包 `bridge/`（`qq-bridge-script.js`、`make-qr.py`、`dsh-loader.js`） |
+| 运行时数据：日志、二维码、命令文件、媒体、成员缓存 | `<DSH_HOME>\xykp\qq-adapter\` |
+| QQ 引擎数据 | `<DSH_HOME>\xykp\qq-adapter\nt\` |
+
+**不要再往 `workspaces\alive-workspace` 里放任何桥文件**——工作区随时会被清理，桥会整条瘫掉。
+`dsh-loader.js` 需要在 QQ 壳里部署一份：`<QQ-shell>\versions\<ver>\resources\app\dsh-loader.js`，
+插件包里的 `bridge/dsh-loader.js` 是它的版本管理副本，改完两边同步。
 
 ## 分流规则（都在 Web 设置页里改，live 生效）
 

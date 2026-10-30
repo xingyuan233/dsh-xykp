@@ -1035,3 +1035,10 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
 ### (3) 两处容易踩的坑
 - agent 只能从 `agentsSvc`（= `ctx.agents`）拿，别 `ctx.get('agents')` 兜圈子
 - 本会话的回答会自动投递回 QQ：**别再用 qq_send 发同一段**，不然群里两条一样的
+
+## 2026-10-30：文件搬家（重要）
+
+- 桥代码只在 plugins\comms\qq-adapter\bridge\，运行时数据统一在 <DSH_HOME>\xykp\qq-adapter\（日志 / qr / cmd / media / group-members / nt）。
+- 壳加载器 dsh-loader.js 指向插件目录的桥脚本，工作区 workspaces\alive-workspace 里**不再有任何** QQ 文件。
+- 旧的 qq-nt（269MB）搬到了 xykp\qq-adapter\nt-old，确认没用了可以删。
+

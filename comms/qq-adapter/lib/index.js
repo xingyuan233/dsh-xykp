@@ -9,7 +9,7 @@
 //
 // 任何异常只记日志，绝不拖死宿主。
 
-import { access, copyFile, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { access, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -71,7 +71,7 @@ export const Config = Schema.object({
   notifyTopic: Schema.string().default('whale-qq-shell-channel').description('登录失效时把二维码推到哪个 ntfy 主题（空 = 不推）'),
   notifyEveryMinutes: Schema.number().default(3).description('两次推码之间至少隔几分钟'),
   notifyMax: Schema.number().default(3).description('一次掉线最多推几张码'),
-  qrFile: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\workspaces\\\\alive-workspace\\\\qq-qr-fresh.png').description('桥写出来的二维码图片路径'),
+  qrFile: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\qq-adapter\\\\qq-qr-fresh.png').description('桥写出来的二维码图片路径（数据目录，别放工作区）'),
   autoStartShell: Schema.boolean().default(true).description('桥没在跑时自动拉起 QQ shell'),
   shellBootPath: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell\\\\NapCatWinBootMain.exe').description('shell 启动器路径'),
   shellDir: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell').description('shell 工作目录'),
@@ -83,32 +83,29 @@ export const Config = Schema.object({
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
 
 /**
- * 桥是「loader 读 <workspace>\qq-bridge-script.js 再 eval」的模式，二维码重编码还要
- * <workspace>\make-qr.py。这两个文件以插件包里的 bridge/ 为准，缺了就补一份过去，
- * 免得像 10-30 那次一样：文件被人挪走 / 清理掉，桥起不来、二维码推不到 ntfy。
+ * 桥的代码（qq-bridge-script.js / make-qr.py）只放在插件包 bridge/ 里，由 QQ 壳的
+ * dsh-loader 直接 eval；工作区里不再放任何桥文件（放那儿迟早被清理掉）。
+ * 运行时数据（日志、二维码、命令文件、媒体）统一落在 <DSH_HOME>\xykp\qq-adapter。
  */
-const BRIDGE_ASSETS = ['qq-bridge-script.js', 'make-qr.py']
 const BRIDGE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'bridge')
+const QQ_DATA_DIR = join(home(), 'xykp', 'qq-adapter')
 
-export async function ensureBridgeAssets(qrFile) {
-  const target = dirname(String(qrFile || ''))
-  if (!target || target === '.' || target === '') return []
-  const copied = []
-  for (const name of BRIDGE_ASSETS) {
-    const dst = join(target, name)
+export async function ensureDataDir(qrFile) {
+  const target = dirname(String(qrFile || '')) || QQ_DATA_DIR
+  try {
+    await mkdir(target, { recursive: true })
+  } catch (err) {
+    warn(`建数据目录失败：${target}：${err?.message || err}`)
+  }
+  // 代码文件没了是部署问题，只提醒，不往工作区乱放
+  for (const name of ['qq-bridge-script.js', 'make-qr.py', 'dsh-loader.js']) {
     try {
-      await access(dst)
+      await access(join(BRIDGE_DIR, name))
     } catch {
-      try {
-        await copyFile(join(BRIDGE_DIR, name), dst)
-        copied.push(name)
-        log(`补齐桥文件：${dst}`)
-      } catch (err) {
-        warn(`补齐桥文件失败：${dst}：${err?.message || err}`)
-      }
+      warn(`插件里缺桥文件：${join(BRIDGE_DIR, name)}`)
     }
   }
-  return copied
+  return target
 }
 
 async function readJson(path, fallback) {
@@ -212,8 +209,8 @@ async function deliver(agentsSvc, sessionId, text, mode = 'steer', ctx = null) {
 
 export async function apply(ctx, config = {}) {
   const cfg = { ...ROUTER_DEFAULTS, ...Config(config) }
-  // 桥脚本 / 二维码重编码脚本缺了就补（loader 只会 eval <workspace>\qq-bridge-script.js）
-  await ensureBridgeAssets(cfg.qrFile)
+  // 数据目录（日志/二维码/命令文件）确保存在；桥代码只在插件包里
+  await ensureDataDir(cfg.qrFile)
   const bridge = createBridge(cfg.bridgeUrl, { timeoutMs: 4000 })
   // 在 apply（还活着）的时候就把 agents 抓住，定时器里不再碰 ctx
   const agentsSvc = ctx.agents
