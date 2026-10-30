@@ -59,3 +59,9 @@ node test/endpoint-test.mjs    # 消息端点：发进会话、会话不在、�
 
 覆盖：端口探活（真开一个端口）、已在跑不重复拉起、没在跑→拉起→确认起来、拉起失败带原因、`dryRun` 不动手、
 配置变了哈希就变、环境变量打包、端点 followup 带 source。
+
+## ntfy（2026-10-30）
+
+守护进程优先 import('dsh-ntfy')（仓库里跑退回 ../../comms/ntfy/lib/index.js），推送走 push()、指令订阅走流式 wait()；两条都拿不到才退回自带的 
+tfyRequest / 原始订阅。
+

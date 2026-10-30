@@ -118,7 +118,47 @@ function import_https() { return import('node:https').then((m) => m.default); }
 
 const utf8h = (s) => Buffer.from(String(s), 'utf8').toString('latin1');
 
+// ntfy 统一走 comms/ntfy 组件（同 DSH 里的实现）。守护进程是独立进程，拿不到 ctx，
+// 但可以直接 import 组件的纯函数；装好的环境里解析 dsh-ntfy（profile 的 junction），
+// 仓库里直接跑则退回相对路径。两条都不行就继续用下面自带的实现。
+let ntfyMod = null;
+let ntfyTried = false;
+async function loadNtfy() {
+  if (ntfyTried) return ntfyMod;
+  ntfyTried = true;
+  for (const spec of ['dsh-ntfy', '../../comms/ntfy/lib/index.js']) {
+    try {
+      ntfyMod = await import(spec);
+      log('ntfy 组件已接入：' + spec);
+      return ntfyMod;
+    } catch (e) {
+      // 试下一条
+    }
+  }
+  ntfyMod = null;
+  log('拿不到 dsh-ntfy 组件，退回自带的 ntfy 实现');
+  return null;
+}
+
 async function notify(title, message, tags = 'robot') {
+  const ntfy = await loadNtfy();
+  if (ntfy && typeof ntfy.push === 'function') {
+    try {
+      const r = await ntfy.push({
+        baseUrl: cfg.ntfyServer,
+        topic: cfg.topic,
+        title,
+        message,
+        tags,
+        priority: 4
+      });
+      const code = (r && r.status) || 0;
+      log('[notify] ' + title + ' -> ' + code + '（组件）');
+      return code;
+    } catch (e) {
+      log('[notify] 组件推送失败，退回自带实现：' + (e && e.message));
+    }
+  }
   const headers = {
     Title: utf8h(title),
     Priority: '4',
@@ -641,7 +681,36 @@ async function dispatch(text) {
 }
 
 // ---------- 订阅 ----------
+// 优先用 comms/ntfy 的流式 wait；拿不到组件才退回下面自带的原始订阅实现
 async function subscribeLoop() {
+  const ntfy = await loadNtfy();
+  if (!ntfy || typeof ntfy.wait !== 'function') return subscribeLoopRaw();
+  log('已订阅指令频道（组件流式），等待 ' + cfg.checkCommand + ' / ' + cfg.notifyCommand);
+  let since = Math.floor(Date.now() / 1000);
+  for (;;) {
+    try {
+      const r = await ntfy.wait({
+        baseUrl: cfg.ntfyServer,
+        topic: cfg.topic,
+        timeoutMs: 5 * 60 * 1000,
+        since
+      });
+      if (r && r.ok && r.message) {
+        if (typeof r.message.time === 'number') since = Math.max(since, r.message.time + 1);
+        const text = String(r.message.message || '').trim();
+        if (text) await dispatch(text).catch((e) => log('dispatch 异常: ' + (e && e.message)));
+        continue;
+      }
+      since = Math.floor(Date.now() / 1000);
+    } catch (e) {
+      log('订阅异常：' + (e && e.message));
+      await sleep(5000);
+      since = Math.floor(Date.now() / 1000);
+    }
+  }
+}
+
+async function subscribeLoopRaw() {
   const server = String(cfg.ntfyServer || 'https://ntfy.sh').replace(/\/+$/, '');
   const mod = server.startsWith('http:') ? await import_http() : await import_https();
   let since = Math.floor(Date.now() / 1000);
