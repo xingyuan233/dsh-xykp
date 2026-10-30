@@ -1042,3 +1042,10 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
 - 壳加载器 dsh-loader.js 指向插件目录的桥脚本，工作区 workspaces\alive-workspace 里**不再有任何** QQ 文件。
 - 旧的 qq-nt（269MB）搬到了 xykp\qq-adapter\nt-old，确认没用了可以删。
 
+
+## 2026-10-30：推码 / 等 /post 接回 ntfy 组件
+
+- 丢掉的 `/post` 流程现在由插件自己实现：推满 notifyMax 次后 `ntfy.wait({ match: '/post' })`，收到就 `GET /qr` 要新码并补推。
+- 每张推出去的码都是现要的（自动换码关掉了，不能靠 keeper）。
+- 逻辑抽在 `lib/post-watch.js`，自测 `node test/post-watch-test.mjs`。
+

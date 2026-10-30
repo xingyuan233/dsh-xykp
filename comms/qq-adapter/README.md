@@ -88,3 +88,11 @@ node test/router-test.mjs     # 15 条分流用例
 
 `deliverMode` 配置项：`steer`（默认，插队，正在跑的这一轮也能看到）或 `followup`（排队，等这轮结束）。
 宿主 agent 有 `agent.steer()`，NapCat 那条通道默认也是 steer，所以这里跟它对齐。
+## 登录失效后的推码流程
+
+1. 桥活着但没登录（stage=login）时，插件每 `notifyEveryMinutes` 分钟推一张码，最多 `notifyMax` 张（默认 2 分钟 × 3 张）。
+2. **每张都是现要的新码**：推之前调桥的 `/qr`，等二维码文件 mtime 变新再推（自动换码已关，避免上一张被作废）。
+3. 推满次数后，插件通过 `comms/ntfy` 的 `wait` 在同一个主题里等 `/post`。
+4. 收到 `/post` → 再要一张新码、补推一张（不占那 3 次额度）；扫上登录成功（stage=ready）就自动停止等待。
+5. 推送优先走 `ctx.get('ntfy')` 服务；ntfy 组件不在时退回自带的 fetch。
+

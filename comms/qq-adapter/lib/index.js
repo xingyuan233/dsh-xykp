@@ -357,43 +357,6 @@ export async function apply(ctx, config = {}) {
   let wasReady = false
   let lastQrStamp = 0   // 上次推出去的那张码的 mtime：同一张不重复推，保证到手是「刚生成」的
 
-  async function pushQrToNtfy(st) {
-    if (!cfg.notifyTopic) return
-    const everyMs = Math.max(30_000, (Number(cfg.notifyEveryMinutes) || 1) * 60_000)
-    const maxPushes = Number(cfg.notifyMax) || 6
-    if (notifyCount >= maxPushes) return
-    if (Date.now() - lastNotifyAt < everyMs) return
-    // ⚠ 2026-10-29：必须推**新鲜**的码 —— 二维码两分左右就过期，
-    //   以前桥一挂会拿几小时前的旧图硬推（主人扫了只会「二维码已失效」）。
-    //   规则：文件超过 2 分钟就当没码；同一张码（mtime 没变）不重复推。都不占次数/冷却 ✓
-    let png
-    try {
-      const { readFile, stat } = await import('node:fs/promises')
-      const file = cfg.qrFile || ''
-      const st2 = await stat(file)
-      const ageMin = (Date.now() - st2.mtimeMs) / 60_000
-      if (ageMin > 2) { log('二维码文件太旧（' + Math.round(ageMin) + ' 分钟前），等壳出新码再推'); return }
-      if (st2.mtimeMs <= lastQrStamp) { log('还是上一张码，等新的'); return }
-      png = await readFile(file)
-      lastQrStamp = st2.mtimeMs
-    } catch (err) { warn('读二维码图片失败（等新码）：', err?.message || err); return }
-    lastNotifyAt = Date.now()
-    notifyCount++
-    try {
-      // ⚠ 2026-10-29 主人实测：txz.qq.com/p?k=… 这个链接在浏览器里只会弹「下载 QQ」，
-      //   它是给 QQ 扫的二维码内容，不是能点的登录深链 ✗ → **回到推图片**，
-      //   但只推「刚生成、还没推过」的那张，保证到手是新鲜的（二维码 50 秒换一张，两分钟内有效）✓
-      const title = 'QQ 掉线了，扫这张码 (' + notifyCount + '/' + maxPushes + ')'
-      const hz = (s) => Buffer.from(String(s), 'utf8').toString('latin1')
-      const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
-        method: 'PUT',
-        headers: { Title: hz(title), Tags: 'rotating_light,qrcode', Priority: '4', Filename: 'qq-qr.png' },
-        body: png,
-      })
-      log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）HTTP ' + res.status + ' · uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
-    } catch (err) { warn('推二维码到 ntfy 失败：', err?.message || err) }
-  }
-
   /** 拿 ntfy 组件（comms/ntfy 提供的服务）；没装/没起来就返回 null，后面走自带 fetch 兜底 */
   const ntfyOf = () => {
     try {
@@ -403,14 +366,16 @@ export async function apply(ctx, config = {}) {
     }
   }
 
-  /**
-   * 主人发 /post 之后要一张新码再推一张（不占自动推的 3 次额度）。
-   * 步骤：让壳重新要码 → 等文件 mtime 变新 → 推。
-   */
-  async function pushFreshQr() {
-    if (!cfg.notifyTopic) return false
+  /** 读二维码文件（附带 mtime 和码龄） */
+  async function readQrFile() {
     const { readFile, stat } = await import('node:fs/promises')
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    const st = await stat(cfg.qrFile)
+    return { png: await readFile(cfg.qrFile), stamp: st.mtimeMs, ageMin: (Date.now() - st.mtimeMs) / 60_000 }
+  }
+
+  /** 让壳重新要一张码，并等文件真的更新；超时返回 null */
+  async function freshQrFromBridge() {
+    const { stat } = await import('node:fs/promises')
     const file = cfg.qrFile || ''
     const before = await stat(file).then((s) => s.mtimeMs).catch(() => 0)
     try {
@@ -418,42 +383,89 @@ export async function apply(ctx, config = {}) {
     } catch (err) {
       warn('让壳出新码失败：', err?.message || err)
     }
-    let stamp = before
     for (let i = 0; i < 30; i++) {
-      await sleep(300)
+      await new Promise((r) => setTimeout(r, 300))
       const s = await stat(file).catch(() => null)
-      if (s && s.mtimeMs > before) {
-        stamp = s.mtimeMs
-        break
+      if (s && s.mtimeMs > before) return await readQrFile()
+    }
+    return null
+  }
+
+  /** 推一张码：优先用 comms/ntfy 服务，没有就走自带 fetch */
+  async function pushQrImage(title) {
+    const ntfy = ntfyOf()
+    if (ntfy && typeof ntfy.push === 'function') {
+      await ntfy.push({
+        topic: cfg.notifyTopic,
+        filePath: cfg.qrFile,
+        filename: 'qq-qr.png',
+        title,
+        tags: 'rotating_light,qrcode',
+        priority: 4,
+      })
+      return
+    }
+    const { readFile } = await import('node:fs/promises')
+    const png = await readFile(cfg.qrFile)
+    const hz = (s) => Buffer.from(String(s), 'utf8').toString('latin1')
+    const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
+      method: 'PUT',
+      headers: { Title: hz(title), Tags: 'rotating_light,qrcode', Priority: '4', Filename: 'qq-qr.png' },
+      body: png,
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+  }
+
+  async function pushQrToNtfy(st) {
+    if (!cfg.notifyTopic) return
+    const everyMs = Math.max(30_000, (Number(cfg.notifyEveryMinutes) || 1) * 60_000)
+    const maxPushes = Number(cfg.notifyMax) || 6
+    if (notifyCount >= maxPushes) return
+    if (Date.now() - lastNotifyAt < everyMs) return
+
+    // ⚠ 自动换码已关（主人要求）：每次推之前现要一张新码，保证到手能扫；
+    //   只有桥挂了才退回「落盘旧图」，且超过 2 分钟就当没码。
+    let qr = null
+    if (st && st.ok) qr = await freshQrFromBridge()
+    if (!qr) {
+      try {
+        qr = await readQrFile()
+      } catch (err) {
+        warn('读二维码图片失败（等新码）：', err?.message || err)
+        return
+      }
+      if (qr.ageMin > 2) {
+        log('二维码文件太旧（' + Math.round(qr.ageMin) + ' 分钟前），等壳出新码再推')
+        return
+      }
+      if (qr.stamp <= lastQrStamp) {
+        log('还是上一张码，等新的')
+        return
       }
     }
-    if (!stamp || stamp === before) {
+
+    lastNotifyAt = Date.now()
+    notifyCount++
+    lastQrStamp = qr.stamp
+    try {
+      await pushQrImage('QQ 掉线了，扫这张码 (' + notifyCount + '/' + maxPushes + ')')
+      log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）· uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
+    } catch (err) {
+      warn('推二维码到 ntfy 失败：', err?.message || err)
+    }
+  }
+
+  /** 主人发 /post 之后要一张新码再推一张（不占自动推的 N 次额度） */
+  async function pushFreshQr() {
+    if (!cfg.notifyTopic) return false
+    const qr = await freshQrFromBridge()
+    if (!qr) {
       warn('/post 补推：等新二维码超时')
       return false
     }
-    lastQrStamp = stamp
-    const title = 'QQ 掉线了，扫这张码（/post 补发）'
-    const ntfy = ntfyOf()
+    lastQrStamp = qr.stamp
     try {
-      if (ntfy && typeof ntfy.push === 'function') {
-        await ntfy.push({
-          topic: cfg.notifyTopic,
-          filePath: file,
-          filename: 'qq-qr.png',
-          title,
-          tags: 'rotating_light,qrcode',
-          priority: 4,
-        })
-      } else {
-        const png = await readFile(file)
-        const hz = (s) => Buffer.from(String(s), 'utf8').toString('latin1')
-        const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
-          method: 'PUT',
-          headers: { Title: hz(title), Tags: 'rotating_light,qrcode', Priority: '4', Filename: 'qq-qr.png' },
-          body: png,
-        })
-        if (!res.ok) throw new Error('HTTP ' + res.status)
-      }
+      await pushQrImage('QQ 掉线了，扫这张码（/post 补发）')
       log('已按 /post 补推一张二维码')
       return true
     } catch (err) {
