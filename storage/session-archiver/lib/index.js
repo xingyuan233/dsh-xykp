@@ -50,8 +50,12 @@ const hitAny = (name, matchers) => matchers.some((re) => re && re.test(name))
 
 const yieldNow = () => new Promise((r) => setImmediate(r))
 
+// DSH_HOME 是数据根目录（里面还有 storages / profiles / sessions …），会话在其下的 sessions 子目录
+const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh')
+
 function rootOf(cfg) {
-  return cfg.sessionsRoot || process.env.DSH_HOME || join(homedir(), '.dsh')
+  const custom = String(cfg.sessionsRoot || '').trim()
+  return custom ? custom : join(dshHome(), 'sessions')
 }
 
 /**
@@ -193,7 +197,10 @@ export function apply(ctx, config = {}) {
     }
     try {
       const r = await runOnce(registry, cfg)
-      log(`${label}：${r.toArchive} 个候选，归档 ${r.archived} 个，跳过 ${r.keep.length} 条${r.dryRun ? '（dryRun）' : ''}`)
+      const why = {}
+      for (const item of r.keep) if (item?.reason) why[item.reason] = (why[item.reason] || 0) + 1
+      const detail = Object.entries(why).map(([k, v]) => `${k}=${v}`).join(', ')
+      log(`${label}：${r.toArchive} 个候选，归档 ${r.archived} 个，跳过 ${r.keep.length} 条${detail ? `（${detail}）` : ''}${r.dryRun ? '（dryRun）' : ''}`)
     } catch (err) {
       warn(`${label} 失败（已忽略）：`, err?.stack || err)
     }
@@ -211,4 +218,4 @@ export function apply(ctx, config = {}) {
 }
 
 // 自测用
-export const _internal = { plan, collectActivity, matcherOf, DEFAULTS }
+export const _internal = { plan, collectActivity, matcherOf, rootOf, dshHome, DEFAULTS }

@@ -9,7 +9,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { plan, collectActivity } from '../lib/index.js'
+import { plan, collectActivity, _internal } from '../lib/index.js'
 
 let failed = 0
 const check = (ok, label, extra = '') => {
@@ -89,5 +89,16 @@ check(Math.abs((act.get('session-a') || 0) - (now - 10 * day)) < 5000, 'session-
 check(!act.has('session-c'), '非会话日志不算数')
 
 rmSync(root, { recursive: true, force: true })
+
+// 回归：会话根目录必须落在 <DSH_HOME>/sessions 下
+// （曾经少拼一层 sessions，扫的是 DSH_HOME 根目录 → 所有会话都被判「拿不到活动时间」）
+const prevHome = process.env.DSH_HOME
+process.env.DSH_HOME = join(tmpdir(), 'dsh-home-x')
+const defRoot = _internal.rootOf({})
+check(defRoot === join(process.env.DSH_HOME, 'sessions'), 'rootOf 默认指向 DSH_HOME/sessions', defRoot)
+check(_internal.rootOf({ sessionsRoot: 'D:/custom/root' }) === 'D:/custom/root', 'sessionsRoot 显式覆盖原样生效')
+if (prevHome === undefined) delete process.env.DSH_HOME
+else process.env.DSH_HOME = prevHome
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exitCode = failed ? 1 : 0
