@@ -335,18 +335,13 @@
     if (!S.qrRequested) { S.qrRequested = true; S.stage = 'login'; tryQuickLogin() }
   }
 
-  // ---------- 2.5) 二维码自动换新 ----------
-  if (!S.qrKeeper) {
-    S.qrKeeper = setInterval(function () {
-      try {
-        if (msgService()) return
-        var age = S.qrAt ? (Date.now() - S.qrAt) : 1e9
-        if (age < 45000) return
-        w('[qq] qr keeper: age=' + Math.round(age / 1000) + 's, request new QR')
-        ;(S.realLogin ? S.realLogin.getQRCodePicture : login.getQRCodePicture)()
-      } catch (e) { w('[qq] qr keeper err ' + e.message) }
-    }, 10000)
-    w('[qq] qr keeper ON')
+  // ---------- 2.5) 二维码：不自动换新 ----------
+  // 每要一次新码都会把上一张作废，人还没扫到就成了死码（2026-10-30 主人要求关掉）。
+  // 需要新码时手动 GET /qr 要一张。
+  if (S.qrKeeper) {
+    try { clearInterval(S.qrKeeper) } catch (e) { }
+    S.qrKeeper = null
+    w('[qq] qr keeper OFF（自动换码已关，要码请 GET /qr）')
   }
   // ---------- 3) 消息监听 ----------
   global.__qqListenerVer = LISTENER_VER

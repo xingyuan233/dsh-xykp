@@ -352,13 +352,13 @@ export async function apply(ctx, config = {}) {
 
   async function pushQrToNtfy(st) {
     if (!cfg.notifyTopic) return
-    const everyMs = Math.max(30_000, (Number(cfg.notifyEveryMinutes) || 1) * 60_000)
     const maxPushes = Number(cfg.notifyMax) || 6
     if (notifyCount >= maxPushes) return
-    if (Date.now() - lastNotifyAt < everyMs) return
+    // 2026-10-30：桥那边自动换码已关，一张码只在 /qr 时生成一次；
+    // 冷却没有意义（同一张码下面按 mtime 去重），反而会让人扫到过期码，所以去掉。
     // ⚠ 2026-10-29：必须推**新鲜**的码 —— 二维码两分左右就过期，
     //   以前桥一挂会拿几小时前的旧图硬推（主人扫了只会「二维码已失效」）。
-    //   规则：文件超过 2 分钟就当没码；同一张码（mtime 没变）不重复推。都不占次数/冷却 ✓
+    //   规则：文件超过 2 分钟就当没码；同一张码（mtime 没变）不重复推。都不占次数 ✓
     let png
     try {
       const { readFile, stat } = await import('node:fs/promises')
