@@ -203,14 +203,8 @@ export function plan(workspaces, archivedIds, cfgInput, activityOf, titleOf = ()
       }
       if (pMatchers.length) {
         const preset = presetOf(id) || {}
-        const presetId = String(preset.id || '')
-        const presetName = String(preset.name || '')
-        // 预设不明时保守跳过：配置了「跳过预设」就绝不误伤
-        if (!presetId) {
-          keep.push({ id, reason: 'preset-unknown', workspace: wsName })
-          continue
-        }
-        if (hitAny(presetId, pMatchers) || hitAny(presetName, pMatchers)) {
+        // 预设查不到就当没命中：能闲置满 idleDays 的，多半是真不要了，照常归档
+        if (hitAny(String(preset.id || ''), pMatchers) || hitAny(String(preset.name || ''), pMatchers)) {
           keep.push({ id, reason: 'ignored-preset', workspace: wsName })
           continue
         }

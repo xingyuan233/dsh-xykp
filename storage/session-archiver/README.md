@@ -12,7 +12,7 @@
 3. **预设 id / 预设名命中忽略表** → 跳过（`alive`、`千歌`、`re:^qq-` 都行）
 4. **已经归档过** → 跳过
 5. **拿不到最后活动时间** → 保守跳过
-6. **配了忽略预设、但这条会话查不到预设** → 保守跳过（原因 `preset-unknown`），绝不误伤
+6. **配了忽略预设、但这会话查不到预设** → 视同没命中，照常按闲置判定走
 7. 距离最后活动超过 `idleDays`（默认 3 天）→ **归档**
 
 「归档」走宿主自己的 `ctx.workspaceRegistry.archiveSession()`：
@@ -46,7 +46,7 @@
 - 会话标题 / 预设 id：宿主的投影缓存 `<DSH_HOME>/storages/session_projcache/sessions/<id>.json`（只读）
 - 预设展示名：`<DSH_HOME>/profiles/<profile>/presets/<id>/preset.yml` 顶层的 `name:`
 
-投影缓存读不到时：标题回退到活动会话对象，预设为空 → 配了 `ignorePresets` 就按 `preset-unknown` 保守跳过。
+投影缓存读不到时：标题回退到活动会话对象，预设为空 → 视同没命中忽略表，照常归档。
 
 ## 异步
 

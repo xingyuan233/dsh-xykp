@@ -126,8 +126,8 @@ const r7 = plan(
   () => '',
   () => ({}),
 )
-check(r7.toArchive.length === 0, '预设不明时不归档')
-check(r7.keep.some((k) => k.reason === 'preset-unknown'), '预设不明的原因记为 preset-unknown')
+check(r7.toArchive.length === presetWs[0].sessionIds.length, '预设不明时照常归档（闲置够久就当不要了）')
+check(!r7.keep.some((k) => k.reason === 'preset-unknown'), '不再出现 preset-unknown 跳过')
 
 // collectActivity：真目录结构
 const root = mkdtempSync(join(tmpdir(), 'archiver-'))
