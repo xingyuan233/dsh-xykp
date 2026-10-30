@@ -9,9 +9,10 @@
 //
 // 任何异常只记日志，绝不拖死宿主。
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { access, copyFile, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -80,6 +81,35 @@ export const Config = Schema.object({
 })
 
 const home = () => process.env.DSH_HOME || join(homedir(), '.dsh')
+
+/**
+ * 桥是「loader 读 <workspace>\qq-bridge-script.js 再 eval」的模式，二维码重编码还要
+ * <workspace>\make-qr.py。这两个文件以插件包里的 bridge/ 为准，缺了就补一份过去，
+ * 免得像 10-30 那次一样：文件被人挪走 / 清理掉，桥起不来、二维码推不到 ntfy。
+ */
+const BRIDGE_ASSETS = ['qq-bridge-script.js', 'make-qr.py']
+const BRIDGE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'bridge')
+
+export async function ensureBridgeAssets(qrFile) {
+  const target = dirname(String(qrFile || ''))
+  if (!target || target === '.' || target === '') return []
+  const copied = []
+  for (const name of BRIDGE_ASSETS) {
+    const dst = join(target, name)
+    try {
+      await access(dst)
+    } catch {
+      try {
+        await copyFile(join(BRIDGE_DIR, name), dst)
+        copied.push(name)
+        log(`补齐桥文件：${dst}`)
+      } catch (err) {
+        warn(`补齐桥文件失败：${dst}：${err?.message || err}`)
+      }
+    }
+  }
+  return copied
+}
 
 async function readJson(path, fallback) {
   try { return JSON.parse(await readFile(path, 'utf8')) } catch { return fallback }
@@ -182,6 +212,8 @@ async function deliver(agentsSvc, sessionId, text, mode = 'steer', ctx = null) {
 
 export async function apply(ctx, config = {}) {
   const cfg = { ...ROUTER_DEFAULTS, ...Config(config) }
+  // 桥脚本 / 二维码重编码脚本缺了就补（loader 只会 eval <workspace>\qq-bridge-script.js）
+  await ensureBridgeAssets(cfg.qrFile)
   const bridge = createBridge(cfg.bridgeUrl, { timeoutMs: 4000 })
   // 在 apply（还活着）的时候就把 agents 抓住，定时器里不再碰 ctx
   const agentsSvc = ctx.agents
