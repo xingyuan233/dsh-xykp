@@ -36,7 +36,8 @@
     "./observer/dsh-prosecutor": "./observer/dsh-prosecutor/lib/index.js",
     "./storage/session-delete/client": "./storage/session-delete/lib/client.js",
     "./storage/session-archiver": "./storage/session-archiver/lib/index.js",
-    "./comms/bili-reply": "./comms/bili-reply/lib/index.js"
+    "./comms/bili-reply": "./comms/bili-reply/lib/index.js",
+    "./comms/ntfy": "./comms/ntfy/lib/index.js"
   },
   "dsh": {
     "bundle": {

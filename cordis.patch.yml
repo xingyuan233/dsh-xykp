@@ -34,7 +34,6 @@
       disabled: true
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
-    # 工具懒加载 + 说明变更通知 + 上下文重贴（三合一），配置在 profile 里覆盖
     - id: tooldesc-control
       name: 'dsh-xykp/chat/tooldesc-control'
 
@@ -47,11 +46,13 @@
     # ── comms
     - id: bili-reply
       name: 'dsh-xykp/comms/bili-reply'
-    # QQ 通道（配置在 profile 覆盖）
-    - id: qq-adapter
-      name: 'dsh-xykp/comms/qq-adapter'
     - id: bili-rove
       name: 'dsh-xykp/comms/bili-rove'
+    - id: qq-adapter
+      name: 'dsh-xykp/comms/qq-adapter'
+    # ntfy 频道：推送 / 等待消息，供其它插件 ctx.get('ntfy') 复用
+    - id: ntfy
+      name: 'dsh-xykp/comms/ntfy'
 
     # ── observer
     - id: dsh-prosecutor
