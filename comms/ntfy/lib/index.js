@@ -124,8 +124,61 @@ async function pollOnce(cfg, topic, since) {
 }
 
 /**
+ * 开一条 ntfy 的流式订阅（不是 poll），读到一条匹配的消息就返回；
+ * 到预算时间还没等到就返回 null（不抛）。
+ *
+ * 为什么用流：ntfy.sh 免费额度按请求数算，2 秒一次 poll = 30 请求/分钟，
+ * 一会儿就把额度刷成 429，连二维码都发不出去。流是一条长连接，几乎不占。
+ */
+async function streamOnce(cfg, topic, since, match, seen, budgetMs) {
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), Math.max(1000, budgetMs))
+  try {
+    const url = `${baseOf(cfg)}/${encodeURIComponent(topic)}/json?since=${encodeURIComponent(String(since))}`
+    const res = await fetch(url, { signal: ac.signal, headers: { Accept: 'application/x-ndjson' } })
+    if (!res.ok) throw new Error(`ntfy 订阅失败 HTTP ${res.status}`)
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) return null
+      buf += dec.decode(value, { stream: true })
+      let idx
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim()
+        buf = buf.slice(idx + 1)
+        if (!line) continue
+        let m
+        try {
+          m = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (m.event && m.event !== 'message') continue
+        if (m.id) {
+          if (seen.has(m.id)) continue
+          seen.add(m.id)
+        }
+        if (match && !match(m)) continue
+        return m
+      }
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') return null
+    throw err
+  } finally {
+    clearTimeout(timer)
+    try {
+      ac.abort()
+    } catch {}
+  }
+}
+
+/**
  * 等一条消息。默认从「现在」开始等，返回第一条匹配的 message 事件；
  * 超时返回 { ok:false, timedOut:true, message:null }，不抛。
+ * 内部用流式订阅，不轮询。
  */
 export async function wait(cfgInput, opts = {}) {
   const cfg = { ...DEFAULTS, ...(cfgInput || {}) }
@@ -138,36 +191,28 @@ export async function wait(cfgInput, opts = {}) {
         : (Number(opts.timeoutSeconds !== undefined ? opts.timeoutSeconds : cfg.defaultTimeoutSec) || 0) * 1000,
     ) || 0,
   )
-  const pollMs = Math.max(250, Number(opts.pollMs !== undefined && opts.pollMs !== null ? opts.pollMs : cfg.pollMs) || DEFAULTS.pollMs)
   const match = matcherOf(opts.match)
   const deadline = Date.now() + timeoutMs
-
-  let since = opts.since !== undefined && opts.since !== null && opts.since !== '' ? opts.since : Math.floor(Date.now() / 1000)
+  const since = opts.since !== undefined && opts.since !== null && opts.since !== '' ? opts.since : Math.floor(Date.now() / 1000)
   const seen = new Set()
   let lastError = null
 
   while (true) {
-    try {
-      for (const m of await pollOnce(cfg, topic, since)) {
-        if (!m) continue
-        const id = m.id || `${m.time}:${m.event}`
-        if (seen.has(id)) continue
-        seen.add(id)
-        if (typeof m.time === 'number') {
-          const t = Number(since)
-          if (!Number.isFinite(t) || m.time >= t) since = m.time
-        }
-        if (m.event && m.event !== 'message') continue
-        if (match && !match(m)) continue
-        return { ok: true, topic, message: m, timedOut: false }
-      }
-    } catch (err) {
-      lastError = err
-    }
-    if (Date.now() >= deadline) {
+    const left = deadline - Date.now()
+    if (left <= 0) {
       return { ok: false, topic, message: null, timedOut: true, error: lastError ? String(lastError.message || lastError) : null }
     }
-    await sleep(Math.min(pollMs, Math.max(50, deadline - Date.now())))
+    try {
+      const m = await streamOnce(cfg, topic, since, match, seen, left)
+      if (m) return { ok: true, topic, message: m, timedOut: false }
+      lastError = null
+    } catch (err) {
+      lastError = err
+      const msg = String(err?.message || err)
+      // 429：等久一点，别把额度越刷越死；其它网络错误短退避
+      const backoff = /429/.test(msg) ? Math.min(15000, Math.max(0, deadline - Date.now())) : Math.min(2000, Math.max(0, deadline - Date.now()))
+      if (backoff > 0) await sleep(backoff)
+    }
   }
 }
 
