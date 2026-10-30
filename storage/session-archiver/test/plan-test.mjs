@@ -69,6 +69,66 @@ const r3 = plan(
 check(r3.toArchive.length === 0, '拿不到活动时间的保守跳过')
 check(r3.keep.some((k) => k.reason === 'no-activity-time'), '跳过原因记录正确')
 
+// 跳过预设：预设 id / 预设名 / 正则，未知预设保守跳过
+const presetWs = [{ title: 'w', path: 'D:\\x\\w', sessionIds: ['p-alive', 'p-std', 'p-qq', 'p-unknown'] }]
+const presetAct = new Map([
+  ['p-alive', now - 9 * day],
+  ['p-std', now - 9 * day],
+  ['p-qq', now - 9 * day],
+  ['p-unknown', now - 9 * day],
+])
+const presetLookup =
+  (table) =>
+  (id) =>
+    table[id] || {}
+const presets = {
+  'p-alive': { id: 'alive', name: '千歌' },
+  'p-std': { id: 'standard', name: '' },
+  'p-qq': { id: 'qq-bot', name: 'QQ' },
+}
+
+const r4 = plan(
+  presetWs,
+  [],
+  { ...cfg, ignoreWorkspaces: [], ignorePresets: ['alive'] },
+  (id) => presetAct.get(id) || 0,
+  () => '',
+  presetLookup(presets),
+)
+check(!r4.toArchive.some((x) => x.id === 'p-alive'), '预设 id 命中被跳过')
+check(r4.toArchive.some((x) => x.id === 'p-std'), '预设不命中照常归档')
+
+const r5 = plan(
+  presetWs,
+  [],
+  { ...cfg, ignoreWorkspaces: [], ignorePresets: ['千歌'] },
+  (id) => presetAct.get(id) || 0,
+  () => '',
+  presetLookup(presets),
+)
+check(!r5.toArchive.some((x) => x.id === 'p-alive'), '预设名命中被跳过')
+
+const r6 = plan(
+  presetWs,
+  [],
+  { ...cfg, ignoreWorkspaces: [], ignorePresets: ['re:^qq-'] },
+  (id) => presetAct.get(id) || 0,
+  () => '',
+  presetLookup(presets),
+)
+check(!r6.toArchive.some((x) => x.id === 'p-qq'), 're: 正则命中预设 id')
+
+const r7 = plan(
+  presetWs,
+  [],
+  { ...cfg, ignoreWorkspaces: [], ignorePresets: ['alive'] },
+  (id) => presetAct.get(id) || 0,
+  () => '',
+  () => ({}),
+)
+check(r7.toArchive.length === 0, '预设不明时不归档')
+check(r7.keep.some((k) => k.reason === 'preset-unknown'), '预设不明的原因记为 preset-unknown')
+
 // collectActivity：真目录结构
 const root = mkdtempSync(join(tmpdir(), 'archiver-'))
 const group = join(root, '--D-AI-x--')

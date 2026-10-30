@@ -8,7 +8,7 @@
 //   5. 距上次活动超过 idleDays（默认 3 天）→ 归档
 //   6. 归档走宿主自己的 ctx.workspaceRegistry.archiveSession（不自己改文件）
 //   7. 任何错误只记日志，绝不拖死宿主
-import { readdir, stat } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 
@@ -22,8 +22,10 @@ const warn = (...a) => console.warn(PREFIX, ...a)
 const DEFAULTS = {
   // 这些工作区里的会话一律不自动归档（名字或路径都认）
   ignoreWorkspaces: ['alive-workspace'],
-  // 会话名 / session id，支持通配符（如 test-*）
+  // 会话名 / session id，支持通配符（如 test-*）和正则（re:^onebot-）
   ignoreSessions: [],
+  // 预设 id / 预设名，同样支持通配符和正则（re:^alive$）
+  ignorePresets: [],
   // 距上次活动超过几天就归档
   idleDays: 3,
   intervalHours: 12,
@@ -56,6 +58,70 @@ const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh')
 function rootOf(cfg) {
   const custom = String(cfg.sessionsRoot || '').trim()
   return custom ? custom : join(dshHome(), 'sessions')
+}
+
+/**
+ * 会话标题 / 预设：宿主把这两样都投影缓存在
+ * <DSH_HOME>/storages/session_projcache/sessions/<sessionId>.json 里。
+ * 只读、拿不到就当没有（标题空、预设空），坏缓存不影响归档。
+ */
+async function collectSessionMeta() {
+  const out = new Map()
+  const dir = join(dshHome(), 'storages', 'session_projcache', 'sessions')
+  let files
+  try {
+    files = await readdir(dir)
+  } catch {
+    return out
+  }
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+    try {
+      const raw = JSON.parse(await readFile(join(dir, file), 'utf8'))
+      const rows = raw?.record?.rows || {}
+      out.set(file.slice(0, -5), {
+        title: typeof rows.title?.val === 'string' ? rows.title.val : '',
+        preset: typeof rows.agentPreset?.val === 'string' ? rows.agentPreset.val : '',
+      })
+    } catch {
+      /* 坏缓存当没有 */
+    }
+  }
+  return out
+}
+
+/**
+ * 预设 id → 预设名：<DSH_HOME>/profiles/<profile>/presets/<id>/preset.yml，
+ * 目录名就是 id，顶层 name: 是展示名（千歌 这种）。
+ */
+async function collectPresetNames() {
+  const names = new Map()
+  const root = join(dshHome(), 'profiles')
+  let profiles
+  try {
+    profiles = await readdir(root)
+  } catch {
+    return names
+  }
+  for (const profile of profiles) {
+    let dirs
+    try {
+      dirs = await readdir(join(root, profile, 'presets'))
+    } catch {
+      continue
+    }
+    for (const dir of dirs) {
+      try {
+        const text = await readFile(join(root, profile, 'presets', dir, 'preset.yml'), 'utf8')
+        const id = /^id:\s*(.+)$/m.exec(text)?.[1]?.trim() || dir
+        const label = (/^name:\s*(.+)$/m.exec(text)?.[1] || '').trim().replace(/^['"]|['"]$/g, '')
+        if (!names.has(id)) names.set(id, label)
+      } catch {
+        /* 没 preset.yml 就用文件夹名 */
+      }
+    }
+  }
+  return names
 }
 
 /**
@@ -108,11 +174,12 @@ export async function collectActivity(cfgInput = {}) {
  * 纯逻辑：给定工作区表、已归档集合、活动时间，算出这一轮该归档谁。
  * 抽出来是为了能脱离宿主自测。
  */
-export function plan(workspaces, archivedIds, cfgInput, activityOf, titleOf = () => '') {
+export function plan(workspaces, archivedIds, cfgInput, activityOf, titleOf = () => '', presetOf = () => ({})) {
   const cfg = { ...DEFAULTS, ...(cfgInput && typeof cfgInput === 'object' ? cfgInput : {}) }
   const archived = new Set(archivedIds || [])
   const wsMatchers = (cfg.ignoreWorkspaces || []).map(matcherOf)
   const sMatchers = (cfg.ignoreSessions || []).map(matcherOf)
+  const pMatchers = (cfg.ignorePresets || []).map(matcherOf)
   const cutoff = Date.now() - Math.max(0, Number(cfg.idleDays) || 0) * 86400000
 
   const keep = []
@@ -134,6 +201,20 @@ export function plan(workspaces, archivedIds, cfgInput, activityOf, titleOf = ()
         keep.push({ id, reason: 'ignored', workspace: wsName })
         continue
       }
+      if (pMatchers.length) {
+        const preset = presetOf(id) || {}
+        const presetId = String(preset.id || '')
+        const presetName = String(preset.name || '')
+        // 预设不明时保守跳过：配置了「跳过预设」就绝不误伤
+        if (!presetId) {
+          keep.push({ id, reason: 'preset-unknown', workspace: wsName })
+          continue
+        }
+        if (hitAny(presetId, pMatchers) || hitAny(presetName, pMatchers)) {
+          keep.push({ id, reason: 'ignored-preset', workspace: wsName })
+          continue
+        }
+      }
       const last = activityOf(id)
       if (!last) {
         keep.push({ id, reason: 'no-activity-time', workspace: wsName })
@@ -153,15 +234,28 @@ async function runOnce(registry, cfg) {
   const workspaces = registry.list()
   const archivedIds = registry.archivedSessionIds
   const activity = await collectActivity(cfg)
-  const titleOf = (id) => {
+  const meta = await collectSessionMeta()
+  const presetNames = await collectPresetNames()
+  const liveOf = (id) => {
     try {
-      const s = registry.ctx?.sessions?.get?.(id)
-      return (s && (s.title || s.name)) || ''
+      return registry.ctx?.sessions?.get?.(id) || null
     } catch {
-      return ''
+      return null
     }
   }
-  const { toArchive, keep } = plan(workspaces, archivedIds, cfg, (id) => activity.get(id), titleOf)
+  const titleOf = (id) => {
+    const cached = meta.get(id)?.title
+    if (cached) return cached
+    const live = liveOf(id)
+    return (live && (live.title || live.name || live.header?.title)) || ''
+  }
+  const presetOf = (id) => {
+    const live = liveOf(id)
+    const preset =
+      meta.get(id)?.preset || String(live?.header?.agentPreset || live?.agentPreset || '') || ''
+    return { id: preset, name: presetNames.get(preset) || '' }
+  }
+  const { toArchive, keep } = plan(workspaces, archivedIds, cfg, (id) => activity.get(id), titleOf, presetOf)
   let done = 0
   let failed = 0
   for (const item of toArchive) {
@@ -218,4 +312,13 @@ export function apply(ctx, config = {}) {
 }
 
 // 自测用
-export const _internal = { plan, collectActivity, matcherOf, rootOf, dshHome, DEFAULTS }
+export const _internal = {
+  plan,
+  collectActivity,
+  collectSessionMeta,
+  collectPresetNames,
+  matcherOf,
+  rootOf,
+  dshHome,
+  DEFAULTS,
+}
