@@ -168,11 +168,12 @@ export function apply(ctx, config = {}) {
     st.systemCount[toolName] = (st.systemCount[toolName] || 0) + 1
     log('推出 ' + toolName + '（第 ' + st.pushed[toolName] + ' 次，turn=' + st.turn + '）')
     persistPushed(agent, toolName)
-    if (!pendingUnlocks.includes(toolName)) pendingUnlocks.push(toolName)
+    const q = queueOf(agent)
+    if (q && !q.unlocks.includes(toolName)) q.unlocks.push(toolName)
     // 2026-10-29：工具的「系统说明」也不再往 systemPrompt 里塞（那等于重写请求开头、废掉前缀缓存），
     // 攒进下一轮那条消息通知里，跟「已解锁」一起说明。
-    if (rule.systemText && (st.systemCount[toolName] - 1) % rule.system === 0) {
-      pendingUnlockTexts[toolName] = String(rule.systemText)
+    if (q && rule.systemText && (st.systemCount[toolName] - 1) % rule.system === 0) {
+      q.texts[toolName] = String(rule.systemText)
     }
     return true
   }
@@ -190,7 +191,6 @@ export function apply(ctx, config = {}) {
   // 往当前会话 steer 一条消息：不碰请求开头（前缀缓存照旧），下一轮第一屏就能看到。
   // 注意：steer 会被宿主当成一次「收到执行请求」，凭空多一轮回复——所以**闲话一律走 queueNotice**，
   // 只有真的要立刻说的时候才用 notify。
-  const pendingExtras = []
   const NOTICE_KIND = 'tool-gate:notice'
   async function notify(agent, text) {
     if (!agent || !text) return false
@@ -212,33 +212,79 @@ export function apply(ctx, config = {}) {
   }
 
   // 本轮新解锁的工具：攒着，下一轮消息开头一并告诉模型（不往 systemPrompt 里塞，前缀不动）
-  const pendingUnlocks = []
-  const pendingUnlockTexts = Object.create(null)
+  // 2026-10-30：原来是进程级全局数组，A 会话攒的通知会弹到 B 会话，新建的空会话也会被塞一条。
+  // 现在按 sid 分桶，各发各的（扫描/触发逻辑不变，仍然扫模型自己的输出）。
+  const queues = new Map() // sid -> { unlocks: [], texts: {}, extras: [] }
+  const queueOf = (agentOrSid) => {
+    const sid = typeof agentOrSid === 'string' ? agentOrSid.trim() : sidOf(agentOrSid)
+    if (!sid) return null
+    let q = queues.get(sid)
+    if (!q) {
+      // 会话多了别无限涨；队头是最久没动的会话
+      if (queues.size > 300) queues.delete(queues.keys().next().value)
+      q = { unlocks: [], texts: Object.create(null), extras: [] }
+      queues.set(sid, q)
+    }
+    return q
+  }
 
   // 工具说明变更（tool-desc-pin 记在 globalThis.__ykpToolDescChanges）
   // 内置工具（pwsh / read / edit …）会被 wire 精简改写文案，那不是「人改了说明」，按规则忽略。
   const DESC_WINDOW_MS = 10 * 60 * 1000
-  const pendingDescNotices = () => {
+  // 还没说过一句话的新会话不该收到「工具说明变更」这类通知：等它有了真正的用户消息再说。
+  const hasUserContent = (agent) => {
+    try {
+      const nodes = agent?.session?.surface?.nodes || []
+      return nodes.some((node) => {
+        if (!node || node.role !== 'user') return false
+        const kind = node?.source?.kind
+        return !kind || (kind !== NOTICE_KIND && kind !== 'user-approval')
+      })
+    } catch {
+      return false
+    }
+  }
+  const descSent = new Map() // sid -> Set(变更 key)，同一个会话同一条说明只提示一次
+  const pendingDescNotices = (agent) => {
     const pending = globalThis.__ykpToolDescChanges
     if (!Array.isArray(pending) || pending.length === 0) return []
+    if (!hasUserContent(agent)) return []
+    const sid = sidOf(agent) || '?'
+    let seen = descSent.get(sid)
+    if (!seen) {
+      seen = new Set()
+      descSent.set(sid, seen)
+    }
     const ignore = new Set(config.descNoticeIgnore || [])
     return pending.filter((change) => {
-      if (!change || change.sent) return false
+      if (!change) return false
       if (ignore.has(change.name)) return false
       // 内置工具（pwsh/read/edit…）的文案会被 wire 精简改写，冻结补丁会给它们打 builtin，跳过
       if (change.builtin) return false
       const at = Date.parse(change.at || '')
-      return Number.isFinite(at) ? Date.now() - at < DESC_WINDOW_MS : true
+      if (!(Number.isFinite(at) ? Date.now() - at < DESC_WINDOW_MS : true)) return false
+      const key = String(change.at || '') + '|' + String(change.name || '')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
     })
+  }
+  const descKeyOf = (change) => String(change?.at || '') + '|' + String(change?.name || '')
+  const releaseDescNotices = (agent, notes) => {
+    const seen = descSent.get(sidOf(agent) || '?')
+    if (!seen) return
+    for (const change of notes) seen.delete(descKeyOf(change))
   }
 
   // ── 给别的插件用的服务 ──
   const service = {
     /** 统一通知通道：别的插件（比如 context-refresh）想跟用户说句话就走这里 */
     notify,
-    /** 攒一条闲话，等下一条用户消息进来时一起带到开头（不单独开一轮回复） */
-    queueNotice: (text) => {
-      if (text && !pendingExtras.includes(String(text))) pendingExtras.push(String(text))
+    /** 攒一条闲话，等下一条用户消息进来时一起带到开头（不单独开一轮回复）；按 sid 分桶 */
+    queueNotice: (text, sid) => {
+      const q = queueOf(sid ? String(sid) : '')
+      if (!q || !text) return
+      if (!q.extras.includes(String(text))) q.extras.push(String(text))
     },
     /** 有规则就扣着（返回 true），没规则就返回 false 让调用方自己注册 */
     offer(def) {
@@ -286,18 +332,19 @@ export function apply(ctx, config = {}) {
         const text = (Array.isArray(list) ? list : [list]).map(textOf).join('\n')
         scan(agent, text)
         // 工具说明变更：同一套通知通道发一条独立消息（不碰前缀）
-        const notes = pendingDescNotices()
-        const unlocks = pendingUnlocks.splice(0, pendingUnlocks.length)
-        const extras = pendingExtras.splice(0, pendingExtras.length)
+        // 工具说明变更 / 解锁 / 闲话都按会话（sid）取自己那一桶
+        const q = queueOf(agent)
+        const notes = pendingDescNotices(agent)
+        const unlocks = q ? q.unlocks.splice(0, q.unlocks.length) : []
+        const extras = q ? q.extras.splice(0, q.extras.length) : []
         if (notes.length || unlocks.length || extras.length) {
           // 同步占位：notify → steer 会同步插消息、再触发本 handler；
-          // sent 若等到 .then 才置位，二次进入时会重发同一批 → 无限递归（2026-10-29 爆栈）
-          for (const change of notes) change.sent = true
+          // 说明变更的「已提示」标记在 pendingDescNotices() 里同步置位，二次进入不会重发（2026-10-29 爆栈）
           dispatching = true
           const parts = []
           for (const name of unlocks) {
-            const extra = pendingUnlockTexts[name]
-            delete pendingUnlockTexts[name]
+            const extra = q ? q.texts[name] : undefined
+            if (q) delete q.texts[name]
             const def = withheld.get(name)
             const desc = typeof def?.description === 'string' ? def.description : ''
             parts.push(['〔已解锁工具 · ' + name + '〕',
@@ -310,16 +357,23 @@ export function apply(ctx, config = {}) {
               '请求开头的工具定义保持不变（为了复用缓存），以这段为新说明：',
               String(change.after || '')].join('\n'))
           }
+          const requeue = () => {
+            if (q) {
+              q.unlocks.unshift(...unlocks)
+              q.extras.unshift(...extras)
+            }
+            releaseDescNotices(agent, notes)
+          }
           notify(agent, parts.concat(extras).join('\n\n')).then((ok) => {
             dispatching = false
             if (!ok) {
-              for (const change of notes) change.sent = false
+              requeue()
               return
             }
             log('推送通知：解锁 ' + unlocks.length + ' 个，说明变更 ' + notes.length + ' 条')
           }).catch((error) => {
             dispatching = false
-            for (const change of notes) change.sent = false
+            requeue()
             warn('推送通知失败：', error?.message || error)
           })
         }

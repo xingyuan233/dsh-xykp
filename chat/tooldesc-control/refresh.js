@@ -158,7 +158,7 @@ export function apply(ctx, config = {}) {
         // 2026-10-29：不 steer（那会凭空多一轮「收到执行请求」），改成排队，
         // 等下一条用户消息进来时由 tool-gate 一起贴到开头。
         try {
-          globalThis.__toolGate?.queueNotice?.(text)
+          globalThis.__toolGate?.queueNotice?.(text, sid)
           log('排队重贴：' + sid + '（累计 ' + now + ' tokens）')
         } catch (error) {
           warn('排队失败：', error?.message || error)
