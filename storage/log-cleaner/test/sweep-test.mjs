@@ -88,6 +88,17 @@ const r5 = await sweep({ ...cfg, dryRun: true })
 check(statSync(dry).size > 0, 'dryRun 不动文件')
 check(r5.rotated >= 1, 'dryRun 也会报告', `rotated=${r5.rotated}`)
 
+// 场景 7：ignoreDirs 认目录名，也认相对/绝对路径
+const byName = join(root, 'skip-by-name')
+const byPath = join(root, 'skip-by-path')
+mkdirSync(byName, { recursive: true })
+mkdirSync(byPath, { recursive: true })
+writeFileSync(join(byName, 'big.log'), 'n'.repeat(50 * 1024))
+writeFileSync(join(byPath, 'big.log'), 'm'.repeat(50 * 1024))
+const r6 = await sweep({ ...cfg, ignoreDirs: ['skip-by-name', byPath] })
+check(statSync(join(byName, 'big.log')).size === 50 * 1024, 'ignoreDirs 用目录名跳过')
+check(statSync(join(byPath, 'big.log')).size === 50 * 1024, 'ignoreDirs 用绝对路径跳过')
+
 rmSync(root, { recursive: true, force: true })
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exitCode = failed ? 1 : 0

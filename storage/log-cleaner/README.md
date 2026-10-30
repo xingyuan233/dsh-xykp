@@ -22,7 +22,7 @@
 
 ## 匹配与忽略（优先级）
 
-1. **先忽略目录**：`ignoreDirs` 命中 → 整个目录跳过（默认 `node_modules`；`backupRoot` 自身也默认跳过）
+1. **先忽略目录**：`ignoreDirs` 命中 → 整个目录跳过（默认 `node_modules`；`backupRoot` 自身也默认跳过）。按目录名、相对路径、绝对路径都认
 2. 再在剩下的目录里找匹配 `patterns` 的文件（多个模式取**并集**）
 3. **最后忽略文件**：`ignoreFiles` 命中文件名或相对路径 → 跳过
 

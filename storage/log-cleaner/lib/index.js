@@ -92,7 +92,9 @@ async function collect(root, cfg, out) {
     for (const e of entries) {
       const full = join(dir, e.name)
       if (e.isDirectory()) {
-        if (hitAny(e.name, dirMatchers)) continue
+        const rel = relative(root, full).replace(/\\/g, '/')
+        // 目录名、相对路径、绝对路径都认（写整条 D:\...\node_modules 也生效）
+        if (hitAny(e.name, dirMatchers) || hitAny(rel, dirMatchers) || hitAny(full, dirMatchers)) continue
         if (resolve(full) === resolve(backupRoot)) continue // 插件自己的旧日志目录，默认不碰
         await walk(full)
         continue
