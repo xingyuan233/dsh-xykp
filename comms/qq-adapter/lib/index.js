@@ -18,6 +18,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { chatKeyOf, resolveRoute, parseTargetRef, formatIncoming, DEFAULTS as ROUTER_DEFAULTS } from './router.js'
+import { createPostWatcher } from './post-watch.js'
 import { createBridge } from './bridge.js'
 import { toSilk, cleanupSilk } from './silk.js'
 import { readOverride, pickRouting, overridePath } from './overrides.js'
@@ -71,6 +72,8 @@ export const Config = Schema.object({
   notifyTopic: Schema.string().default('whale-qq-shell-channel').description('登录失效时把二维码推到哪个 ntfy 主题（空 = 不推）'),
   notifyEveryMinutes: Schema.number().default(3).description('两次推码之间至少隔几分钟'),
   notifyMax: Schema.number().default(3).description('一次掉线最多推几张码'),
+  postCommand: Schema.string().default('/post')
+    .description('自动推码次数用完后，在 ntfy 主题里等这条消息，收到就再补推一张；空 = 不监听'),
   qrFile: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\qq-adapter\\\\qq-qr-fresh.png').description('桥写出来的二维码图片路径（数据目录，别放工作区）'),
   autoStartShell: Schema.boolean().default(true).description('桥没在跑时自动拉起 QQ shell'),
   shellBootPath: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell\\\\NapCatWinBootMain.exe').description('shell 启动器路径'),
@@ -280,13 +283,17 @@ export async function apply(ctx, config = {}) {
       if (ready) {
         if (!wasReady) { log('桥已就绪（uin=' + st.uin + '）') ; wasReady = true }
         notifyCount = 0
+        postWatcher.stop('已登录')
         reapLaunchers()
         return
       }
       wasReady = false
       await pushQrToNtfy(st)
+      // 自动推够次数了（notifyMax），就转为等 /post
+      if (notifyCount >= (Number(cfg.notifyMax) || 3)) postWatcher.start()
       return
     }
+    postWatcher.stop('桥不可用')
     if (cfg.autoStartShell === false) return
     // ⚠ 2026-10-29：桥连不上的时候（壳还没起来/刚掉线）以前一张码都不推，
     //   主人只能守在电脑前。现在用上一次落盘的二维码也推一下，间隔/次数照旧受 notifyEveryMinutes / notifyMax 管 ✓
@@ -386,6 +393,94 @@ export async function apply(ctx, config = {}) {
       log('已把二维码推到 ntfy（' + cfg.notifyTopic + '）HTTP ' + res.status + ' · uin=' + (st?.uin ?? '?') + ' stage=' + (st?.stage ?? '?'))
     } catch (err) { warn('推二维码到 ntfy 失败：', err?.message || err) }
   }
+
+  /** 拿 ntfy 组件（comms/ntfy 提供的服务）；没装/没起来就返回 null，后面走自带 fetch 兜底 */
+  const ntfyOf = () => {
+    try {
+      return typeof ctx.get === 'function' ? ctx.get('ntfy') || null : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 主人发 /post 之后要一张新码再推一张（不占自动推的 3 次额度）。
+   * 步骤：让壳重新要码 → 等文件 mtime 变新 → 推。
+   */
+  async function pushFreshQr() {
+    if (!cfg.notifyTopic) return false
+    const { readFile, stat } = await import('node:fs/promises')
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    const file = cfg.qrFile || ''
+    const before = await stat(file).then((s) => s.mtimeMs).catch(() => 0)
+    try {
+      await bridge.qr()
+    } catch (err) {
+      warn('让壳出新码失败：', err?.message || err)
+    }
+    let stamp = before
+    for (let i = 0; i < 30; i++) {
+      await sleep(300)
+      const s = await stat(file).catch(() => null)
+      if (s && s.mtimeMs > before) {
+        stamp = s.mtimeMs
+        break
+      }
+    }
+    if (!stamp || stamp === before) {
+      warn('/post 补推：等新二维码超时')
+      return false
+    }
+    lastQrStamp = stamp
+    const title = 'QQ 掉线了，扫这张码（/post 补发）'
+    const ntfy = ntfyOf()
+    try {
+      if (ntfy && typeof ntfy.push === 'function') {
+        await ntfy.push({
+          topic: cfg.notifyTopic,
+          filePath: file,
+          filename: 'qq-qr.png',
+          title,
+          tags: 'rotating_light,qrcode',
+          priority: 4,
+        })
+      } else {
+        const png = await readFile(file)
+        const hz = (s) => Buffer.from(String(s), 'utf8').toString('latin1')
+        const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
+          method: 'PUT',
+          headers: { Title: hz(title), Tags: 'rotating_light,qrcode', Priority: '4', Filename: 'qq-qr.png' },
+          body: png,
+        })
+        if (!res.ok) throw new Error('HTTP ' + res.status)
+      }
+      log('已按 /post 补推一张二维码')
+      return true
+    } catch (err) {
+      warn('补推二维码失败：', err?.message || err)
+      return false
+    }
+  }
+
+  // 自动推码（2 分钟 × N 次）用完后，等 /post；收到就补一张，登录成功就停
+  const postWatcher = createPostWatcher({
+    getNtfy: ntfyOf,
+    command: String(cfg.postCommand || '').trim(),
+    topic: cfg.notifyTopic,
+    timeoutMs: 60_000,
+    isLoggedIn: async () => {
+      try {
+        const st = await bridge.status()
+        return Boolean(st && st.ok && st.stage === 'ready' && st.ms === true)
+      } catch {
+        return false
+      }
+    },
+    pushQr: pushFreshQr,
+    log,
+    warn,
+  })
+
   // ────────── QQ 侧指令系统 ──────────
   // 规矩（主人 2026-10-28 定）：不做伪群组；一个会话就是一个会话；id 自己起；
   // 私聊切绑定不用权限，群聊 / 预设相关要权限；配置类带 -d 顺手改部署默认。
@@ -1526,6 +1621,7 @@ export async function apply(ctx, config = {}) {
     const cleanup = () => {
       clearInterval(timer)
       clearInterval(shellTimer)
+      postWatcher.stop('宿主收摊')
       for (const st of pendingBatch.values()) { try { if (st.timer) clearTimeout(st.timer) } catch { } }
       pendingBatch.clear()
     }

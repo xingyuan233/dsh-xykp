@@ -32,6 +32,8 @@ export function createBridge(baseUrl, opts = {}) {
   return {
     base,
     status: () => req('/status'),
+    // 让壳重新要一张登录二维码（/post 补推用）
+    qr: () => req('/qr'),
     events: (since = 0) => req('/events?since=' + (Number(since) || 0)),
     // QQ号(uin) → uid：设置页里可以直接写 u-3041632789
     uid: (uin) => req('/uid?uin=' + encodeURIComponent(String(uin || ''))),
