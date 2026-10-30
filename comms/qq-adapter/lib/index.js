@@ -391,8 +391,27 @@ export async function apply(ctx, config = {}) {
     return null
   }
 
-  /** 推一张码：优先用 comms/ntfy 服务，没有就走自带 fetch */
+  /** 推一张码：优先用 comms/ntfy 服务，没有就走自带 fetch；429 限流时退避重试 */
   async function pushQrImage(title) {
+    return pushQrImageRetry(title, 0)
+  }
+
+  async function pushQrImageRetry(title, attempt) {
+    try {
+      await pushQrImageOnce(title)
+    } catch (err) {
+      const msg = String(err?.message || err)
+      if (/429/.test(msg) && attempt < 3) {
+        const waitMs = 10_000 * (attempt + 1)
+        warn('ntfy 限流（429），' + Math.round(waitMs / 1000) + ' 秒后重试（第 ' + (attempt + 1) + ' 次）')
+        await new Promise((r) => setTimeout(r, waitMs))
+        return pushQrImageRetry(title, attempt + 1)
+      }
+      throw err
+    }
+  }
+
+  async function pushQrImageOnce(title) {
     const ntfy = ntfyOf()
     if (ntfy && typeof ntfy.push === 'function') {
       await ntfy.push({
