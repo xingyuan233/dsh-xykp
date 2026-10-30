@@ -144,14 +144,16 @@ async function notify(title, message, tags = 'robot') {
   const ntfy = await loadNtfy();
   if (ntfy && typeof ntfy.push === 'function') {
     try {
-      const r = await ntfy.push({
-        baseUrl: cfg.ntfyServer,
-        topic: cfg.topic,
-        title,
-        message,
-        tags,
-        priority: 4
-      });
+      const r = await ntfy.push(
+        { baseUrl: cfg.ntfyServer },
+        {
+          topic: cfg.topic,
+          title,
+          message,
+          tags,
+          priority: 4
+        }
+      );
       const code = (r && r.status) || 0;
       log('[notify] ' + title + ' -> ' + code + '（组件）');
       return code;
@@ -689,12 +691,14 @@ async function subscribeLoop() {
   let since = Math.floor(Date.now() / 1000);
   for (;;) {
     try {
-      const r = await ntfy.wait({
-        baseUrl: cfg.ntfyServer,
-        topic: cfg.topic,
-        timeoutMs: 5 * 60 * 1000,
-        since
-      });
+      const r = await ntfy.wait(
+        { baseUrl: cfg.ntfyServer },
+        {
+          topic: cfg.topic,
+          timeoutMs: 5 * 60 * 1000,
+          since
+        }
+      );
       if (r && r.ok && r.message) {
         if (typeof r.message.time === 'number') since = Math.max(since, r.message.time + 1);
         const text = String(r.message.message || '').trim();
