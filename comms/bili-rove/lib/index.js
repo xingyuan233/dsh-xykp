@@ -13,7 +13,7 @@
 import { offer as gateOffer } from '../../../chat/tooldesc-control/registry.js'
 import { DEFAULTS as FALLBACK_DEFAULTS } from './fallback.js'
 import { DEFAULTS as ACCOUNT_DEFAULTS, resolveCookie, readCredential, cookieOf, dataDirOf } from './account.js'
-import { DEFAULTS as NTFY_DEFAULTS } from './ntfy.js'
+import { DEFAULTS as NTFY_DEFAULTS, setService as setNtfyService } from './ntfy.js'
 import { DEFAULTS as LOGIN_DEFAULTS, qrLogin, checkLogin, loginStart } from './login.js'
 import { createBackend, WRITE_ACTIONS } from './backend.js'
 import { collectFrames, FRAME_MODES, FRAME_MAX_COUNT, FRAME_DEFAULT_COUNT } from './frames.js'
@@ -195,6 +195,8 @@ function pickCommentPictures(data, max) {
 
 export function apply(ctx, config = {}) {
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
+  // ntfy 推送统一走 comms/ntfy 组件（拿不到时 ntfy.js 里还有自带实现兜底）
+  setNtfyService(() => (typeof ctx.get === 'function' ? ctx.get('ntfy') : null))
   const backend = createBackend(cfg)
   const deps = {
     cookie: () => resolveCookie(cfg),

@@ -97,3 +97,8 @@ node test/fallback-test.mjs    # 离线：回退状态机 / 凭证优先级
 node test/real-smoke.mjs       # 联网：读接口全跑（用本机 cookie）
 node test/comment-images-test.mjs # 离线：评论 pictures/emote 归一化 + 图片块渲染
 ```
+
+## ntfy
+
+推送（登录二维码 / 登录恢复）优先走 comms/ntfy 组件的 ctx.get('ntfy').push，拿不到服务时退回本插件自带的 lib/ntfy.js 实现；两边都能用。
+

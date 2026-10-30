@@ -81,14 +81,65 @@ function post(cfg, { png, title, message, json }) {
   })
 }
 
+let serviceOf = () => null
+
+/** 宿主把 comms/ntfy 的服务接进来；拿不到就继续走自带的 post 兜底 */
+export function setService(getter) {
+  serviceOf = typeof getter === 'function' ? getter : () => null
+}
+
+function serviceSafe() {
+  try {
+    return serviceOf() || null
+  } catch {
+    return null
+  }
+}
+
 /** 推一张二维码图片；失败返回 0 */
 export function notifyQr(png, cfg = {}) {
-  return post(cfg, { png })
+  const opts = { ...DEFAULTS, ...(cfg || {}) }
+  const svc = serviceSafe()
+  if (svc && typeof svc.push === 'function') {
+    const filename = 'bili-qr-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.png'
+    return svc
+      .push({
+        baseUrl: opts.ntfyServer,
+        topic: opts.ntfyTopic,
+        body: png,
+        filename,
+        title: opts.ntfyTitle,
+        message: opts.ntfyMessage,
+        tags: opts.ntfyTags,
+        priority: opts.ntfyPriority,
+        click: opts.ntfyClickUrl || undefined,
+      })
+      .then((r) => (r && r.status) || 0)
+      .catch(() => 0)
+  }
+  return post(opts, { png })
 }
 
 /** 推一条文本（登录恢复 / 失败说明）；失败返回 false */
 export async function notifyText(title, message, cfg = {}) {
-  const code = await post(cfg, { title, message })
+  const opts = { ...DEFAULTS, ...(cfg || {}) }
+  const svc = serviceSafe()
+  if (svc && typeof svc.push === 'function') {
+    try {
+      const r = await svc.push({
+        baseUrl: opts.ntfyServer,
+        topic: opts.ntfyTopic,
+        message: String(message ?? ''),
+        title: title || 'B站登录已恢复',
+        tags: 'white_check_mark',
+        priority: 3,
+      })
+      return Boolean(r && r.ok)
+    } catch {
+      return false
+    }
+  }
+  const code = await post(opts, { title, message })
   return code >= 200 && code < 300
 }
 

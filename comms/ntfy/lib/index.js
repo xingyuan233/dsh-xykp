@@ -71,9 +71,10 @@ function matcherOf(match) {
 
 const reqInit = (cfg) => ({ signal: AbortSignal.timeout(Math.max(1000, Number(cfg.requestTimeoutMs) || DEFAULTS.requestTimeoutMs)) })
 
-/** 推一条消息；带 filePath 时作为文件附件发出去 */
+/** 推一条消息；带 filePath 或 body（Buffer）时作为文件附件发出去 */
 export async function push(cfgInput, opts = {}) {
   const cfg = { ...DEFAULTS, ...(cfgInput || {}) }
+  if (opts.baseUrl) cfg.baseUrl = opts.baseUrl
   const topic = topicOf(cfg, opts)
   const headers = {}
   if (opts.title) headers.Title = latin1(opts.title)
@@ -82,10 +83,18 @@ export async function push(cfgInput, opts = {}) {
   if (opts.click) headers.Click = String(opts.click)
 
   let body = opts.message ?? opts.text ?? ''
+  let binary = false
   if (opts.filePath) {
     body = await readFile(String(opts.filePath))
     headers.Filename = String(opts.filename || basename(String(opts.filePath)))
+    binary = true
+  } else if (opts.body !== undefined && opts.body !== null) {
+    body = opts.body
+    headers.Filename = String(opts.filename || 'attachment.bin')
+    binary = true
   }
+  // 图片/文件消息：ntfy 用 Message 头带一句说明（正文默认变成 "You received a file: ..."）
+  if (binary && opts.message) headers.Message = latin1(opts.message)
 
   const res = await fetch(`${baseOf(cfg)}/${encodeURIComponent(topic)}`, {
     method: 'POST',
