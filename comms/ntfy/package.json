@@ -1,0 +1,14 @@
+{
+  "name": "dsh-ntfy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ntfy 频道通用组件：推送消息 / 等待消息（可给插件复用，也可给模型当工具）",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "dsh": {
+    "plugin": true
+  }
+}
