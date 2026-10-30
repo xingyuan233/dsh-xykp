@@ -118,25 +118,26 @@ function import_https() { return import('node:https').then((m) => m.default); }
 
 const utf8h = (s) => Buffer.from(String(s), 'utf8').toString('latin1');
 
-// ntfy 统一走 comms/ntfy 组件（同 DSH 里的实现）。守护进程是独立进程，拿不到 ctx，
-// 但可以直接 import 组件的纯函数；装好的环境里解析 dsh-ntfy（profile 的 junction），
-// 仓库里直接跑则退回相对路径。两条都不行就继续用下面自带的实现。
+// ntfy 统一走 comms/ntfy 组件的纯客户端（lib/client.js，不依赖宿主）。
+// 装好的环境里解析 dsh-xykp/comms/ntfy/client；仓库里直接跑则退回相对路径。
+// 两条都不行就继续用下面自带的实现。
 let ntfyMod = null;
 let ntfyTried = false;
 async function loadNtfy() {
   if (ntfyTried) return ntfyMod;
   ntfyTried = true;
-  for (const spec of ['dsh-ntfy', '../../comms/ntfy/lib/index.js']) {
+  const errors = [];
+  for (const spec of ['dsh-xykp/comms/ntfy/client', '../../comms/ntfy/lib/client.js', 'dsh-ntfy']) {
     try {
       ntfyMod = await import(spec);
       log('ntfy 组件已接入：' + spec);
       return ntfyMod;
     } catch (e) {
-      // 试下一条
+      errors.push(spec + ' → ' + (e && e.message ? String(e.message).slice(0, 80) : e));
     }
   }
   ntfyMod = null;
-  log('拿不到 dsh-ntfy 组件，退回自带的 ntfy 实现');
+  log('拿不到 dsh-ntfy 组件，退回自带的 ntfy 实现（' + errors.join('；') + '）');
   return null;
 }
 

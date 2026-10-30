@@ -53,3 +53,13 @@ if (r.ok) console.log(r.message.message)
 ```powershell
 node test/ntfy-test.mjs
 ```
+
+## 独立进程怎么复用
+
+lib/client.js 是纯 node 实现（不 import schemastery/dsh-tools），装好的环境里可以：
+
+``js
+const { push, wait } = await import('dsh-xykp/comms/ntfy/client')
+``n
+仓库里直接跑用 comms/ntfy/lib/client.js。插件入口 lib/index.js 只是在这上面加 Config / apply / 工具。
+
