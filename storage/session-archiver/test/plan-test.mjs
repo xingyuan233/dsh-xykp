@@ -160,5 +160,30 @@ check(_internal.rootOf({ sessionsRoot: 'D:/custom/root' }) === 'D:/custom/root',
 if (prevHome === undefined) delete process.env.DSH_HOME
 else process.env.DSH_HOME = prevHome
 
+// 回归：session/end-seed 这类合成事件不能把「最后活动」刷新
+// （2026-10-28 一次批量 end-seed 让所有旧会话 mtime 变新，archiver 一直不归档）
+{
+  const r2 = mkdtempSync(join(tmpdir(), 'archiver-seed-'))
+  const g2 = join(r2, '--D-AI-x--')
+  mkdirSync(join(g2, 'session-seeded'), { recursive: true })
+  const f2 = join(g2, 'session-seeded', 'session.v4.jsonl')
+  const real = now - 10 * day
+  writeFileSync(
+    f2,
+    [
+      JSON.stringify({ type: 'turn/end', time: real }),
+      JSON.stringify({ type: 'session/end-seed', time: now - 60000 }),
+    ].join('\n') + '\n',
+  )
+  const act2 = await collectActivity({ sessionsRoot: r2 }, { withinMs: 5 * day })
+  const got = act2.get('session-seeded')
+  check(
+    Math.abs((got || 0) - real) < 5000,
+    '忽略 session/end-seed，用最后一条真事件',
+    `got=${new Date(got || 0).toISOString()}`,
+  )
+  rmSync(r2, { recursive: true, force: true })
+}
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exitCode = failed ? 1 : 0

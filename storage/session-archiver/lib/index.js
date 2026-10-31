@@ -125,11 +125,53 @@ async function collectPresetNames() {
 }
 
 /**
+ * 合成事件：不是人真的在会话里说话，只是收尾/初始化标记。
+ * 2026-10-31：10-28 22:39 那次批量 `session/end-seed` 把所有旧会话的日志
+ * mtime 都刷成了「刚活动过」，按 mtime 判断就会一直续命、永远不归档。
+ */
+const SYNTHETIC_EVENTS = new Set(['session/end-seed'])
+
+/**
+ * 读日志最后一条「真事件」的时间（毫秒）。
+ * 只对少数「mtime 看着很新」的会话调用，代价可控。
+ */
+export async function lastRealEventMs(file) {
+  const { readFile } = await import('node:fs/promises')
+  const buf = await readFile(file)
+  let text
+  if (/\.zstd$/i.test(file)) {
+    const zlib = await import('node:zlib')
+    text = zlib.zstdDecompressSync(buf).toString('utf8')
+  } else {
+    text = buf.toString('utf8')
+  }
+  const lines = text.trimEnd().split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i].trim()
+    if (!s) continue
+    let o
+    try {
+      o = JSON.parse(s)
+    } catch {
+      continue
+    }
+    if (SYNTHETIC_EVENTS.has(o?.type)) continue
+    const t = typeof o?.time === 'number' ? o.time : o?.data?.time
+    if (typeof t === 'number' && t > 0) return t
+  }
+  return 0
+}
+
+/**
  * 扫 <sessionsRoot>，建 sessionId → 最后活动时间（毫秒）。
  * 落盘布局：<root>/<workspace-key>/<sessionId>/session*.jsonl(.zstd)
+ *
+ * 默认用日志 mtime；`withinMs > 0` 时，只对「mtime 在窗口内」的会话再读一遍日志，
+ * 取最后一条真事件的时间——防止 session/end-seed 这类合成事件把闲置计时刷掉。
  */
-export async function collectActivity(cfgInput = {}) {
+export async function collectActivity(cfgInput = {}, options = {}) {
   const cfg = { ...DEFAULTS, ...(cfgInput && typeof cfgInput === 'object' ? cfgInput : {}) }
+  const withinMs = Math.max(0, Number(options.withinMs) || 0)
   const root = rootOf(cfg)
   const out = new Map()
   let groups = []
@@ -157,13 +199,26 @@ export async function collectActivity(cfgInput = {}) {
         continue
       }
       let newest = 0
+      let newestFile = ''
       for (const f of files) {
         if (!f.isFile()) continue
         if (!/^session.*\.(jsonl|zstd|jsonl\.zstd)$/i.test(f.name)) continue
-        const st = await stat(join(sessionDir, f.name)).catch(() => null)
-        if (st && st.mtimeMs > newest) newest = st.mtimeMs
+        const full = join(sessionDir, f.name)
+        const st = await stat(full).catch(() => null)
+        if (st && st.mtimeMs > newest) {
+          newest = st.mtimeMs
+          newestFile = full
+        }
       }
-      if (newest) out.set(s.name, newest)
+      if (newest) {
+        let activity = newest
+        // 只对「mtime 落在闲置窗口内」的会话做精确判定，避免每次都要解压全部日志
+        if (withinMs > 0 && Date.now() - newest < withinMs) {
+          const real = await lastRealEventMs(newestFile).catch(() => 0)
+          if (real > 0 && real < activity) activity = real
+        }
+        out.set(s.name, activity)
+      }
     }
     await yieldNow()
   }
@@ -227,7 +282,9 @@ export function plan(workspaces, archivedIds, cfgInput, activityOf, titleOf = ()
 async function runOnce(registry, cfg) {
   const workspaces = registry.list()
   const archivedIds = registry.archivedSessionIds
-  const activity = await collectActivity(cfg)
+  const activity = await collectActivity(cfg, {
+    withinMs: (Number(cfg.idleDays) || DEFAULTS.idleDays) * 86400000,
+  })
   const meta = await collectSessionMeta()
   const presetNames = await collectPresetNames()
   const liveOf = (id) => {
@@ -309,6 +366,7 @@ export function apply(ctx, config = {}) {
 export const _internal = {
   plan,
   collectActivity,
+  lastRealEventMs,
   collectSessionMeta,
   collectPresetNames,
   matcherOf,
