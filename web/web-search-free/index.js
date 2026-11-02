@@ -53,6 +53,9 @@ export const Config = Schema.object({
   locale: Schema.string().default('zh-CN'),
   userAgent: Schema.string().default(''),
   blockHosts: Schema.array(Schema.string()).default(DEFAULT_BLOCK_HOSTS),
+  browserPath: Schema.string().default(''),
+  browserProfileDir: Schema.string().default(''),
+  browserTimeoutMs: Schema.number().default(15000),
   debug: Schema.boolean().default(false),
 })
 
@@ -67,6 +70,9 @@ const DEFAULTS = {
   locale: 'zh-CN',
   userAgent: '',
   blockHosts: DEFAULT_BLOCK_HOSTS,
+  browserPath: '',
+  browserProfileDir: '',
+  browserTimeoutMs: 15000,
   debug: false,
 }
 
@@ -81,6 +87,9 @@ function normalizeConfig(raw = {}) {
   cfg.timeoutMs = clampInt(cfg.timeoutMs, 1000, 60000, DEFAULTS.timeoutMs)
   cfg.cacheTtlMs = clampInt(cfg.cacheTtlMs, 0, 24 * 60 * 60 * 1000, DEFAULTS.cacheTtlMs)
   cfg.cooldownMs = clampInt(cfg.cooldownMs, 0, 60 * 60 * 1000, DEFAULTS.cooldownMs)
+  cfg.browserTimeoutMs = clampInt(cfg.browserTimeoutMs, 3000, 120000, DEFAULTS.browserTimeoutMs)
+  cfg.browserPath = String(cfg.browserPath || '').trim()
+  cfg.browserProfileDir = String(cfg.browserProfileDir || '').trim()
   cfg.userAgent = String(cfg.userAgent || '').trim() || DEFAULT_UA
   cfg.locale = String(cfg.locale || '').trim()
   cfg.blockHosts = (Array.isArray(cfg.blockHosts) ? cfg.blockHosts : DEFAULT_BLOCK_HOSTS)
@@ -203,6 +212,9 @@ export function createSearchProvider(rawConfig = {}) {
             userAgent: cfg.userAgent,
             locale: cfg.locale,
             timeoutMs: cfg.timeoutMs,
+            browserPath: cfg.browserPath,
+            browserProfileDir: cfg.browserProfileDir,
+            browserTimeoutMs: cfg.browserTimeoutMs,
             signal,
           })).filter((item) => !isBlocked(cfg, item.url))
           if (!found.length) throw new Error('结果都被 blockHosts 过滤了')

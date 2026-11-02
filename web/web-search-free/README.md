@@ -14,7 +14,7 @@
 
 | 引擎 | 状态 | 说明 |
 | --- | --- | --- |
-| Google | ⚠️ 本机 IP 被拦 | 普通 HTTP 拿到的是 enablejs 页，无头 Chrome 也会被甩 captcha。解析器已写好（`parseGoogle`），IP 干净时自动可用 |
+| Google | ✅ 需要本机有 Chrome/Edge | 普通 HTTP 只拿到 enablejs 页，所以用无头浏览器 `--dump-dom` 渲染；结果链接被改写成 `/goto?url=<加密串>`，再按次请求拿 302 里的真实地址。一次搜索约 +5–8s |
 | Bing | ✅ 可用但排名差 | 走 RSS 出口（`&format=rss`）；这台机器上多词长尾只按第一个词给「官网/教程首页」 |
 | 百度 | ✅ 可用 | 结果里带 `mu="真实地址"`，广告块有「广告」标记会被丢掉 |
 
@@ -60,6 +60,9 @@
     locale: zh-CN
     userAgent: ''
     blockHosts: [google.com, gstatic.com, bing.com, baidu.com, bdstatic.com]
+    browserPath: ''            # 空 = 自动找 Chrome/Edge；Google 靠它渲染
+    browserProfileDir: ''      # 空 = %TEMP%\dsh-web-search-free-browser
+    browserTimeoutMs: 15000
     debug: false
 ```
 
@@ -77,3 +80,9 @@
 # 在 D:\AI\DeepseekHarness\workspaces\default-workspace 下
 node probe\final.mjs "sqlite wal checkpoint"
 ```
+
+## Google 的前置条件
+
+需要有 Chrome 或 Edge（脚本会自动在常见路径里找，找不到时 Google 这条会直接失败、其它引擎照常）。
+Google 对自动化客户端仍有概率甩 captcha：命中后这个引擎会冷却 10 分钟（cooldownMs），期间搜索结果只剩 Bing / 百度。
+

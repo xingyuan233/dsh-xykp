@@ -192,38 +192,137 @@ export function parseGoogle(html) {
   const seen = new Set()
   for (const heading of source.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/g)) {
     const before = source.slice(Math.max(0, heading.index - 900), heading.index)
-    const hrefs = [...before.matchAll(/href="((?:\/url\?q=|https?:\/\/)[^"]+)"/g)]
+    const hrefs = [...before.matchAll(/href="([^"]+)"/g)]
     if (!hrefs.length) continue
-    let url = decodeEntities(hrefs[hrefs.length - 1][1])
-    const redirected = url.match(/^\/url\?q=([^&]+)/)
-    if (redirected) url = decodeURIComponent(redirected[1])
-    url = absolute(url)
-    if (!url || isEngineHost(url, 'google.') || /google\.[a-z.]+\//i.test(url)) continue
+    const raw = decodeEntities(hrefs[hrefs.length - 1][1])
     const title = plainText(heading[1])
     if (!title) continue
+    // 现在 Google 对无登录客户端会把结果链接改写成 /goto?url=<加密串>，
+    // 真网址要再请求一次（它会 302 过去），所以先记下 href 留到 resolve 阶段。
+    const pending = raw.startsWith('/') ? raw : ''
+    const url = pending ? '' : absolute(raw)
+    if (!pending && !url) continue
     const after = source.slice(heading.index + heading[0].length, heading.index + heading[0].length + 2000)
     const snippet =
       after.match(/<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
       after.match(/<span[^>]*class="[^"]*(?:aCOpRe|st)[^"]*"[^>]*>([\s\S]*?)<\/span>/i)
-    results.push({ title, url, snippet: snippet ? plainText(snippet[1]) : '' })
+    const item = { title, url, snippet: snippet ? plainText(snippet[1]) : '' }
+    if (pending) item.pending = pending
+    results.push(item)
   }
-  return results.filter((item) => {
-    if (seen.has(item.url)) return false
-    seen.add(item.url)
-    return true
-  })
+  const unique = []
+  for (const item of results) {
+    const key = item.url || item.pending
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    unique.push(item)
+  }
+  return unique
+}
+
+// 把 /goto?url=... 这类相对跳转换成真实地址：Google 会 302 到目标站点，
+// 读 Location 就行，不需要带 cookie，也不用再开浏览器。
+export async function resolveGoogleLinks(items, options) {
+  const { userAgent, locale, timeoutMs, signal, fetchImpl } = options
+  const doFetch = fetchImpl || globalThis.fetch
+  const resolved = await Promise.all(
+    items.map(async (item) => {
+      if (!item.pending) return item
+      const target = new URL(item.pending, 'https://www.google.com').toString()
+      try {
+        const timeout = AbortSignal.timeout(Math.min(timeoutMs, 8000))
+        const res = await doFetch(target, {
+          method: 'GET',
+          redirect: 'manual',
+          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+          headers: {
+            'user-agent': userAgent,
+            'accept-language': locale ? `${locale},en;q=0.8` : 'en;q=0.9',
+          },
+        })
+        const location = res.headers.get('location')
+        let destination = location || ''
+        if (!destination) {
+          // 有时它是「302 Moved」的 HTML 壳：<A HREF="真实地址">here</A>
+          const body = await res.text()
+          const moved = body.match(/<a[^>]+href="(https?:\/\/[^"]+)"/i)
+          const refresh = body.match(/url=(['"]?)(https?:\/\/[^'">]+)/i)
+          destination = moved ? moved[1] : refresh ? refresh[2] : ''
+        } else {
+          await res.body?.cancel?.()
+        }
+        return destination ? { ...item, url: absolute(destination), pending: '' } : null
+      } catch {
+        return null
+      }
+    }),
+  )
+  return resolved.filter((item) => item && item.url)
 }
 
 // ── 请求 ────────────────────────────────────────────────────────────────────
 
+// Google 只肯把结果交给会跑 JS 的客户端，所以要么本机有 Chrome/Edge，
+// 要么这个引擎就只能降级。找到浏览器就用 `--dump-dom` 让它渲染完把 DOM 吐出来。
+import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const BROWSER_CANDIDATES = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  join(process.env.LOCALAPPDATA || '', 'Google\\Chrome\\Application\\chrome.exe'),
+]
+
+export function findBrowser(configured) {
+  const explicit = String(configured || '').trim()
+  if (explicit) return existsSync(explicit) ? explicit : ''
+  return BROWSER_CANDIDATES.find((candidate) => candidate && existsSync(candidate)) || ''
+}
+
+export function renderWithBrowser(url, options) {
+  const binary = findBrowser(options.browserPath)
+  if (!binary) return Promise.reject(new Error('没有找到 Chrome/Edge，Google 需要浏览器渲染'))
+  const profileDir = String(options.browserProfileDir || '').trim() || join(tmpdir(), 'dsh-web-search-free-browser')
+  const args = [
+    '--headless=new',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    '--disable-blink-features=AutomationControlled',
+    `--user-agent=${options.userAgent}`,
+    `--user-data-dir=${profileDir}`,
+    '--virtual-time-budget=8000',
+    '--dump-dom',
+    url,
+  ]
+  return new Promise((resolve, reject) => {
+    execFile(
+      binary,
+      args,
+      { timeout: options.browserTimeoutMs, maxBuffer: 64 * 1024 * 1024, windowsHide: true },
+      (error, stdout) => {
+        if (stdout && stdout.length > 2000) resolve(stdout)
+        else reject(new Error(error?.message || '浏览器没有输出页面'))
+      },
+    )
+  })
+}
+
 export const ENGINES = {
   google: {
     label: 'Google',
+    browser: true,
     buildUrl: (query, { locale }) =>
       `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10&pws=0${
         locale ? `&hl=${encodeURIComponent(locale.split('-')[0])}` : ''
       }`,
     parse: parseGoogle,
+    resolve: resolveGoogleLinks,
     blockedBy: /captcha-form|unusual traffic|enablejs/i,
   },
   bing: {
@@ -250,10 +349,11 @@ export async function searchEngine(engineId, query, options) {
   const engine = ENGINES[engineId]
   if (!engine) throw new Error(`unknown search engine "${engineId}"`)
   const { userAgent, locale, timeoutMs, signal, fetchImpl } = options
+  const url = engine.buildUrl(query, { locale })
   const doFetch = fetchImpl || globalThis.fetch
   const timeout = AbortSignal.timeout(timeoutMs)
   const composed = signal ? AbortSignal.any([signal, timeout]) : timeout
-  const response = await doFetch(engine.buildUrl(query, { locale }), {
+  const response = await doFetch(url, {
     method: 'GET',
     redirect: 'follow',
     signal: composed,
@@ -265,15 +365,30 @@ export async function searchEngine(engineId, query, options) {
       pragma: 'no-cache',
     },
   })
-  const html = await response.text()
+  let html = await response.text()
   if (!response.ok) throw new Error(`${engine.label} HTTP ${response.status}`)
-  if (engine.blockedBy && html.slice(0, 30000).match(engine.blockedBy)) {
-    throw new Error(`${engine.label} 触发人机验证`)
+
+  const blocked = () =>
+    (engine.blockedBy && engine.blockedBy.test(html.slice(0, 30000))) ||
+    /<title>\s*(?:Captcha|验证码|安全验证)/i.test(html) ||
+    /id="captcha"/i.test(html)
+
+  // Google 这类必须跑 JS 的：静态页被拦时，用本机浏览器渲染一次再解析。
+  if (blocked() && engine.browser) {
+    html = await renderWithBrowser(url, {
+      browserPath: options.browserPath,
+      browserProfileDir: options.browserProfileDir,
+      browserTimeoutMs: options.browserTimeoutMs || timeoutMs,
+      userAgent,
+    })
   }
-  if (/<title>\s*(?:Captcha|验证码|安全验证)/i.test(html) || /id="captcha"/i.test(html)) {
-    throw new Error(`${engine.label} 触发人机验证`)
+  if (blocked()) throw new Error(`${engine.label} 触发人机验证`)
+
+  const parsed = engine.parse(html)
+  let results = parsed
+  if (engine.resolve && parsed.length) {
+    results = (await engine.resolve(parsed, options)).filter((item) => !/google\.[a-z.]+\//i.test(item.url))
   }
-  const results = engine.parse(html)
   if (!results.length) throw new Error(`${engine.label} 没有解析出结果（页面结构可能变了）`)
   return results
 }
