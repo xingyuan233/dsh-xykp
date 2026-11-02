@@ -42,18 +42,39 @@ function removeJunkContainers(html) {
   return out
 }
 
+// 链接密度高的块（导航、面包屑、相关推荐）直接删：正文几乎全是 <a>、文字又不多。
+function dropLinkDenseBlocks(html) {
+  return html.replace(
+    /<(div|ul|ol|table|section)\b[^>]*>([\s\S]{0,20000}?)<\/\1>/gi,
+    (whole, _tag, inner) => {
+      const text = inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      if (!text.length || text.length > 900) return whole
+      const linkText = (inner.match(/<a\b[^>]*>[\s\S]*?<\/a>/gi) || [])
+        .join(' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      return linkText.length / text.length > 0.6 ? ' ' : whole
+    },
+  )
+}
+
 export function cleanHtml(html) {
-  let out = String(html)
+  const source = String(html)
+  const title = (source.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]
+  let out = source
     .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, ' ')
     .replace(JUNK_TAGS, ' ')
     .replace(LAYOUT_TAGS, ' ')
   out = removeJunkContainers(out)
+  out = dropLinkDenseBlocks(out)
   // 优先正文容器，其次 <main>，最后整页。
   const article = out.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)
-  if (article && article[1].length > 500) return article[1]
   const main = out.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)
-  if (main && main[1].length > 500) return main[1]
-  return out
+  const body = article && article[1].length > 500 ? article[1] : main && main[1].length > 500 ? main[1] : out
+  const heading = title ? `<h1>${title.replace(/\s+/g, ' ').trim()}</h1>` : ''
+  return heading + body
 }
 
 function capText(text, maxChars) {
