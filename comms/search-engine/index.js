@@ -1,27 +1,27 @@
-// dsh-xykp · web/web-search-free
+// dsh-xykp · comms/search-engine
 //
-// 一个免费的 `web_search` 提供方：直接抓 Bing / 360 的搜索结果页，抠出标题、
-// 链接、摘要，再按 URL 去重、两个引擎的结果交替合并。
+// 同时注册两个 dsh-web provider（`web_search` / `web_fetch` 工具本身不用改）：
 //
-// 为什么要有它：官方 `web-search-deepseek` 走的是 DeepSeek 服务端的联网检索，
-// 每次搜索都是一次带 server-tool-search 的模型请求（账单里那 0.07 元/小时就是它）。
-// 这个插件不发模型请求，只是一个 HTTP GET，所以除了流量不花钱。
+//   search  id=free     —— 直接抓 Google / Bing / 百度的结果页，不发模型请求，
+//                          所以不会产生官方 `server-tool-search` 那笔费用。
+//   fetch   id=reader   —— 抓网页正文：带浏览器头请求，被 Cloudflare / JS 壳挡住时
+//                          用本机 Chrome 渲染；去掉导航/广告/评论，优先取 <article>。
 //
-// 它是 dsh-web 的一个 provider（id 默认 `free`），`web_search` 工具本身不用改。
 // 在 profile 里把 web 行切过来就能用：
 //
 //   - id: web
 //     config:
 //       searchProvider: free
-//       fetchProvider: http
+//       fetchProvider: reader
 //
-// 想换回官方检索就把 searchProvider 改回 deepseek-official。
+// 想换回官方检索就把 searchProvider 改回 deepseek-official
+// （fetch 想换回裸 HTTP 就改回 http）。
 //
 // config 示例：
-//   - id: web-search-free
-//     name: 'dsh-xykp/web/web-search-free'
+//   - id: search-engine
+//     name: 'dsh-xykp/comms/search-engine'
 //     config:
-//       providerId: free          # 注册成哪个 provider id
+//       providerId: free          # 搜索 provider id
 //       engines: [google, bing, baidu]  # 并发请求，顺序即优先级
 //       maxResults: 8             # web_search 没指定 maxResults 时的上限
 //       timeoutMs: 12000          # 单个引擎的超时
@@ -29,14 +29,21 @@
 //       cooldownMs: 600000        # 某个引擎触发人机验证后，歇这么久再试
 //       locale: zh-CN             # 影响 Bing 的 setlang 和 Accept-Language
 //       userAgent: ''             # 空 = 用内置 Chrome UA
+//       fetchProviderId: reader   # 网页正文 provider id
+//       fetchEnabled: true
+//       fetchMaxChars: 200000     # web_fetch 单页上限
+//       fetchTimeoutMs: 20000
+//       fetchBrowserFallback: true # 被拦时用浏览器渲染
+//       browserPath: ''           # 空 = 自动找 Chrome/Edge
 //       debug: false              # true 时把每次降级原因打到 stderr
 //       enabled: true
 
 import Schema from '@deepseek-ai/schemastery'
 import { WebError } from '@deepseek-ai/dsh-web'
 import { DEFAULT_UA, ENGINES, engineIds, searchEngine } from './engines.js'
+import { createFetchProvider } from './reader.js'
 
-export const name = 'web-search-free'
+export const name = 'search-engine'
 export const inject = ['web']
 
 // 搜索引擎自己的域名（跳转页、资讯卡、静态资源）不算结果，直接滤掉。
@@ -56,6 +63,11 @@ export const Config = Schema.object({
   browserPath: Schema.string().default(''),
   browserProfileDir: Schema.string().default(''),
   browserTimeoutMs: Schema.number().default(15000),
+  fetchProviderId: Schema.string().default('reader'),
+  fetchEnabled: Schema.boolean().default(true),
+  fetchMaxChars: Schema.number().default(200000),
+  fetchTimeoutMs: Schema.number().default(20000),
+  fetchBrowserFallback: Schema.boolean().default(true),
   debug: Schema.boolean().default(false),
 })
 
@@ -73,6 +85,11 @@ const DEFAULTS = {
   browserPath: '',
   browserProfileDir: '',
   browserTimeoutMs: 15000,
+  fetchProviderId: 'reader',
+  fetchEnabled: true,
+  fetchMaxChars: 200000,
+  fetchTimeoutMs: 20000,
+  fetchBrowserFallback: true,
   debug: false,
 }
 
@@ -95,6 +112,10 @@ function normalizeConfig(raw = {}) {
   cfg.blockHosts = (Array.isArray(cfg.blockHosts) ? cfg.blockHosts : DEFAULT_BLOCK_HOSTS)
     .map((host) => String(host).trim().toLowerCase())
     .filter(Boolean)
+  cfg.fetchProviderId =
+    String(cfg.fetchProviderId || DEFAULTS.fetchProviderId).trim() || DEFAULTS.fetchProviderId
+  cfg.fetchMaxChars = clampInt(cfg.fetchMaxChars, 2000, 1000000, DEFAULTS.fetchMaxChars)
+  cfg.fetchTimeoutMs = clampInt(cfg.fetchTimeoutMs, 2000, 120000, DEFAULTS.fetchTimeoutMs)
   return cfg
 }
 
@@ -268,10 +289,30 @@ export function apply(ctx, config = {}) {
     search: provider.search,
   })
   console.error(
-    `[web-search-free] 已注册搜索 provider "${cfg.providerId}"（引擎：${cfg.engines.join(
+    `[search-engine] 已注册搜索 provider "${cfg.providerId}"（引擎：${cfg.engines.join(
       ', ',
     )}；在 profile 里设置 web.config.searchProvider=${cfg.providerId} 启用）`,
   )
+
+  if (cfg.fetchEnabled) {
+    const reader = createFetchProvider({
+      userAgent: cfg.userAgent,
+      timeoutMs: cfg.fetchTimeoutMs,
+      maxChars: cfg.fetchMaxChars,
+      browserFallback: cfg.fetchBrowserFallback,
+      browserPath: cfg.browserPath,
+      browserProfileDir: cfg.browserProfileDir,
+      browserTimeoutMs: cfg.browserTimeoutMs,
+    })
+    ctx.web.registerFetchProvider({
+      id: cfg.fetchProviderId,
+      available: () => true,
+      fetch: reader.fetch,
+    })
+    console.error(
+      `[search-engine] 已注册抓取 provider "${cfg.fetchProviderId}"（被拦时${cfg.fetchBrowserFallback ? '会' : '不会'}用浏览器兜底）`,
+    )
+  }
 }
 
 export { engineIds }
