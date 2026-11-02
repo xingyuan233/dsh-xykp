@@ -3,11 +3,15 @@
 // 只做两件事：拼搜索 URL 发请求、把返回的 HTML 抠成 { title, url, snippet }。
 // 没有 key、没有第三方 SDK，纯 HTML 解析，所以引擎改版时只需要改这里的 parse。
 //
-// 目前内置两个能直连的引擎：
-//   bing  cn.bing.com —— 全球索引好、中英都行、无广告位
-//   so    www.so.com  —— 360，中文站点覆盖比 Bing 好（Bing 中文结果偏 CSDN/搜狐）
-// 试过但在这个网络里不可用：google（要 JS）、duckduckgo（连不上）、mojeek（验证码）、
-// brave / searx 公共实例（连不上），sogou（结果全是跳转链接 + 广告）。
+// 引擎（按主人定的优先级）：
+//   google  www.google.com     —— 首选。但这台机器的 IP 会被 google 直接甩 captcha，
+//                                 先按普通 HTTP 试，命中验证码就抛错让上层冷却 + 降级。
+//   bing    cn.bing.com        —— 走 RSS 出口，结构稳；缺点：多词长尾排名很「导航化」。
+//   baidu   www.baidu.com      —— 中文兜底，结果里带 mu="真实地址"，广告块有「广告」标记。
+//
+// 已删掉的（主人嫌垃圾）：360（so.com）、搜狗（广告/加密跳转多，且频繁人机验证）。
+// 试过不可用的：DuckDuckGo / Brave / Yahoo / Searx 公共实例（连不上）、Mojeek（验证码）、
+// Yandex（302）、Ecosia（403）。
 
 export const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -57,6 +61,7 @@ export function decodeEntities(input) {
 export function plainText(html) {
   return decodeEntities(
     String(html)
+      .replace(/<!--[\s\S]*?-->/g, ' ')
       .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
       .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
       .replace(/<\/(p|div|li|ul|ol|h[1-6]|tr|table|section|article)>/gi, ' ')
@@ -80,27 +85,37 @@ function isEngineHost(url, host) {
   }
 }
 
-// Bing 的有机结果偶尔包一层 /ck/a?...&u=a1<base64url>，解出来才是真地址。
-function bingTarget(href) {
-  const url = decodeEntities(href)
-  if (!isEngineHost(url, 'bing.com')) return url
-  const encoded = url.match(/[?&]u=a1([A-Za-z0-9_-]+)/)
-  if (!encoded) return ''
-  try {
-    return Buffer.from(encoded[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
-  } catch {
-    return ''
-  }
-}
-
-// 只解析结果容器之后的部分：页面头部的内联 script/style 里也会出现
-// `<li class="b_algo` 这类字符串，整页切分会把脚本模板当成结果抠出来。
+// 只解析结果容器之后的部分：页面头部内联的 script/style 里也会出现
+// `<li class="b_algo` 这类字符串，整页切分会把脚本模板当成结果。
 function cropAfter(html, marker) {
-  const at = html.indexOf(marker)
-  return at < 0 ? '' : html.slice(at)
+  const at = String(html).indexOf(marker)
+  return at < 0 ? '' : String(html).slice(at)
 }
 
-const NO_RESULTS = /(?:没有与此相关的结果|找不到和您查询的“|未找到相关结果|There are no results)/i
+const NO_RESULTS =
+  /(?:没有与此相关的结果|找不到和您查询的“|未找到相关结果|There are no results|did not match any documents)/i
+
+// ── Bing ────────────────────────────────────────────────────────────────────
+// Bing 有 RSS 出口（`&format=rss`），比 HTML 稳得多：结构固定、体积小。
+
+function rssTag(block, tag) {
+  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`))
+  if (!match) return ''
+  return match[1].replace(/^<!\[CDATA\[([\s\S]*?)\]\]>$/, '$1').trim()
+}
+
+export function parseBingRss(xml) {
+  const source = String(xml)
+  if (!/<rss[\s>]/i.test(source)) return []
+  const results = []
+  for (const item of source.match(/<item>[\s\S]*?<\/item>/gi) || []) {
+    const url = absolute(decodeEntities(rssTag(item, 'link')))
+    const title = plainText(rssTag(item, 'title'))
+    if (!url || !title || isEngineHost(url, 'bing.com')) continue
+    results.push({ title, url, snippet: plainText(rssTag(item, 'description')) })
+  }
+  return results
+}
 
 export function parseBing(html) {
   const source = String(html)
@@ -124,100 +139,105 @@ export function parseBing(html) {
   return results
 }
 
-// 360 的真地址在 data-mdurl 上；href 是 /link?m=... 这种加密跳转，用不了。
-export function parseSo(html) {
+// Bing 偶尔把有机结果包一层 /ck/a?...&u=a1<base64url>。
+function bingTarget(href) {
+  const url = decodeEntities(href)
+  if (!isEngineHost(url, 'bing.com')) return url
+  const encoded = url.match(/[?&]u=a1([A-Za-z0-9_-]+)/)
+  if (!encoded) return ''
+  try {
+    return Buffer.from(encoded[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
+// ── Baidu ───────────────────────────────────────────────────────────────────
+// 每条有机结果是 `<div class="result c-container ..." ... mu="真实地址">`，
+// 标题在 <h3><a> 里，摘要在 summaryData 的内联 JSON 里。广告块带「广告」标记，直接丢。
+
+export function parseBaidu(html) {
   const source = String(html)
   if (NO_RESULTS.test(source)) return []
   const results = []
-  const blocks = cropAfter(source, '<ul class="result"').split(/<li class="res-list/i).slice(1)
+  const blocks = source.split(/<div class="result c-container/).slice(1)
   for (const raw of blocks) {
-    const block = raw.slice(0, 12000)
-    const md = block.match(/data-mdurl="([^"]+)"/)
-    const url = md ? absolute(md[1]) : ''
-    if (!url || isEngineHost(url, 'so.com')) continue
+    const tagEnd = raw.indexOf('>')
+    const tag = tagEnd >= 0 ? raw.slice(0, tagEnd) : raw.slice(0, 800)
+    const real = tag.match(/mu="([^"]+)"/)
+    if (!real) continue
+    const url = absolute(decodeEntities(real[1]))
+    if (!url || isEngineHost(url, 'baidu.com')) continue
+    const block = raw.slice(0, 24000)
+    // 广告：百度在块里塞「广告」或 ec_ads 标记
+    if (/广告/.test(block.slice(0, 8000)) || /ec_ads|ec_result/.test(tag)) continue
     const anchor = block.match(/<h3[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i)
     const title = anchor ? plainText(anchor[1]) : ''
     if (!title) continue
-    const snippet =
-      block.match(/class="res-list-summary"[^>]*>([\s\S]*?)<\/span>/i) ||
-      block.match(/<p class="res-desc"[^>]*>([\s\S]*?)<\/p>/i) ||
-      block.match(/class="res-desc"[^>]*>([\s\S]*?)<\/(?:p|div)>/i)
-    results.push({ title, url, snippet: snippet ? plainText(snippet[1]) : '' })
+    const summary = block.match(/"summaryData"[\s\S]{0,4000}?"text":"((?:[^"\\]|\\.)*)"/)
+    const snippet = summary ? plainText(summary[1].replace(/\\"/g, '"')) : ''
+    results.push({ title, url, snippet })
   }
   return results
 }
 
-// Bing 有 RSS 出口（`&format=rss`），比 HTML 稳得多：结构固定、体积小、不用猜卡片布局。
-// 从这个网络看，cn.bing.com 的多词长尾排名很差（基本只按第一个词给「官网/百科」），
-// 所以默认把 360 排在前面，Bing 用来补全球结果。
-function rssTag(block, tag) {
-  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`))
-  if (!match) return ''
-  return match[1].replace(/^<!\[CDATA\[([\s\S]*?)\]\]>$/, '$1').trim()
-}
+// ── Google ──────────────────────────────────────────────────────────────────
+// 只有 google 能把结果直接吐成 HTML 才谈得上解析；当前这个 IP 拿到的都是
+// enablejs / captcha 页，解析出 0 条 → 上层降级并冷却。
 
-export function parseBingRss(xml) {
-  const source = String(xml)
-  if (!/<rss[\s>]/i.test(source)) return []
-  const results = []
-  const items = source.match(/<item>[\s\S]*?<\/item>/gi) || []
-  for (const item of items) {
-    const url = absolute(decodeEntities(rssTag(item, 'link')))
-    const title = plainText(rssTag(item, 'title'))
-    if (!url || !title || isEngineHost(url, 'bing.com')) continue
-    results.push({ title, url, snippet: plainText(rssTag(item, 'description')) })
-  }
-  return results
-}
-
-// 搜狗的结果链接是 /link?url=... 加密跳转，但每条结果旁边有 data-url 指到真实地址，
-// 直接用它，比逐条跟随跳转便宜得多。
-export function parseSogou(html) {
+export function parseGoogle(html) {
   const source = String(html)
   if (NO_RESULTS.test(source)) return []
   const results = []
-  const blocks = cropAfter(source, 'class="results"').split(/<div class="vrwrap"/i).slice(1)
-  for (const raw of blocks) {
-    const block = raw.slice(0, 12000)
-    const md = block.match(/data-url="([^"]+)"/) || block.match(/data-mdurl="([^"]+)"/)
-    const url = md ? absolute(md[1]) : ''
-    if (!url || isEngineHost(url, 'sogou.com')) continue
-    const anchor = block.match(/<h3[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i)
-    const title = anchor ? plainText(anchor[1]) : ''
+  const seen = new Set()
+  for (const heading of source.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/g)) {
+    const before = source.slice(Math.max(0, heading.index - 900), heading.index)
+    const hrefs = [...before.matchAll(/href="((?:\/url\?q=|https?:\/\/)[^"]+)"/g)]
+    if (!hrefs.length) continue
+    let url = decodeEntities(hrefs[hrefs.length - 1][1])
+    const redirected = url.match(/^\/url\?q=([^&]+)/)
+    if (redirected) url = decodeURIComponent(redirected[1])
+    url = absolute(url)
+    if (!url || isEngineHost(url, 'google.') || /google\.[a-z.]+\//i.test(url)) continue
+    const title = plainText(heading[1])
     if (!title) continue
+    const after = source.slice(heading.index + heading[0].length, heading.index + heading[0].length + 2000)
     const snippet =
-      block.match(/id="cacheresult_summary_\d+"[^>]*>([\s\S]*?)<\/div>/i) ||
-      block.match(/class="[^"]*space-txt[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
-      block.match(/class="[^"]*text-layout[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+      after.match(/<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
+      after.match(/<span[^>]*class="[^"]*(?:aCOpRe|st)[^"]*"[^>]*>([\s\S]*?)<\/span>/i)
     results.push({ title, url, snippet: snippet ? plainText(snippet[1]) : '' })
   }
-  return results
+  return results.filter((item) => {
+    if (seen.has(item.url)) return false
+    seen.add(item.url)
+    return true
+  })
 }
+
+// ── 请求 ────────────────────────────────────────────────────────────────────
 
 export const ENGINES = {
+  google: {
+    label: 'Google',
+    buildUrl: (query, { locale }) =>
+      `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10&pws=0${
+        locale ? `&hl=${encodeURIComponent(locale.split('-')[0])}` : ''
+      }`,
+    parse: parseGoogle,
+    blockedBy: /captcha-form|unusual traffic|enablejs/i,
+  },
   bing: {
     label: 'Bing',
-    // 兜底用：多词长尾只按第一个词给官网/百科，只有别的引擎都挂了才需要它。
-    filler: true,
     buildUrl: (query, { locale }) =>
       `https://cn.bing.com/search?q=${encodeURIComponent(query)}&format=rss&FORM=BESBTB${
         locale ? `&setlang=${encodeURIComponent(locale)}` : ''
       }`,
-    // RSS 正常就用 RSS；偶尔会退回 HTML 页面，那就用 HTML 解析兜底。
-    parse: (text) => {
-      const viaRss = parseBingRss(text)
-      return viaRss.length ? viaRss : parseBing(text)
-    },
+    parse: (text) => parseBingRss(text).length ? parseBingRss(text) : parseBing(text),
   },
-  so: {
-    label: '360',
-    buildUrl: (query) => `https://www.so.com/s?q=${encodeURIComponent(query)}`,
-    parse: parseSo,
-  },
-  sogou: {
-    label: 'Sogou',
-    buildUrl: (query) => `https://www.sogou.com/web?query=${encodeURIComponent(query)}`,
-    parse: parseSogou,
+  baidu: {
+    label: 'Baidu',
+    buildUrl: (query) => `https://www.baidu.com/s?wd=${encodeURIComponent(query)}&ie=utf-8`,
+    parse: parseBaidu,
   },
 }
 
@@ -225,7 +245,7 @@ export function engineIds() {
   return Object.keys(ENGINES)
 }
 
-// 抓一个引擎。任何非 200、验证码页、解析出 0 条，都当失败抛给上层去降级。
+// 抓一个引擎。非 200、验证码页、解析出 0 条都当失败抛给上层去降级。
 export async function searchEngine(engineId, query, options) {
   const engine = ENGINES[engineId]
   if (!engine) throw new Error(`unknown search engine "${engineId}"`)
@@ -247,6 +267,9 @@ export async function searchEngine(engineId, query, options) {
   })
   const html = await response.text()
   if (!response.ok) throw new Error(`${engine.label} HTTP ${response.status}`)
+  if (engine.blockedBy && html.slice(0, 30000).match(engine.blockedBy)) {
+    throw new Error(`${engine.label} 触发人机验证`)
+  }
   if (/<title>\s*(?:Captcha|验证码|安全验证)/i.test(html) || /id="captcha"/i.test(html)) {
     throw new Error(`${engine.label} 触发人机验证`)
   }

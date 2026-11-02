@@ -1,25 +1,28 @@
 # web-search-free
 
-给 DSH 的 `web_search` 换一个**不花钱**的搜索后端：直接抓 360 / Bing 的搜索结果。
+给 DSH 的 `web_search` 换一个**不花钱**的搜索后端：直接抓 Google / Bing / 百度 的结果。
 
 ## 为什么
 
 官方 `@deepseek-ai/dsh-web-search-deepseek` 走的是 DeepSeek 服务端的联网检索，每搜一次都是一次
-带 `server-tool-search` 的模型请求（服务端还会自己抓页面、生成摘要），所以账单里会单独出现
-`server-tool-search` 这一项。这个插件只发普通 HTTP GET 去搜索引擎，不发模型请求，不花 API 额度。
+带 `server-tool-search` 的模型请求，所以账单里会单独出现 `server-tool-search`。这个插件只发
+普通 HTTP GET，不发模型请求，不烧 API 额度。
 
-代价先说清楚：
+代价：只有原始结果（标题 / 链接 / 摘要），没有模型替你综合作答；反爬限制是常态。
 
-- 只有原始结果（标题 / 链接 / 摘要），**没有模型替你综合作答**。要读正文就配合 `web_fetch`。
-- 结果质量不如商业搜索 API：中文技术查询经常被 CSDN 一类站占位，Bing 从这个网络看排名很「导航化」
-  （多词长尾基本只按第一个词给官网/百科）。适合快速定位链接，不适合要高质量综述的场合。
-- 360 / 搜狗 访问一密集就会弹人机验证或干脆返回空页，插件会把那个引擎冷却 10 分钟（`cooldownMs`）；两家都被限流时只剩 Bing 兜底，那会儿的结果基本是官网首页，别指望。
-- 真想要高质量又不花这份钱，可以在 `blockHosts` 里屏蔽采集站，或者自己接一个带 key 的搜索 API
-  （Tavily / 博查 / Serper 这些都测过，网络能通，只是没 key）。
+## 引擎优先级（默认 `[google, bing, baidu]`）
+
+| 引擎 | 状态 | 说明 |
+| --- | --- | --- |
+| Google | ⚠️ 本机 IP 被拦 | 普通 HTTP 拿到的是 enablejs 页，无头 Chrome 也会被甩 captcha。解析器已写好（`parseGoogle`），IP 干净时自动可用 |
+| Bing | ✅ 可用但排名差 | 走 RSS 出口（`&format=rss`）；这台机器上多词长尾只按第一个词给「官网/教程首页」 |
+| 百度 | ✅ 可用 | 结果里带 `mu="真实地址"`，广告块有「广告」标记会被丢掉 |
+
+已从默认里删掉 360、搜狗（主人指定不用；广告/加密跳转多、还频繁人机验证），解析代码也一并删了。
 
 ## 装上之后怎么生效
 
-它是 `dsh-web` 的一个 provider（默认 id `free`），`web_search` 工具本身不用动。在 profile 的
+它是 `dsh-web` 的一个 provider（默认 id `free`），`web_search` 工具本身不用动。profile 的
 `cordis.patch.yml` 里把 `web` 行指过来：
 
 ```yaml
@@ -29,21 +32,17 @@
     fetchProvider: http
 ```
 
-想换回官方检索：`searchProvider: deepseek-official`。两个 provider 可以同时注册，配置说了算
-（不配置且两个都可用时会报 `WEB_PROVIDER_AMBIGUOUS`，所以必须显式选一个）。
-
-改完需重启 dsh web 才会生效。
+换回官方检索：`searchProvider: deepseek-official`。改完需重启 dsh web。
 
 ## 工作方式
 
-1. 配置里的引擎**并发**请求（默认 `[360, 搜狗, Bing]`）。Bing 建了 `filler` 标记：只在前两家凑不够数时用来补位，因为从这个网络看它只会给「官网/百科」。
-2. Bing 走 RSS 出口（`&format=rss`），结构固定、体积小；偶尔退回 HTML 时用 `b_algo` 解析兜底。
-   360 解析 `<li class="res-list">` 的 `data-mdurl`（它的 href 是加密跳转，不能用）。
-3. 按 URL 去重（抹掉 `utm_*`、`spm` 之类的跟踪参数），两个引擎的结果**按名次交替**合并，
-   避免某一家霸占前几条。
-4. `blockHosts` 里的域名直接丢掉（默认滤掉 360 自家的导流位和搜索引擎域名）。
-5. 某引擎失败（超时 / 非 200 / 人机验证 / 解析 0 条）就静默降级；全挂才报
-   `WEB_SEARCH_FAILED`，错误里带每个引擎的原因。同一个 query + 引擎缓存 10 分钟。
+1. 配置里的引擎**并发**请求，按 `engines` 的顺序做优先级。
+2. 结果按 URL 去重、按名次交替合并（google 1 名、bing 1 名、baidu 1 名……）。
+3. **首页/导航页排到最后**（路径为空、`/index.html`、标题基本等于站名）：Bing 偏爱这种结果，
+   这层过滤就是为它写的。
+4. 某引擎失败（超时 / 非 200 / 人机验证 / 解析 0 条）静默降级；命中人机验证的引擎冷却
+   `cooldownMs`（默认 10 分钟）。全挂才报 `WEB_SEARCH_FAILED`，错误里带每家的原因。
+5. 同一 query + 引擎缓存 10 分钟。
 
 ## 配置
 
@@ -52,33 +51,29 @@
   name: 'dsh-xykp/web/web-search-free'
   config:
     enabled: true
-    providerId: free          # 注册成哪个 provider id
-    engines: [so, sogou, bing]  # 并发；想只用一家就写一家
-    maxResults: 8             # web_search 未指定 maxResults 时的上限（1–20）
-    timeoutMs: 12000          # 单个引擎超时
-    cacheTtlMs: 600000        # 同 query 缓存时长，0 = 关
-    cooldownMs: 600000        # 触发人机验证后歇多久再试
-    locale: zh-CN             # 影响 Bing 的 setlang 与 Accept-Language
-    userAgent: ''             # 空 = 内置 Chrome UA
-    blockHosts: [so.com, 360kan.com, 360doc.com, hao.360.cn, bing.com]
-    debug: false              # true 时把每次降级原因打到 stderr
+    providerId: free
+    engines: [google, bing, baidu]   # 想跳过 Google 就写 [bing, baidu]
+    maxResults: 8
+    timeoutMs: 12000
+    cacheTtlMs: 600000
+    cooldownMs: 600000
+    locale: zh-CN
+    userAgent: ''
+    blockHosts: [google.com, gstatic.com, bing.com, baidu.com, bdstatic.com]
+    debug: false
 ```
 
 ## 已知限制
 
-- 引擎改版会让解析失效，规则集中在 `engines.js`（`parseBingRss` / `parseBing` / `parseSo`）。
-  `debug: true` 会把「没有解析出结果」打到 stderr。
+- 引擎改版会让解析失效，规则在 `engines.js`（`parseBingRss` / `parseBing` / `parseBaidu` / `parseGoogle`）。
 - 不能翻页，一次只取第一页。
-- 不走系统代理；机器能直连 `www.so.com` / `cn.bing.com` 即可（要过代理就用
-  `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY` 启动 dsh）。
-- 试过在这台机器上不可用的免费引擎（别再踩）：Google 要 JS、DuckDuckGo / Brave / Yahoo /
-  SearX 公共实例连不上、Mojeek 和 360 会给人机验证、Yandex 302、Sogou 结果全是加密跳转链接。
+- 不走系统代理；要过代理就用 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY` 启动 dsh。
+- 试过在这台机器上不可用的：DuckDuckGo / Brave / Yahoo / Searx 公共实例（连不上）、
+  Mojeek（验证码）、Yandex（302）、Ecosia（403）、360 / 搜狗（人机验证）。
 
 ## 自测
 
 ```powershell
 # 在 D:\AI\DeepseekHarness\workspaces\default-workspace 下
-node probe\final.mjs "sqlite wal checkpoint"   # 走 createSearchProvider()，不依赖 cordis context
+node probe\final.mjs "sqlite wal checkpoint"
 ```
-
-（`probe/` 是工作区里的临时脚本，看着有用于是留了一份。）

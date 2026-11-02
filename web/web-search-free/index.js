@@ -22,7 +22,7 @@
 //     name: 'dsh-xykp/web/web-search-free'
 //     config:
 //       providerId: free          # 注册成哪个 provider id
-//       engines: [so, sogou, bing]  # 并发请求；bing 只补位（filler）
+//       engines: [google, bing, baidu]  # 并发请求，顺序即优先级
 //       maxResults: 8             # web_search 没指定 maxResults 时的上限
 //       timeoutMs: 12000          # 单个引擎的超时
 //       cacheTtlMs: 600000        # 相同 query+engine 10 分钟内复用
@@ -39,13 +39,13 @@ import { DEFAULT_UA, ENGINES, engineIds, searchEngine } from './engines.js'
 export const name = 'web-search-free'
 export const inject = ['web']
 
-// 360 的结果页里偶尔混进自家导流位（视频 / 文档 / 导航），以及搜索引擎自己的域名。
-const DEFAULT_BLOCK_HOSTS = ['so.com', '360kan.com', '360doc.com', 'hao.360.cn', 'bing.com']
+// 搜索引擎自己的域名（跳转页、资讯卡、静态资源）不算结果，直接滤掉。
+const DEFAULT_BLOCK_HOSTS = ['google.com', 'gstatic.com', 'bing.com', 'baidu.com', 'bdstatic.com']
 
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true),
   providerId: Schema.string().default('free'),
-  engines: Schema.array(Schema.string()).default(['so', 'sogou', 'bing']),
+  engines: Schema.array(Schema.string()).default(['google', 'bing', 'baidu']),
   maxResults: Schema.number().default(8),
   timeoutMs: Schema.number().default(12000),
   cacheTtlMs: Schema.number().default(10 * 60 * 1000),
@@ -59,7 +59,7 @@ export const Config = Schema.object({
 const DEFAULTS = {
   enabled: true,
   providerId: 'free',
-  engines: ['so', 'sogou', 'bing'],
+  engines: ['google', 'bing', 'baidu'],
   maxResults: 8,
   timeoutMs: 12000,
   cacheTtlMs: 10 * 60 * 1000,
@@ -125,23 +125,39 @@ export function canonicalUrl(url) {
   }
 }
 
+// 首页/导航页（路径为空，或标题几乎就是站点名）对「查资料」基本没用，排到最后再用。
+// Bing 在这台机器上偏爱这种结果，所以这层过滤不能省。
+export function isNavigational(item) {
+  try {
+    const parsed = new URL(item.url)
+    const path = parsed.pathname.replace(/\/+$/, '')
+    if (path === '' || /^\/(?:index|default)\.(?:html?|php|aspx?|jsp)$/i.test(path)) return true
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/[.-]/g, '')
+    const title = String(item.title || '').toLowerCase().replace(/[\s\-_|:：·—–,，.。()（）\[\]【】]/g, '')
+    return title.length > 0 && host.length > 3 && title.includes(host)
+  } catch {
+    return false
+  }
+}
+
 // 多个引擎的结果按名次交替排：各自第 1 名、各自第 2 名……这样质量不比单引擎差，
-// 又不会让「一个引擎的广告/采集站」占满前几条。`seen` 传进来是为了后续补位去重。
+// 又不会让「一个引擎的广告/采集站」占满前几条。首页/导航页留作最后补位。
 export function mergeResults(buckets, limit, seen = new Set()) {
-  const merged = []
+  const good = []
+  const nav = []
   const longest = buckets.reduce((max, bucket) => Math.max(max, bucket.length), 0)
   for (let rank = 0; rank < longest; rank += 1) {
     for (const bucket of buckets) {
-      if (merged.length >= limit) return merged
       const item = bucket[rank]
       if (!item) continue
       const key = canonicalUrl(item.url)
       if (seen.has(key)) continue
       seen.add(key)
-      merged.push({ title: item.title, url: item.url, snippet: String(item.snippet ?? '') })
+      const normalized = { title: item.title, url: item.url, snippet: String(item.snippet ?? '') }
+      ;(isNavigational(item) ? nav : good).push(normalized)
     }
   }
-  return merged
+  return good.concat(nav).slice(0, limit)
 }
 
 // 供单测/离线调用：不依赖 cordis context。
@@ -204,17 +220,8 @@ export function createSearchProvider(rawConfig = {}) {
       }),
     )
 
-    // 带 filler 标记的引擎（Bing）只用来补位：主引擎够数就不掺它的「官网导航」结果。
-    const primary = []
-    const filler = []
-    results.forEach((items, index) => {
-      const engine = ENGINES[cfg.engines[index]]
-      ;(engine && engine.filler ? filler : primary).push(items)
-    })
-
-    const seen = new Set()
-    const merged = mergeResults(primary, limit, seen)
-    if (merged.length < limit) merged.push(...mergeResults(filler, limit - merged.length, seen))
+    // 结果按引擎顺序（= 优先级）交替合并：google 的 1 名、bing 的 1 名、baidu 的 1 名……
+    const merged = mergeResults(results, limit)
 
     if (merged.length) {
       // truncated 是 WebSearchResult 的必填字段：dsh-tool-web 会把 provider 的返回值原样
