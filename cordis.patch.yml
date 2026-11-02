@@ -43,6 +43,12 @@
     - id: senses-keymouse
       name: 'dsh-xykp/senses/keymouse'
 
+    # ── web
+    # 免费 web_search provider（抓 Bing/360 结果页）。只有把 profile 里
+    # web.config.searchProvider 改成 free 才会被选中，不影响默认的官方检索。
+    - id: web-search-free
+      name: 'dsh-xykp/web/web-search-free'
+
     # ── comms
     - id: bili-reply
       name: 'dsh-xykp/comms/bili-reply'
@@ -50,7 +56,6 @@
       name: 'dsh-xykp/comms/bili-rove'
     - id: qq-adapter
       name: 'dsh-xykp/comms/qq-adapter'
-    # ntfy 频道：推送 / 等待消息，供其它插件 ctx.get('ntfy') 复用
     - id: ntfy
       name: 'dsh-xykp/comms/ntfy'
 
