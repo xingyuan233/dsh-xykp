@@ -22,7 +22,7 @@
 //     name: 'dsh-xykp/web/web-search-free'
 //     config:
 //       providerId: free          # 注册成哪个 provider id
-//       engines: [so, bing]       # 并发请求；也可以用 [so] 只用一个
+//       engines: [so, sogou, bing]  # 并发请求；bing 只补位（filler）
 //       maxResults: 8             # web_search 没指定 maxResults 时的上限
 //       timeoutMs: 12000          # 单个引擎的超时
 //       cacheTtlMs: 600000        # 相同 query+engine 10 分钟内复用
@@ -45,7 +45,7 @@ const DEFAULT_BLOCK_HOSTS = ['so.com', '360kan.com', '360doc.com', 'hao.360.cn',
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true),
   providerId: Schema.string().default('free'),
-  engines: Schema.array(Schema.string()).default(['so', 'bing']),
+  engines: Schema.array(Schema.string()).default(['so', 'sogou', 'bing']),
   maxResults: Schema.number().default(8),
   timeoutMs: Schema.number().default(12000),
   cacheTtlMs: Schema.number().default(10 * 60 * 1000),
@@ -59,7 +59,7 @@ export const Config = Schema.object({
 const DEFAULTS = {
   enabled: true,
   providerId: 'free',
-  engines: ['so', 'bing'],
+  engines: ['so', 'sogou', 'bing'],
   maxResults: 8,
   timeoutMs: 12000,
   cacheTtlMs: 10 * 60 * 1000,
@@ -125,11 +125,10 @@ export function canonicalUrl(url) {
   }
 }
 
-// 两个引擎的结果按名次交替排：各自第 1 名、各自第 2 名……这样质量不比单引擎差，
-// 又不会让「一个引擎的广告/采集站」占满前几条。
-export function mergeResults(buckets, limit) {
+// 多个引擎的结果按名次交替排：各自第 1 名、各自第 2 名……这样质量不比单引擎差，
+// 又不会让「一个引擎的广告/采集站」占满前几条。`seen` 传进来是为了后续补位去重。
+export function mergeResults(buckets, limit, seen = new Set()) {
   const merged = []
-  const seen = new Set()
   const longest = buckets.reduce((max, bucket) => Math.max(max, bucket.length), 0)
   for (let rank = 0; rank < longest; rank += 1) {
     for (const bucket of buckets) {
@@ -139,7 +138,7 @@ export function mergeResults(buckets, limit) {
       const key = canonicalUrl(item.url)
       if (seen.has(key)) continue
       seen.add(key)
-      merged.push({ title: item.title, url: item.url, snippet: item.snippet })
+      merged.push({ title: item.title, url: item.url, snippet: String(item.snippet ?? '') })
     }
   }
   return merged
@@ -205,8 +204,23 @@ export function createSearchProvider(rawConfig = {}) {
       }),
     )
 
-    const merged = mergeResults(results, limit)
-    if (merged.length) return { sources: merged }
+    // 带 filler 标记的引擎（Bing）只用来补位：主引擎够数就不掺它的「官网导航」结果。
+    const primary = []
+    const filler = []
+    results.forEach((items, index) => {
+      const engine = ENGINES[cfg.engines[index]]
+      ;(engine && engine.filler ? filler : primary).push(items)
+    })
+
+    const seen = new Set()
+    const merged = mergeResults(primary, limit, seen)
+    if (merged.length < limit) merged.push(...mergeResults(filler, limit - merged.length, seen))
+
+    if (merged.length) {
+      // truncated 是 WebSearchResult 的必填字段：dsh-tool-web 会把 provider 的返回值原样
+      // 交给工具输出校验，缺了它（undefined）会被判成「不是无损 JSON」。
+      return { sources: merged, truncated: results.some((bucket) => bucket.length > limit) }
+    }
     throw new WebError(
       `免费搜索没有结果（${failures.join('；') || '引擎没有返回可解析的结果'}）`,
       'WEB_SEARCH_FAILED',

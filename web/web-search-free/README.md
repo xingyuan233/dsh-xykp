@@ -13,7 +13,7 @@
 - 只有原始结果（标题 / 链接 / 摘要），**没有模型替你综合作答**。要读正文就配合 `web_fetch`。
 - 结果质量不如商业搜索 API：中文技术查询经常被 CSDN 一类站占位，Bing 从这个网络看排名很「导航化」
   （多词长尾基本只按第一个词给官网/百科）。适合快速定位链接，不适合要高质量综述的场合。
-- 360 访问多了会弹人机验证，插件会把它冷却 10 分钟（`cooldownMs`），期间只剩 Bing。
+- 360 / 搜狗 访问一密集就会弹人机验证或干脆返回空页，插件会把那个引擎冷却 10 分钟（`cooldownMs`）；两家都被限流时只剩 Bing 兜底，那会儿的结果基本是官网首页，别指望。
 - 真想要高质量又不花这份钱，可以在 `blockHosts` 里屏蔽采集站，或者自己接一个带 key 的搜索 API
   （Tavily / 博查 / Serper 这些都测过，网络能通，只是没 key）。
 
@@ -36,7 +36,7 @@
 
 ## 工作方式
 
-1. 配置里的引擎**并发**请求（默认 `[so, bing]`，360 排前面是因为它的长尾结果更对题）。
+1. 配置里的引擎**并发**请求（默认 `[360, 搜狗, Bing]`）。Bing 建了 `filler` 标记：只在前两家凑不够数时用来补位，因为从这个网络看它只会给「官网/百科」。
 2. Bing 走 RSS 出口（`&format=rss`），结构固定、体积小；偶尔退回 HTML 时用 `b_algo` 解析兜底。
    360 解析 `<li class="res-list">` 的 `data-mdurl`（它的 href 是加密跳转，不能用）。
 3. 按 URL 去重（抹掉 `utm_*`、`spm` 之类的跟踪参数），两个引擎的结果**按名次交替**合并，
@@ -53,7 +53,7 @@
   config:
     enabled: true
     providerId: free          # 注册成哪个 provider id
-    engines: [so, bing]       # 并发；只想用一个就 [bing] 或 [so]
+    engines: [so, sogou, bing]  # 并发；想只用一家就写一家
     maxResults: 8             # web_search 未指定 maxResults 时的上限（1–20）
     timeoutMs: 12000          # 单个引擎超时
     cacheTtlMs: 600000        # 同 query 缓存时长，0 = 关

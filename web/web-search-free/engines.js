@@ -170,9 +170,35 @@ export function parseBingRss(xml) {
   return results
 }
 
+// 搜狗的结果链接是 /link?url=... 加密跳转，但每条结果旁边有 data-url 指到真实地址，
+// 直接用它，比逐条跟随跳转便宜得多。
+export function parseSogou(html) {
+  const source = String(html)
+  if (NO_RESULTS.test(source)) return []
+  const results = []
+  const blocks = cropAfter(source, 'class="results"').split(/<div class="vrwrap"/i).slice(1)
+  for (const raw of blocks) {
+    const block = raw.slice(0, 12000)
+    const md = block.match(/data-url="([^"]+)"/) || block.match(/data-mdurl="([^"]+)"/)
+    const url = md ? absolute(md[1]) : ''
+    if (!url || isEngineHost(url, 'sogou.com')) continue
+    const anchor = block.match(/<h3[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i)
+    const title = anchor ? plainText(anchor[1]) : ''
+    if (!title) continue
+    const snippet =
+      block.match(/id="cacheresult_summary_\d+"[^>]*>([\s\S]*?)<\/div>/i) ||
+      block.match(/class="[^"]*space-txt[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
+      block.match(/class="[^"]*text-layout[^"]*"[^>]*>([\s\S]*?)<\/div>/i)
+    results.push({ title, url, snippet: snippet ? plainText(snippet[1]) : '' })
+  }
+  return results
+}
+
 export const ENGINES = {
   bing: {
     label: 'Bing',
+    // 兜底用：多词长尾只按第一个词给官网/百科，只有别的引擎都挂了才需要它。
+    filler: true,
     buildUrl: (query, { locale }) =>
       `https://cn.bing.com/search?q=${encodeURIComponent(query)}&format=rss&FORM=BESBTB${
         locale ? `&setlang=${encodeURIComponent(locale)}` : ''
@@ -187,6 +213,11 @@ export const ENGINES = {
     label: '360',
     buildUrl: (query) => `https://www.so.com/s?q=${encodeURIComponent(query)}`,
     parse: parseSo,
+  },
+  sogou: {
+    label: 'Sogou',
+    buildUrl: (query) => `https://www.sogou.com/web?query=${encodeURIComponent(query)}`,
+    parse: parseSogou,
   },
 }
 
