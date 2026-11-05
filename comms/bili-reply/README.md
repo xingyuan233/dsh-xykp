@@ -1,14 +1,18 @@
 # dsh-bili-reply
 
 B 站「被回复 / 被 @ / 收到私信」这一半（清单里的 `comms/bili-reply`）：
-**绑定预设或会话（预设优先），定时拉 @、回复、私信，新条目推给绑定会话。**
+**绑定预设或对话（对话优先），定时拉 @、回复、私信，新条目推给绑定会话。**
 
 > 主动查 B 站（搜索、字幕、截帧、评论、发评论、发私信……）在 **bili-rove**，不在这里。
 
 ## 做什么
 
 1. 启动跑一次，之后每 `tickMinutes`（默认 **3 分钟**）处理一批
-2. 绑定目标：`preset`（优先级最高，读 `storages/preset-binder.json` 里该预设的活跃会话）→ 查不到就用 `session`
+2. 绑定目标（2026-11-05 改）：
+   - 配了 `session` → 绑这个对话（优先级最高）
+   - 配了 `preset` → 绑该预设的最新对话（读 `xykp/preset-binder/preset-binder.json` 的 `active`）
+   - 两个都配 → `session` 优先；**对话不存在**（被删 / id 不对）→ 自动回退到 `preset` 的最新对话
+   - 目标对话落在盘上但没开着 → 先 `agents.resume` 恢复再推（不会因为宿主重启就永远失败）
 3. 从 `/x/msgfeed/at`（@ 我的）、`/x/msgfeed/reply`（回复我的）、私信会话三路拉取，
    按 `seen` 表去重，只推没推过的
 4. 推送 = `createUserMessage` 造消息 + `agent.followup(...)` —— **真的叫醒会话跑一轮**
@@ -21,8 +25,8 @@ B 站「被回复 / 被 @ / 收到私信」这一半（清单里的 `comms/bili-
 - id: bili-reply
   name: 'dsh-xykp/comms/bili-reply'
   config:
-    preset: alive              # 预设优先
-    session: ''                # 预设查不到时用这个
+    preset: alive              # 绑预设的最新对话；也是 session 不在了时的兜底
+    session: ''                # 绑指定对话（填会话 id，如 session-xxxx）；优先于 preset
     maxPerTick: 2              # 每次最多处理几条
     tickMinutes: 3             # 处理间隔（分钟）
     maxQueue: 120              # 本地队列最多留几条
@@ -56,6 +60,7 @@ B 站「被回复 / 被 @ / 收到私信」这一半（清单里的 `comms/bili-
 - `names.js` 缓存 uid → 昵称（默认 7 天过期），`GET /dsh-bili-reply/names` 可查、`POST /dsh-bili-reply/names/reset` 可清
 - 拉取时给私信补昵称：at / 回复自带昵称**直接记缓存、不占额度**；只有私信缺昵称才去查，
   每轮最多 `namesMaxFetchPerRun` 个，缺了渲染成「B站用户 uid」占位
+- `GET /dsh-bili-reply/bind` 排障：看当前配置、binder 更新时间、实际会推到哪个会话（`via` 是 `session` / `preset` / `preset-fallback`）；加 `?preset=alive&session=session-xxx` 可以预览某种绑法（不改配置）
 - `POST /dsh-bili-reply/names/refresh` **后台分批**：先把全部条目标过期（名字保留），
   立刻返回 `{ ok, mode: 'background', queued, batch, everyMinutes }`；后台每
   `namesRefreshEveryMinutes` 分钟查一批、每批 `namesRefreshBatch` 个，直到查完

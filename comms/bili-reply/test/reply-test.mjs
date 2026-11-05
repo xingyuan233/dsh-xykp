@@ -4,7 +4,7 @@
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveTarget, render, keyOf, _internal, SOURCE_KIND } from '../lib/index.js'
+import { resolveTarget, resolveExistingTarget, render, keyOf, _internal, SOURCE_KIND } from '../lib/index.js'
 import { loadQueue, saveQueue, enqueue, trim, take, consume } from '../lib/queue.js'
 
 let failed = 0
@@ -15,9 +15,50 @@ const check = (ok, label, extra = '') => {
 
 // ── 绑定解析 ──
 const binder = { presets: { alive: { active: 'session-alive' } } }
-check(resolveTarget({ preset: 'alive' }, binder).sessionId === 'session-alive', '预设优先')
+check(resolveTarget({ preset: 'alive' }, binder).sessionId === 'session-alive', '只配预设 → 用预设的活跃会话')
 check(resolveTarget({ preset: 'x' }, binder).via === 'none', '预设没活跃会话 → 不推')
-check(resolveTarget({ session: 's' }, binder).via === 'session', '回退到会话')
+check(resolveTarget({ session: 's' }, binder).via === 'session', '只配会话 → 用会话')
+
+// 两个都配：对话优先
+check(resolveTarget({ preset: 'alive', session: 'session-mine' }, binder).via === 'session', '对话优先于预设')
+// 对话不在 → 回退到预设的最新对话
+const binder2 = {
+  presets: {
+    alive: {
+      active: 'session-active',
+      sessions: {
+        'session-old': { lastActivityAt: '2026-11-01T00:00:00.000Z' },
+        'session-active': { lastActivityAt: '2026-11-05T00:00:00.000Z' },
+        'session-newer': { lastActivityAt: '2026-11-04T00:00:00.000Z' },
+      },
+    },
+  },
+}
+const onlyPreset = new Set(['session-active', 'session-old'])
+const fallback = await resolveExistingTarget(
+  { preset: 'alive', session: 'session-missing' },
+  binder2,
+  async (id) => onlyPreset.has(id),
+)
+check(fallback.via === 'preset-fallback', '对话不存在 → 回退到预设', fallback.via)
+check(fallback.sessionId === 'session-active', '回退选最新对话（active）', fallback.sessionId)
+
+// active 也不在 → 按 lastActivityAt 找最新的还活着的
+const noActive = await resolveExistingTarget(
+  { preset: 'alive' },
+  binder2,
+  async (id) => id !== 'session-active' && id !== 'session-old',
+)
+check(noActive.sessionId === 'session-newer', 'active 不在 → 用次新的会话', noActive.sessionId)
+
+// 全都不在 → 不推，给原因
+const dead = await resolveExistingTarget(
+  { preset: 'alive', session: 'session-missing' },
+  binder2,
+  async () => false,
+)
+check(dead.sessionId === '' && dead.via === 'none', '全都不在 → 不推')
+check(/不在了/.test(dead.reason || ''), '给出原因', dead.reason || '')
 
 // ── 队列：入队去重 ──
 const q = { name: 't', items: [], seen: {}, lastPullAt: 0 }

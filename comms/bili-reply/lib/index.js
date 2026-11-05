@@ -1,7 +1,7 @@
 // bili-reply · 宿主半边
 //
 // 需求（任务-2026-10-27.md 第四节）：
-//   1. 绑定预设或会话（预设优先，参考 preset-binder）—— 见 bind.js
+//   1. 绑定预设或对话（2026-11-05 改：对话优先，对话不存在时回退到预设的最新对话）—— 见 bind.js
 //   2. 轮询 @ / 回复（默认 120 秒），新条目推送到绑定的会话
 //   3. 只推新的：seen 表去重，轮询之间不会重复打扰
 //
@@ -22,7 +22,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { resolveTarget, DEFAULTS as BIND_DEFAULTS } from './bind.js'
+import { resolveTarget, resolveExistingTarget, idForms, DEFAULTS as BIND_DEFAULTS } from './bind.js'
 import { pickFresh, render, keyOf } from './dedupe.js'
 import { createFetcher } from './fetch.js'
 import { loadQueue, saveQueue, enqueue, trim, take, consume, failItem, DEFAULTS as QUEUE_DEFAULTS } from './queue.js'
@@ -34,7 +34,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 export const SOURCE_KIND = 'plugin:bili-reply'
 
 export const name = 'bili-reply'
-export const inject = ['timer', 'sessions', 'agents', 'webServer']
+export const inject = ['timer', 'sessions', 'agents', 'sessionPersistence', 'webServer']
 
 const PREFIX = '[bili-reply]'
 const log = (...a) => console.log(PREFIX, ...a)
@@ -82,6 +82,114 @@ async function loadBinder() {
 }
 
 /**
+ * 判断一个会话是不是还在（用来决定要不要回退到预设的最新对话）。
+ * 先看内存里有没有活的 agent / 会话，再查宿主落盘的 sessionPersistence.stat。
+ * 宿主要是根本没给这些服务，就返回「存在」，保持旧行为（不去猜）。
+ */
+function makeSessionExists(ctx) {
+  const persistence = ctx && ctx.sessionPersistence
+  const agents = ctx && ctx.agents
+  const sessions = ctx && ctx.sessions
+  const canStat = Boolean(persistence && typeof persistence.stat === 'function')
+  const canList = Boolean(sessions && typeof sessions.list === 'function')
+  if (!canStat && !canList) return async () => true
+
+  const alive = (form) => {
+    try {
+      if (agents && typeof agents.get === 'function' && agents.get(form)) return true
+    } catch {
+      /* 查不动当没找到 */
+    }
+    if (canList) {
+      try {
+        const list = sessions.list() || []
+        if (list.some((s) => String((s && (s.id || (s.header && s.header.id))) || '') === form)) return true
+      } catch {
+        /* 同上 */
+      }
+    }
+    return false
+  }
+
+  return async (id) => {
+    const forms = idForms(id)
+    for (const form of forms) if (alive(form)) return true
+    if (!canStat) return false
+    for (const form of forms) {
+      try {
+        if (await persistence.stat(form)) return true
+      } catch {
+        /* 这种写法查不了，换下一种 */
+      }
+    }
+    return false
+  }
+}
+
+/** 找活着的 agent（会话 id 可能带 / 不带 session- 前缀）。 */
+function findAgent(ctx, sessionId) {
+  const 候选 = idForms(sessionId)
+  for (const id of 候选) {
+    try {
+      const a = ctx.agents.get(id)
+      if (a) return a
+    } catch {
+      /* 查不动当没找到 */
+    }
+  }
+  return null
+}
+
+// ⚠ 2026-10-29（照 qq-adapter 的教训）：resume 时不带 provider/model，
+//   宿主会报 `agent "session-…" has no provider/model`，绑定直接废掉。
+function defaultAgentOptions(ctx) {
+  try {
+    const dm = ctx && typeof ctx.get === 'function' ? ctx.get('agentDefaultModel') : null
+    const sel = dm && typeof dm.currentSelection === 'function' ? dm.currentSelection() : null
+    if (sel && sel.provider && sel.model) {
+      const out = { provider: sel.provider, model: sel.model }
+      if (sel.reasoningEffort) out.reasoningEffort = sel.reasoningEffort
+      return out
+    }
+  } catch (err) {
+    warn('拿默认模型失败：', err?.message || err)
+  }
+  return null
+}
+
+/** 对话还在落盘里但没开（宿主重启过 / 从没点开），先恢复再推。 */
+async function resumeAgent(ctx, sessionId) {
+  const agents = ctx && ctx.agents
+  if (!agents || typeof agents.resume !== 'function') return null
+  try {
+    const resumeOptions = { resumeSessionId: String(sessionId), source: SOURCE_KIND }
+    const agentOptions = defaultAgentOptions(ctx)
+    if (agentOptions) resumeOptions.agentOptions = agentOptions
+    const handle = await agents.resume(resumeOptions)
+    const agent = (handle && handle.agent) || findAgent(ctx, sessionId)
+    // ⚠ resume 出来的 agent 没挂预设 → 消息进去了但这一轮跑不起来，得补挂
+    try {
+      const presets = typeof ctx.get === 'function' ? ctx.get('agentPresets') : null
+      const header = agent && agent.session && agent.session.header
+      const want = String((header && (header.agentPreset || header.preset)) || '')
+      const has = presets && typeof presets.composedPreset === 'function' ? presets.composedPreset(agent.ctx) : ''
+      if (presets && want && !has && typeof presets.mount === 'function') {
+        await presets.mount(agent.ctx, want)
+        log('resume 后补挂预设：' + want + '（' + sessionId + '）')
+      }
+    } catch (err) {
+      warn('resume 后补挂预设失败：', err?.message || err)
+    }
+    return agent && typeof agent.followup === 'function' ? agent : null
+  } catch (err) {
+    warn(`恢复会话 ${sessionId} 失败：`, err?.message || err)
+    return null
+  }
+}
+
+let 上次回退提示 = ''
+
+/**
  * 默认的空实现：接 B 站 API 之前什么都不拉。
  * 换成真实现时保持返回结构 [{ kind:'at'|'reply'|'dm', id, rpid, mid, nickname, bvid, content, at }]。
  */
@@ -104,15 +212,12 @@ async function deliverDefault(ctx, sessionId, text) {
   // ⚠ 2026-10-27：append 只落一条事件、**不会开新一轮**；
   //   要真的「唤醒」得走 agent.followup（speak-up 就是这么做的）。
   //   会话 id 有带/不带 session- 前缀两种写法，都试一遍。
-  const 候选 = [String(sessionId)]
-  if (String(sessionId).startsWith('session-')) 候选.push(String(sessionId).slice('session-'.length))
-  else 候选.push('session-' + sessionId)
-  let agent = null
-  for (const id of 候选) {
-    try {
-      const a = agents.get(id)
-      if (a) { agent = a; break }
-    } catch { /* 查不动当没找到 */ }
+  let agent = findAgent(ctx, sessionId)
+  let resumed = false
+  if (!agent) {
+    // 绑的是「对话」而不是「当前活着的 agent」：落在盘上但没开的话，先恢复再推
+    agent = await resumeAgent(ctx, sessionId)
+    resumed = Boolean(agent)
   }
   if (!agent) throw new Error('会话 ' + sessionId + ' 不在了（agent 拿不到，可能被归档/删了）')
 
@@ -122,14 +227,21 @@ async function deliverDefault(ctx, sessionId, text) {
   })
   // ⚠ 必须 await：followup 的 rejection 不接住 = 未处理 rejection = 整个宿主退出
   await agent.followup(message)
-  return { delivered: true, via: 'followup' }
+  return { delivered: true, via: 'followup', resumed }
 }
 
 async function tick(ctx, cfg, deps) {
   const binder = await deps.loadBinder()
-  const target = resolveTarget(cfg, binder)
+  const exists = typeof deps.sessionExists === 'function' ? deps.sessionExists : makeSessionExists(ctx)
+  const target = await resolveExistingTarget(cfg, binder, exists)
   if (!target.sessionId) {
     return { skipped: true, reason: target.reason || '没有绑定目标' }
+  }
+  if (target.via === 'preset-fallback' && 上次回退提示 !== target.sessionId) {
+    上次回退提示 = target.sessionId
+    warn(`绑定的对话 ${target.fallbackFrom} 不存在，回退到预设 ${target.preset} 的最新对话 ${target.sessionId}`)
+  } else if (target.via !== 'preset-fallback') {
+    上次回退提示 = ''
   }
   const queuePath = cfg.queuePath || join(home(), 'xykp', 'bilibili', 'reply-queue.json')
   const q = await deps.loadQueue(queuePath, cfg.queueName)
@@ -315,6 +427,27 @@ export function apply(ctx, config = {}) {
       handler: async (req, res) => {
         const url = new URL(req.url, 'http://127.0.0.1')
         const p = url.pathname
+        if (req.method === 'GET' && (p === '/dsh-bili-reply/bind' || p === '/dsh-bili-reply/bind/')) {
+          // 排障用：现在会推到哪个会话、是本会话还是回退到预设
+          // 也可以带 ?preset=alive&session=session-xxx 预览某种绑法（不改配置）
+          try {
+            const binder = await loadBinder()
+            const preview = {
+              preset: url.searchParams.has('preset') ? url.searchParams.get('preset') : cfg.preset,
+              session: url.searchParams.has('session') ? url.searchParams.get('session') : cfg.session,
+            }
+            const target = await resolveExistingTarget(preview, binder, makeSessionExists(ctx))
+            return sendJson(res, 200, {
+              ok: true,
+              config: preview,
+              configured: { preset: cfg.preset || '', session: cfg.session || '' },
+              binderUpdatedAt: (binder && binder.updatedAt) || null,
+              target,
+            })
+          } catch (err) {
+            return sendJson(res, 500, { ok: false, error: err?.message || String(err) })
+          }
+        }
         if (req.method === 'GET' && (p === '/dsh-bili-reply/names' || p === '/dsh-bili-reply/names/')) {
           const cache = await loadCache(namesPath())
           const now = Date.now()
@@ -389,8 +522,8 @@ export function apply(ctx, config = {}) {
   }
 }
 
-export const _internal = { tick, fetchItemsNone, deliverDefault, DEFAULTS, SOURCE_KIND }
-export { resolveTarget, pickFresh, render, keyOf }
+export const _internal = { tick, fetchItemsNone, deliverDefault, makeSessionExists, DEFAULTS, SOURCE_KIND }
+export { resolveTarget, resolveExistingTarget, pickFresh, render, keyOf }
 
 
 
