@@ -6030,17 +6030,6 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
     function apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
-      slots.inject('settings.section', () =>
-        slots.register(
-          {
-            name: 'settings.section',
-            id: 'memory',
-            order: 51,
-            label: () => '记忆',
-          },
-          () => React.createElement(Section),
-        ),
-      )
 
       // 会话永久删除 —— 合并进来的 UI（原来是 storage/session-delete 的 client.js）
       try {
