@@ -1743,91 +1743,125 @@ window.__ModuleLoader__.load({
 
     // 前缀卡片：插在消息流最前面（conversation.chat.flow 是 display:contents 的锚点，
     // 0 尺寸但子节点就是消息行）。全程 try/catch，出错最多不显示，不会拖垮客户端。
+    // 系统前缀面板（悬浮）：锚定在输入框容器（conversation.composer，真实盒子）上方，
+    // 落在对话面板内部左侧，不挤动消息；右下角可拖拽缩放；每段独立折叠。
     function installPrefixCard(ctx) {
       try {
         ctx.effect(() => {
           const stop = injectionSubscribe(() => {})
           let timer = null
+          let cfgOn = true
+          let cfgAt = 0
+          let lastSig = ''
+
+          const loadCfg = async () => {
+            if (Date.now() - cfgAt < 5000) return
+            cfgAt = Date.now()
+            try {
+              const r = await fetch('/xykp-console/rows', { cache: 'no-store' })
+              const d = await r.json()
+              const row = (d.rows || []).find((x) => x.id === 'injection-shower')
+              if (row && row.config && typeof row.config.showPrefixPanel === 'boolean') cfgOn = row.config.showPrefixPanel
+            } catch {}
+          }
+
+          const mkSection = (c) => {
+            const d = document.createElement('details')
+            d.style.cssText = 'margin:6px 0 0;border-left:2px solid rgba(255,255,255,.12);padding-left:8px'
+            const s = document.createElement('summary')
+            s.style.cssText = 'cursor:pointer;font:11px ui-monospace,monospace;opacity:.75'
+            s.textContent = c.name + '（' + c.length + ' 字）'
+            const pre = document.createElement('pre')
+            pre.style.cssText =
+              'margin:6px 0 0;white-space:pre-wrap;word-break:break-word;font:11px/1.55 ui-monospace,monospace;opacity:.85;max-height:260px;overflow:auto'
+            pre.textContent = c.text
+            d.appendChild(s)
+            d.appendChild(pre)
+            return d
+          }
+
+          const render = (panel) => {
+            const sessions = (injectionState && injectionState.sessions) || []
+            const s = sessions.find((x) => x && x.prefix)
+            if (!s) {
+              if (lastSig !== 'none') {
+                lastSig = 'none'
+                panel.textContent = '注入面板：等待采集…'
+              }
+              return
+            }
+            const p = s.prefix
+            const versions = s.prefixVersions || []
+            const latest = versions[versions.length - 1]
+            const snap = s.snapshots && s.snapshots[s.snapshots.length - 1]
+            const sect = (snap && snap.sections) || []
+            const head =
+              '系统前缀 ' + p.hash + ' · ' + p.sectionCount + ' 段 · ' + p.toolCount + ' 个工具' +
+              (latest
+                ? ' · 第 ' + latest.turn + ' 轮改过 ' + (latest.changed.length + latest.added.length + latest.removed.length) + ' 处'
+                : '（未变化）')
+            const sig = head + '|' + sect.length
+            if (sig === lastSig) return
+            lastSig = sig
+            panel.textContent = ''
+            const title = document.createElement('div')
+            title.textContent = head
+            title.style.cssText = 'font:12px/1.6 system-ui,sans-serif;opacity:.85;margin-bottom:4px'
+            panel.appendChild(title)
+            for (const c of sect) panel.appendChild(mkSection(c))
+          }
+
           const tick = () => {
             try {
-              const flow = document.querySelector('[data-slot="conversation.chat.flow"]')
-              const host = (flow && flow.parentElement) || flow
-              let card = document.getElementById('xykp-prefix-card')
-              if (!host) {
-                if (card) card.remove()
+              loadCfg()
+              let panel = document.getElementById('xykp-prefix-panel')
+              if (!cfgOn) {
+                if (panel) panel.remove()
                 return
               }
-              if (!card) {
-                card = document.createElement('div')
-                card.id = 'xykp-prefix-card'
-                card.style.cssText =
-                  'position:sticky;top:0;z-index:2;margin:8px 12px;padding:8px 12px;background:#1b1e24;border:1px solid #2b2f38;border-radius:10px;font:12px/1.6 system-ui,-apple-system,sans-serif;color:#cfd6e2;white-space:normal'
-              }
-              if (host.firstChild !== card) host.insertBefore(card, host.firstChild)
-              const s = injectionState && injectionState.sessions && injectionState.sessions[0]
-              if (!s || !s.prefix) {
-                card.style.display = 'none'
+              const comp = document.querySelector('[data-slot="conversation.composer"]')
+              let box = comp
+              while (box && box.getBoundingClientRect().width < 200) box = box.parentElement
+              const r = box && box.getBoundingClientRect()
+              if (!r || r.width < 200) {
+                if (panel) panel.remove()
                 return
               }
-              card.style.display = ''
-              const p = s.prefix
-              const versions = s.prefixVersions || []
-              const latest = versions[versions.length - 1]
-              const snap = s.snapshots && s.snapshots[s.snapshots.length - 1]
-              const sect = (snap && snap.sections) || []
-              const head =
-                '系统前缀 ' +
-                p.hash +
-                ' · ' +
-                p.sectionCount +
-                ' 段 · ' +
-                p.toolCount +
-                ' 个工具' +
-                (latest
-                  ? ' · 第 ' +
-                    latest.turn +
-                    ' 轮改过 ' +
-                    (latest.changed.length + latest.added.length + latest.removed.length) +
-                    ' 处 → 缓存失效'
-                  : '（还没变化过）')
-              const sig = head + '|' + sect.length + '|' + (card.dataset.open || '0')
-              if (card.dataset.sig === sig) return
-              card.dataset.sig = sig
-              const open = card.dataset.open === '1'
-              card.textContent = ''
-              const headEl = document.createElement('div')
-              headEl.style.cssText = 'cursor:pointer;opacity:.7'
-              headEl.textContent = (open ? '▾ ' : '▸ ') + head
-              headEl.onclick = () => {
-                card.dataset.open = open ? '0' : '1'
-                card.dataset.sig = ''
-                tick()
+              if (!panel) {
+                panel = document.createElement('div')
+                panel.id = 'xykp-prefix-panel'
+                panel.style.cssText =
+                  'position:fixed;box-sizing:border-box;overflow:auto;resize:both;' +
+                  'background:#1b1e24;border:1px solid #2b2f38;border-radius:10px;' +
+                  'box-shadow:0 8px 24px rgba(0,0,0,.45);padding:10px 12px;z-index:60;' +
+                  'font:12px/1.6 system-ui,-apple-system,sans-serif;color:#cfd6e2'
+                lastSig = ''
               }
-              card.appendChild(headEl)
-              if (open) {
-                const pre = document.createElement('pre')
-                pre.style.cssText =
-                  'margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,monospace;opacity:.85;max-height:420px;overflow:auto'
-                pre.textContent = sect.map((c) => '──── ' + c.name + '（' + c.length + ' 字）\n' + c.text).join('\n\n')
-                card.appendChild(pre)
-              }
+              if (panel.parentElement !== document.body) document.body.appendChild(panel)
+              panel.style.left = Math.round(r.left + 12) + 'px'
+              panel.style.width = Math.round(Math.min(340, Math.max(240, r.width - 24))) + 'px'
+              panel.style.bottom = Math.round(window.innerHeight - r.top + 12) + 'px'
+              panel.style.maxHeight = Math.round(Math.min(560, Math.max(180, r.top - 80))) + 'px'
+              render(panel)
             } catch (e) {
-              console.warn('[dsh-xykp] 前缀卡片渲染失败：', e)
+              console.warn('[dsh-xykp] 前缀面板渲染失败：', e)
             }
           }
+
           timer = setInterval(tick, 1000)
           tick()
           return () => {
             clearInterval(timer)
-            const card = document.getElementById('xykp-prefix-card')
-            if (card) card.remove()
+            const panel = document.getElementById('xykp-prefix-panel')
+            if (panel) panel.remove()
             stop()
           }
-        }, 'dsh-xykp: prefix card')
+        }, 'dsh-xykp: prefix panel')
       } catch (e) {
-        console.warn('[dsh-xykp] 前缀卡片安装失败：', e)
+        console.warn('[dsh-xykp] 前缀面板安装失败：', e)
       }
     }
+
 
     function apply(ctx) {
       const slots = ctx.get('slots')
