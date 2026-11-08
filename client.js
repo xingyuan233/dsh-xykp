@@ -1549,15 +1549,16 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => injectionSubscribe(setState), [])
 
-      if (!state || !Array.isArray(state.sessions) || turn === undefined) return null
       let snap = null
       let session = null
-      for (const s of state.sessions) {
-        for (const one of s.snapshots || []) {
-          if (one.turn !== turn) continue
-          if (!snap || one.at > snap.at) {
-            snap = one
-            session = s
+      if (state && Array.isArray(state.sessions) && turn !== undefined) {
+        for (const s of state.sessions) {
+          for (const one of s.snapshots || []) {
+            if (one.turn !== turn) continue
+            if (!snap || one.at > snap.at) {
+              snap = one
+              session = s
+            }
           }
         }
       }
@@ -1565,6 +1566,16 @@ window.__ModuleLoader__.load({
       if (session) {
         for (const n of session.notices || []) if (n.turn === turn) notices.push(n)
       }
+
+      // 调试探针：报告这个 turn tail 拿到的 turn 和是否命中（服务端 /injection-shower/state 的 probes 里能看到）
+      const hit = snap ? 1 : 0
+      React.useEffect(() => {
+        if (turn === undefined) return
+        fetch('/injection-shower/probe?turn=' + encodeURIComponent(String(turn)) + '&hit=' + hit, {
+          cache: 'no-store',
+        }).catch(() => {})
+      }, [turn, hit])
+
       if (!snap && notices.length === 0) return null
       const ctxs = (snap && snap.contexts) || []
       const secs = (snap && snap.sections) || []

@@ -25,6 +25,8 @@ export function apply(ctx, config = {}) {
     const store = new Map()
     /** agent -> 当前轮次号（来自 session/event 的 turn/start），用来和对话里的 turn tail 对齐 */
     const turnOf = new Map()
+    /** 调试：客户端 turn tail 上报的 turn（最多 20 条） */
+    const probes = []
     const disposers = new Map()
 
     function clip(text) {
@@ -175,10 +177,23 @@ export function apply(ctx, config = {}) {
                 path: '/injection-shower',
                 handler: async (req, res) => {
                     const url = new URL(req.url || '/injection-shower', 'http://127.0.0.1')
+                    if (url.pathname === '/injection-shower/probe') {
+                        // 调试用：客户端每挂载一个 turn tail 就报一次，看看它拿到的 turn 是多少
+                        probes.push({
+                            at: Date.now(),
+                            turn: url.searchParams.get('turn'),
+                            hit: url.searchParams.get('hit'),
+                        })
+                        if (probes.length > 20) probes.splice(0, probes.length - 20)
+                        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+                        res.end('{"ok":true}')
+                        return
+                    }
                     if (url.pathname === '/injection-shower/state') {
                         const payload = {
                             ok: true,
                             now: Date.now(),
+                            probes,
                             sessions: [...store.values()].sort((a, b) => b.updatedAt - a.updatedAt),
                         }
                         res.writeHead(200, {
