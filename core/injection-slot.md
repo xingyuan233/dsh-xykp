@@ -8,7 +8,7 @@
 
 1. `conversation.chat.node` 的 `assistant-step` 注册里，`children` 多声明一个槽位：
    `conversation.chat.injection`（`kind: "list"`, `scope: "session"`）
-2. `AssistantNodeView` 的返回值包一层 Fragment，在正文前渲染这个槽位，并把 `turn` / `step` / `answer` / `closed` 传下去
+2. `AssistantNodeView` 的返回值包一层 Fragment，在正文前渲染这个槽位，并把 `turn` / `step` / `answer` 传下去
 
 ## 为什么要打
 
@@ -20,7 +20,6 @@ injection-shower 原来只能挂在 `conversation.chat.turnTail`（每轮末尾�
 - 第 1 步那行在用户消息之后 → 用户尾部注入显示在轮首
 - 第 k 步那行在该步正文之前 → 中间注入显示在发生位置
 - `answer: true` 的那一步在 DSH 里渲染在思考折叠组之外，插件据此不显示注入行（避免孤零零一条飘在外面）
-- `closed: true` 的轮不再渲染行（轮结束后步骤会被 fold 进 turn-process，行本来就会消失），改由轮末的「注入记录」保留
 
 ## 怎么验证
 

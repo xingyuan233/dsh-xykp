@@ -1670,7 +1670,6 @@ window.__ModuleLoader__.load({
       const turn = props ? props.turn : undefined
       const step = props ? props.step : undefined
       const answer = props ? props.answer : undefined
-      const closed = props ? props.closed : undefined
       const sessionId = props ? props.sessionId : undefined
       const [state, setState] = React.useState(injectionState)
       const [open, setOpen] = React.useState(false)
@@ -1678,8 +1677,6 @@ window.__ModuleLoader__.load({
       if (!state || turn === undefined || step === undefined) return null
       // 最终回答那一步不在「思考」折叠组里，单独飘一行会很突兀；那一步的注入不单独显示
       if (answer) return null
-      // 轮结束后步骤会被折叠进 turn-process，行会消失，统一改由轮末的「注入记录」展示
-      if (closed) return null
       let s = pickInjectionSession(state, turn, step, sessionId)
       if (!s) return null
       let snap = (s.snapshots || []).find((x) => x.turn === turn && x.step === step)
@@ -1766,109 +1763,6 @@ window.__ModuleLoader__.load({
                 : null,
             )
           : null,
-      )
-    }
-
-    // ── 轮末的「注入记录」：轮结束后步骤折叠、行会消失，用这里只读归档 ──
-    function InjectionTurnSummary(props) {
-      const sessionId = props ? props.sessionId : undefined
-      const turn = props ? props.turn : undefined
-      const [state, setState] = React.useState(injectionState)
-      const [open, setOpen] = React.useState(false)
-      React.useEffect(() => injectionSubscribe(setState), [])
-      if (!state || !turn || turn.status !== 'closed') return null
-      const n = typeof turn.turn === 'number' ? turn.turn : undefined
-      if (n === undefined) return null
-      let s = null
-      if (sessionId !== undefined) {
-        s = (state.sessions || []).find((x) => x && x.sessionId === sessionId) || null
-      } else {
-        for (const x of state.sessions || []) {
-          if (!x || !(x.snapshots || []).some((y) => y.turn === n)) continue
-          if (s === null || Number(x.updatedAt || 0) > Number(s.updatedAt || 0)) s = x
-        }
-      }
-      if (!s) return null
-      const collect = (one) =>
-        (one.snapshots || [])
-          .filter((x) => x.turn === n && x.step !== undefined)
-          .filter((x) => {
-            const a = Array.isArray(x.addedContexts) ? x.addedContexts.length : 0
-            const b = Array.isArray(x.notices) ? x.notices.length : 0
-            const c = Array.isArray(x.changedSections) ? x.changedSections.length : 0
-            return a + b + c > 0
-          })
-          .sort((x, y) => x.step - y.step)
-      let steps = collect(s)
-      if (!steps.length && sessionId !== undefined) {
-        let pid = parentOfSession(sessionId)
-        for (let depth = 0; pid !== undefined && depth < 5 && !steps.length; depth++) {
-          const ps = (state.sessions || []).find((x) => x && x.sessionId === pid)
-          if (ps) {
-            steps = collect(ps)
-            if (steps.length) s = ps
-          }
-          pid = parentOfSession(pid)
-        }
-      }
-      if (!steps.length) return null
-      const total = steps.reduce(
-        (acc, x) =>
-          acc +
-          (x.addedContexts || []).length +
-          (x.notices || []).length +
-          (x.changedSections || []).length,
-        0,
-      )
-
-      const row = (key, label, item) =>
-        React.createElement(
-          'div',
-          { key, style: IS.item },
-          React.createElement('div', { style: IS.name }, label + (item.name ? ' · ' + item.name : '')),
-          React.createElement('pre', { style: IS.pre }, item.text),
-        )
-      const stepLabel = (text) =>
-        React.createElement('div', { style: { ...IS.name, marginTop: 6, opacity: 0.5 } }, text)
-
-      const body = []
-      for (const snap of steps) {
-        body.push(stepLabel('第 ' + snap.step + ' 步'))
-        const singles = Array.isArray(snap.addedContexts) ? snap.addedContexts : []
-        const notes = Array.isArray(snap.notices) ? snap.notices : []
-        const changed = Array.isArray(snap.changedSections) ? snap.changedSections : []
-        for (let i = 0; i < singles.length; i++) body.push(row('c' + snap.step + '_' + i, '单次', singles[i]))
-        for (let i = 0; i < notes.length; i++) {
-          const item = notes[i]
-          body.push(
-            row('n' + snap.step + '_' + i, '持久', {
-              name: item.kind && item.kind !== 'notice' ? item.kind : '',
-              text: item.text,
-            }),
-          )
-        }
-        for (let i = 0; i < changed.length; i++) body.push(row('d' + snap.step + '_' + i, '变更', changed[i]))
-      }
-
-      return React.createElement(
-        'div',
-        {
-          style: {
-            margin: '2px 0 4px',
-            paddingLeft: 8,
-            borderLeft: '2px solid rgba(110,160,240,.22)',
-          },
-        },
-        React.createElement(
-          'button',
-          {
-            type: 'button',
-            style: { ...IS.head, opacity: 0.55, fontSize: 11 },
-            onClick: () => setOpen(!open),
-          },
-          (open ? '▾ ' : '▸ ') + '注入记录 · ' + total + ' 处 · ' + steps.length + ' 步',
-        ),
-        open ? React.createElement('div', { style: IS.list }, body) : null,
       )
     }
 
@@ -2397,19 +2291,6 @@ window.__ModuleLoader__.load({
           )
         } catch (e) {
           console.warn('[dsh-xykp] 注入行注册失败：', e)
-          return undefined
-        }
-      })
-
-      // 轮末「注入记录」：轮结束后步骤折叠、行会消失，用它把这一轮的注入按步保留下来
-      slots.inject('conversation.chat.turnTail', () => {
-        try {
-          return slots.register(
-            { name: 'conversation.chat.turnTail', id: 'xykp-injection-record', order: 90 },
-            (props) => React.createElement(InjectionTurnSummary, props),
-          )
-        } catch (e) {
-          console.warn('[dsh-xykp] 注入记录注册失败：', e)
           return undefined
         }
       })
