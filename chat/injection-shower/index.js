@@ -23,6 +23,8 @@ export function apply(ctx, config = {}) {
 
     /** sessionId -> { sessionId, preset, updatedAt, snapshots: [], notices: [] } */
     const store = new Map()
+    /** agent -> 当前轮次号（来自 session/event 的 turn/start），用来和对话里的 turn tail 对齐 */
+    const turnOf = new Map()
     const disposers = new Map()
 
     function clip(text) {
@@ -88,6 +90,7 @@ export function apply(ctx, config = {}) {
         st.updatedAt = Date.now()
         st.snapshots.push({
             at: Date.now(),
+            turn: turnOf.get(agent) ?? null,
             contexts: renderContexts(assembly),
             sections: renderSections(assembly),
         })
@@ -99,7 +102,7 @@ export function apply(ctx, config = {}) {
         const st = stateOf(agent)
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
-        st.notices.push({ at: Date.now(), text: clip(text) })
+        st.notices.push({ at: Date.now(), turn: turnOf.get(agent) ?? null, text: clip(text) })
         if (st.notices.length > maxNotices) st.notices.splice(0, st.notices.length - maxNotices)
     }
 
@@ -127,6 +130,15 @@ export function apply(ctx, config = {}) {
                     console.warn('[injection-shower] assemble 记录失败：', e)
                 }
                 return out
+            }),
+        )
+        offs.push(
+            agent.ctx.on('session/event', (_subject, event) => {
+                try {
+                    if (event?.type === 'turn/start' && typeof event?.data?.turn === 'number') {
+                        turnOf.set(agent, event.data.turn)
+                    }
+                } catch {}
             }),
         )
         offs.push(

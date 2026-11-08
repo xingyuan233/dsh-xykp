@@ -1482,9 +1482,146 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── 对话里：每轮尾部的「注入」条（数据来自 chat/injection-shower 的 /injection-shower/state）──
+    // 一屏可能有几十轮，所有 turn tail 共用一个 3s 轮询器，不然每轮各拉一次
+    const IS = {
+      wrap: { marginTop: 6, fontSize: 12, lineHeight: '18px' },
+      head: {
+        background: 'transparent',
+        border: 0,
+        padding: 0,
+        cursor: 'pointer',
+        color: 'inherit',
+        opacity: 0.55,
+        fontSize: 12,
+        fontFamily: 'inherit',
+      },
+      list: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 },
+      item: { borderLeft: '2px solid rgba(255,255,255,.16)', padding: '2px 0 2px 8px' },
+      name: { fontSize: 11, opacity: 0.6, fontFamily: 'ui-monospace,monospace' },
+      pre: {
+        margin: '4px 0 0',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        font: '12px/1.5 ui-monospace,monospace',
+        opacity: 0.85,
+        maxHeight: 260,
+        overflow: 'auto',
+      },
+    }
+
+    let injectionState = null
+    const injectionSubs = new Set()
+    let injectionTimer = null
+
+    function injectionSubscribe(fn) {
+      injectionSubs.add(fn)
+      if (injectionTimer === null) {
+        const load = () => {
+          fetch('/injection-shower/state', { cache: 'no-store' })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+              if (!d) return
+              injectionState = d
+              for (const sub of injectionSubs) {
+                try {
+                  sub(d)
+                } catch {}
+              }
+            })
+            .catch(() => {})
+        }
+        load()
+        injectionTimer = setInterval(load, 3000)
+      }
+      return () => {
+        injectionSubs.delete(fn)
+        if (injectionSubs.size === 0 && injectionTimer !== null) {
+          clearInterval(injectionTimer)
+          injectionTimer = null
+        }
+      }
+    }
+
+    function InjectionTail(props) {
+      const turn = props ? props.turn : undefined
+      const [state, setState] = React.useState(injectionState)
+      const [open, setOpen] = React.useState(false)
+      React.useEffect(() => injectionSubscribe(setState), [])
+
+      if (!state || !Array.isArray(state.sessions) || turn === undefined) return null
+      let snap = null
+      let session = null
+      for (const s of state.sessions) {
+        for (const one of s.snapshots || []) {
+          if (one.turn !== turn) continue
+          if (!snap || one.at > snap.at) {
+            snap = one
+            session = s
+          }
+        }
+      }
+      const notices = []
+      if (session) {
+        for (const n of session.notices || []) if (n.turn === turn) notices.push(n)
+      }
+      if (!snap && notices.length === 0) return null
+      const ctxs = (snap && snap.contexts) || []
+      const secs = (snap && snap.sections) || []
+      const total = ctxs.length + secs.length + notices.length
+      if (total === 0) return null
+
+      const row = (key, label, item) =>
+        React.createElement(
+          'div',
+          { key, style: IS.item },
+          React.createElement('div', { style: IS.name }, label + (item.name ? ' · ' + item.name : '')),
+          React.createElement('pre', { style: IS.pre }, item.text),
+        )
+
+      return React.createElement(
+        'div',
+        { style: IS.wrap },
+        React.createElement(
+          'button',
+          { style: IS.head, onClick: () => setOpen(!open) },
+          (open ? '▾ ' : '▸ ') +
+            '注入 ' +
+            total +
+            ' 项 · context ' +
+            ctxs.length +
+            ' · section ' +
+            secs.length +
+            ' · 通知 ' +
+            notices.length,
+        ),
+        open
+          ? React.createElement(
+              'div',
+              { style: IS.list },
+              ctxs.map((c, i) => row('c' + i, 'context', c)),
+              secs.map((c, i) => row('s' + i, 'section', c)),
+              notices.map((n, i) => row('n' + i, '通知', { name: '', text: n.text })),
+            )
+          : null,
+      )
+    }
+
     function apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
+
+      // 对话里每轮尾部的「注入」条
+      try {
+        slots.inject('conversation.chat.turnTail', () =>
+          slots.register(
+            { name: 'conversation.chat.turnTail', id: 'xykp-injection', order: 90 },
+            (props) => React.createElement(InjectionTail, props),
+          ),
+        )
+      } catch (e) {
+        console.warn('[dsh-xykp] 注入条注册失败：', e)
+      }
 
       // 会话永久删除 —— 合并进来的 UI（原来是 storage/session-delete 的 client.js）
       try {
