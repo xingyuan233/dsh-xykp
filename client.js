@@ -1612,6 +1612,10 @@ window.__ModuleLoader__.load({
           React.createElement('pre', { style: IS.pre }, item.text),
         )
 
+      const changed = (snap && snap.changedSections) || []
+      const important = ctxs.length + changed.length + notices.length
+      const secHead = '系统提示词 ' + secs.length + ' 段（每轮都发，不是额外注入）'
+
       return React.createElement(
         'div',
         { style: IS.wrap },
@@ -1619,12 +1623,10 @@ window.__ModuleLoader__.load({
           'button',
           { style: IS.head, onClick: () => setOpen(!open) },
           (open ? '▾ ' : '▸ ') +
-            '注入 ' +
-            total +
-            ' 项 · context ' +
+            '本轮注入：context ' +
             ctxs.length +
-            ' · section ' +
-            secs.length +
+            ' · 变化段落 ' +
+            changed.length +
             ' · 通知 ' +
             notices.length,
         ),
@@ -1633,8 +1635,16 @@ window.__ModuleLoader__.load({
               'div',
               { style: IS.list },
               ctxs.map((c, i) => row('c' + i, 'context', c)),
-              secs.map((c, i) => row('s' + i, 'section', c)),
               notices.map((n, i) => row('n' + i, '通知', { name: '', text: n.text })),
+              changed.map((c, i) => row('d' + i, '本轮新增/变化', c)),
+              secs.length
+                ? React.createElement(
+                    'details',
+                    { style: { marginTop: 4 } },
+                    React.createElement('summary', { style: IS.name }, secHead),
+                    ...secs.map((c, i) => row('s' + i, 'section', c)),
+                  )
+                : null,
             )
           : null,
       )

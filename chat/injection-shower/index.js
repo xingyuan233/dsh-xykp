@@ -90,11 +90,17 @@ export function apply(ctx, config = {}) {
         const st = stateOf(agent)
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
+        const prev = st.snapshots[st.snapshots.length - 1]
+        const sections = renderSections(assembly)
+        const prevByName = new Map(((prev && prev.sections) || []).map((s) => [s.name, s.text]))
+        // 只有和上一轮相比「新增或内容变了」的段落才算本轮真正多出来的东西
+        const changed = prevByName.size === 0 ? [] : sections.filter((s) => prevByName.get(s.name) !== s.text)
         st.snapshots.push({
             at: Date.now(),
             turn: turnOf.get(agent) ?? null,
             contexts: renderContexts(assembly),
-            sections: renderSections(assembly),
+            sections,
+            changedSections: changed,
         })
         if (st.snapshots.length > maxSnapshots) st.snapshots.splice(0, st.snapshots.length - maxSnapshots)
     }
