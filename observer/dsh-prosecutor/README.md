@@ -12,6 +12,22 @@
 - 插件只负责「确保它在跑」，进程本身活在宿主之外
 - 探活方式：连它的锁端口（默认 `39997`），连上就算活着
 
+## cwd 必须留在包外（2026-11-08 事故）
+
+Windows 不允许删除/替换「某个进程的当前工作目录」。以前 `spawnDetached` 用的是
+`cwd: join(script, '..')`，即 `node_modules\dsh-xykp\observer\dsh-prosecutor`。结果 `pnpm install`
+想换掉 `dsh-xykp` 时，删到一半就报 `os error 32（另一个程序正在使用此文件）`，
+`cordis.patch.yml / index.js / client.js / chat / comms` 被删掉，宿主直接
+`skipping profile bundle "dsh-xykp"` 起不来。
+
+现在固定 `cwd: <DSH_HOME>/xykp/prosecutor`（本来就在那儿写日志）。实测结论：
+
+- 正在运行的 `.mjs` 文件本身**不**锁 —— 进程活着也能删掉脚本、删掉整个目录；
+- 只有 cwd 会锁，而且锁的是**整条目录**，pnpm 的 swap 正好卡在这。
+
+以后再加 detached 子进程，cwd 一律指到 `HOME` 下，不要指包目录；拉起时把
+`pid / cwd / script` 打进宿主日志，出问题一眼能看出来。
+
 ## 配置
 
 ```yaml
