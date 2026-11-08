@@ -35,7 +35,7 @@ function loadStore() {
 
 export function apply(ctx, config = {}) {
     config = configFor('injection-shower', config)
-    const maxSnapshots = Math.max(1, Number(config.maxSnapshots) || 20)
+    const maxSnapshots = Math.max(1, Number(config.maxSnapshots) || 160)
     const maxNotices = Math.max(1, Number(config.maxNotices) || 30)
     const maxChars = Math.max(200, Number(config.maxChars) || 4000)
 
@@ -60,6 +60,8 @@ export function apply(ctx, config = {}) {
     }
     /** agent -> 当前轮次号（来自 session/event 的 turn/start），用来和对话里的 turn tail 对齐 */
     const turnOf = new Map()
+    /** agent -> { turn, step }：本轮第几次 assemble（≈ 第几个 step），用来把注入按位置归位 */
+    const stepOf = new Map()
     const disposers = new Map()
 
     function clip(text) {
@@ -132,24 +134,48 @@ export function apply(ctx, config = {}) {
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
         const turn = turnOf.get(agent) ?? null
+        // 每个 step 都会 assemble 一次：按 step 存，不覆盖，才能在对话里按位置显示
+        let cur = stepOf.get(agent)
+        if (!cur || cur.turn !== turn) {
+            cur = { turn, step: 1 }
+            stepOf.set(agent, cur)
+        } else {
+            cur.step += 1
+        }
+        const step = cur.step
         const last = st.snapshots[st.snapshots.length - 1]
-        // 一轮里每个 step 都会 assemble 一次：同一轮只保留最后一份，历史才是「每轮一条」
-        const prev = last && last.turn === turn ? st.snapshots[st.snapshots.length - 2] : last
+        const prevStep = last && last.turn === turn ? last : null
+        const base = prevStep || last || null
         const sections = renderSections(assembly)
         const tools = Array.isArray(assembly?.tools) ? assembly.tools : []
         trackPrefix(st, turn, sections, tools)
-        const prevByName = new Map(((prev && prev.sections) || []).map((s) => [s.name, s.text]))
-        // 只有和上一轮相比「新增或内容变了」的段落才算本轮真正多出来的东西
-        const changed = prevByName.size === 0 ? [] : sections.filter((s) => prevByName.get(s.name) !== s.text)
+        const contexts = renderContexts(assembly)
+        // 和上一个 step（本轮第一步则和上一轮最后一步）对比，算出「这一步新注入了什么」
+        const baseCtx = new Map(((base && base.contexts) || []).map((c) => [c.name, c.text]))
+        const addedContexts = contexts.filter((c) => baseCtx.get(c.name) !== c.text)
+        // 一直在、这一步没变的 context 只在第一步露一次（持久层）
+        const persistentContexts =
+            step === 1 ? contexts.filter((c) => baseCtx.get(c.name) === c.text) : []
+        const baseSec = new Map(((base && base.sections) || []).map((s) => [s.name, s.text]))
+        const changedSections =
+            baseSec.size === 0 ? [] : sections.filter((s) => baseSec.get(s.name) !== s.text)
+        // 自上一个 step 之后新插进上下文的消息（持久注入），按时间归到这一步
+        const since = base ? Number(base.at) : 0
+        const notices = st.notices
+            .filter((n) => Number(n.at) > since)
+            .map((n) => ({ at: n.at, kind: n.kind || 'notice', text: n.text }))
         const snap = {
             at: Date.now(),
             turn,
-            contexts: renderContexts(assembly),
+            step,
+            contexts,
+            addedContexts,
+            persistentContexts,
+            notices,
             sections,
-            changedSections: changed,
+            changedSections,
         }
-        if (last && last.turn === turn) st.snapshots[st.snapshots.length - 1] = snap
-        else st.snapshots.push(snap)
+        st.snapshots.push(snap)
         if (st.snapshots.length > maxSnapshots) st.snapshots.splice(0, st.snapshots.length - maxSnapshots)
         save()
     }
@@ -211,12 +237,18 @@ export function apply(ctx, config = {}) {
         save()
     }
 
-    function recordNotice(agent, text) {
+    function recordNotice(agent, text, kind) {
         if (!text) return
         const st = stateOf(agent)
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
-        st.notices.push({ at: Date.now(), turn: turnOf.get(agent) ?? null, text: clip(text) })
+        st.notices.push({
+            at: Date.now(),
+            turn: turnOf.get(agent) ?? null,
+            step: stepOf.get(agent)?.step ?? null,
+            kind: kind || 'notice',
+            text: clip(text),
+        })
         if (st.notices.length > maxNotices) st.notices.splice(0, st.notices.length - maxNotices)
         save()
     }
@@ -280,8 +312,14 @@ export function apply(ctx, config = {}) {
                 try {
                     const who = payload?.agent || agent
                     const list = payload?.messages || payload?.inserted || (payload?.message ? [payload.message] : [])
-                    const text = (Array.isArray(list) ? list : [list]).map(textOfMessage).filter(Boolean).join('\n')
-                    recordNotice(who, text)
+                    const msgs = (Array.isArray(list) ? list : [list]).filter((m) => {
+                        const k = m && m.source && m.source.kind
+                        return k !== 'user' && k !== 'model' && k !== 'tool'
+                    })
+                    if (!msgs.length) return
+                    const text = msgs.map(textOfMessage).filter(Boolean).join('\n')
+                    const kind = (msgs[0] && msgs[0].source && msgs[0].source.kind) || 'notice'
+                    recordNotice(who, text, kind)
                 } catch (e) {
                     console.warn('[injection-shower] notice 记录失败：', e)
                 }
@@ -310,11 +348,21 @@ export function apply(ctx, config = {}) {
                 handler: async (req, res) => {
                     const url = new URL(req.url || '/injection-shower', 'http://127.0.0.1')
                     if (url.pathname === '/injection-shower/state') {
-                        const payload = {
-                            ok: true,
-                            now: Date.now(),
-                            sessions: [...store.values()].sort((a, b) => b.updatedAt - a.updatedAt),
-                        }
+                        const full = url.searchParams.get('full') === '1'
+                        const sessions = [...store.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+                        // 轮询（对话里的注入行）只要单次/持久/变化，不需要整份 sections 和累计 contexts，
+                        // 否则每 3 秒拉几百 KB；调试页面用 ?full=1 拿全量。
+                        const lists = full
+                            ? sessions
+                            : sessions.map((s) => ({
+                                  ...s,
+                                  snapshots: (s.snapshots || []).map((snap, i, arr) => {
+                                      const { sections, contexts, ...rest } = snap
+                                      // 悬浮的系统提示词面板展开时要看「最新一步」的 sections 全文，历史步不需要
+                                      return i === arr.length - 1 ? { ...rest, sections } : rest
+                                  }),
+                              }))
+                        const payload = { ok: true, now: Date.now(), sessions: lists }
                         res.writeHead(200, {
                             'content-type': 'application/json; charset=utf-8',
                             'cache-control': 'no-store',
@@ -411,10 +459,10 @@ function render(data) {
       if (i === 0) d.open = true
       const ctxCount = (snap.contexts || []).length
       const secCount = (snap.sections || []).length
-      d.appendChild(el('summary', '', fmt(snap.at) + ' · 上下文 ' + ctxCount + ' 段 / 系统提示词 ' + secCount + ' 段'))
+      d.appendChild(el('summary', '', fmt(snap.at) + ' · 第 ' + (snap.step ?? '?') + ' 步 · 单次 ' + ((snap.addedContexts || []).length) + ' 段 / 系统提示词 ' + secCount + ' 段'))
       for (const c of snap.contexts || []) d.appendChild(block('context: ' + c.name, c.text, c.length + ' 字'))
       for (const c of snap.sections || []) d.appendChild(block('section: ' + c.name, c.text, c.length + ' 字'))
-      if (!ctxCount && !secCount) d.appendChild(el('div', 'empty', '这一轮没有任何注入'))
+      if (!ctxCount && !secCount) d.appendChild(el('div', 'empty', '这一步没有任何注入'))
       card.appendChild(d)
     }
     root.appendChild(card)
@@ -423,7 +471,7 @@ function render(data) {
 
 async function tick() {
   try {
-    const r = await fetch('/injection-shower/state', { cache: 'no-store' })
+    const r = await fetch('/injection-shower/state?full=1', { cache: 'no-store' })
     const d = await r.json()
     clock.textContent = '更新于 ' + fmt(d.now || Date.now())
     render(d)

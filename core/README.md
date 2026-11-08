@@ -20,6 +20,8 @@ plugins\core\
 | `tool-wire-trims.mjs` | 自带工具的文案精简（表在文件顶部 `TRIMS`），省 42% 工具 token |
 | `session-tolerance.mjs` | 单条会话日志读不出来时跳过它，不再拖垮整个会话列表 |
 | `tool-desc-pin.mjs` | 工具说明变了不重写请求开头的 tools（钉住第一版定义 + 末尾补一条 developer 说明） |
+| `injection-slot.mjs` | 每个 assistant step 正文前渲染 `conversation.chat.injection` 槽位（带 turn/step/answer），给 injection-shower 按步显示注入用 |
+| `turn-tail-empty.mjs` | 空回复（只有思考、没有正文）的轮也保留底部栏：赞踩/用量/时间，隐藏复制 |
 
 ## 自动还原（装完就不用管了）
 

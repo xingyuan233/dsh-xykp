@@ -1606,21 +1606,21 @@ window.__ModuleLoader__.load({
           'button',
           { style: IS.head, onClick: () => setOpen(!open) },
           (open ? '▾ ' : '▸ ') +
-            '本轮注入：快照 ' +
+            '本轮：单次 ' +
             ctxs.length +
             ' · 变化段落 ' +
             changed.length +
-            ' · 历史消息 ' +
+            ' · 持久 ' +
             notices.length,
         ),
         open
           ? React.createElement(
               'div',
               { style: IS.list },
-              ctxs.length ? groupLabel('尾部快照 —— 下一份快照会取代它') : null,
-              ctxs.map((c, i) => row('c' + i, '快照', c)),
-              notices.length ? groupLabel('历史消息 —— 插入后一直留在上下文里') : null,
-              notices.map((n, i) => row('n' + i, '历史消息', { name: '', text: n.text })),
+              ctxs.length ? groupLabel('单次注入（下一份会取代）') : null,
+              ctxs.map((c, i) => row('c' + i, '单次', c)),
+              notices.length ? groupLabel('持久注入（插入后一直保留）') : null,
+              notices.map((n, i) => row('n' + i, '持久', { name: '', text: n.text })),
               changed.length ? groupLabel('⚠ 本轮新增/变化的段落（会导致前缀缓存失效）') : null,
               changed.map((c, i) => row('d' + i, '变化', c)),
               secs.length
@@ -1629,6 +1629,103 @@ window.__ModuleLoader__.load({
                     { style: { marginTop: 4 } },
                     React.createElement('summary', { style: IS.name }, secHead),
                     ...secs.map((c, i) => row('s' + i, 'section', c)),
+                  )
+                : null,
+            )
+          : null,
+      )
+    }
+
+    // ── 每个 assistant step 前面的「这一步吃了什么注入」（宿主补丁提供 conversation.chat.injection 槽位）──
+    /** 同一个 turn 号可能出现在多个会话里：挑最近更新、且确实有这个 step 的那个 */
+    function pickInjectionSession(state, turn, step) {
+      const list = (state && state.sessions) || []
+      let best = null
+      for (const s of list) {
+        if (!s || !Array.isArray(s.snapshots)) continue
+        if (!s.snapshots.some((x) => x.turn === turn && x.step === step)) continue
+        if (best === null || Number(s.updatedAt || 0) > Number(best.updatedAt || 0)) best = s
+      }
+      return best
+    }
+
+    function InjectionStep(props) {
+      const turn = props ? props.turn : undefined
+      const step = props ? props.step : undefined
+      const answer = props ? props.answer : undefined
+      const [state, setState] = React.useState(injectionState)
+      const [open, setOpen] = React.useState(false)
+      React.useEffect(() => injectionSubscribe(setState), [])
+      if (!state || turn === undefined || step === undefined) return null
+      // 最终回答那一步不在「思考」折叠组里，单独飘一行会很突兀；那一步的注入不单独显示
+      if (answer) return null
+      const s = pickInjectionSession(state, turn, step)
+      if (!s) return null
+      const snap = (s.snapshots || []).find((x) => x.turn === turn && x.step === step)
+      if (!snap) return null
+      const singles = Array.isArray(snap.addedContexts) ? snap.addedContexts : []
+      const kept = step === 1 && Array.isArray(snap.persistentContexts) ? snap.persistentContexts : []
+      const notes = Array.isArray(snap.notices) ? snap.notices : []
+      const changed = Array.isArray(snap.changedSections) ? snap.changedSections : []
+      if (singles.length + notes.length + changed.length === 0) return null
+
+      const row = (key, label, item) =>
+        React.createElement(
+          'div',
+          { key, style: IS.item },
+          React.createElement('div', { style: IS.name }, label + (item.name ? ' · ' + item.name : '')),
+          React.createElement('pre', { style: IS.pre }, item.text),
+        )
+
+      const bits = []
+      if (singles.length) bits.push('单次 ' + singles.length)
+      if (notes.length) bits.push('持久 ' + notes.length)
+      if (changed.length) bits.push('变更 ' + changed.length)
+      // 折叠时只列名字（取前几个），不塞正文
+      const names = []
+      for (const c of singles) if (c.name) names.push(c.name)
+      for (const n of notes) if (n.kind && n.kind !== 'notice') names.push(n.kind)
+      for (const c of changed) if (c.name) names.push(c.name)
+      const namePart = names.length
+        ? ' · ' + names.slice(0, 3).join(' · ') + (names.length > 3 ? ' …' : '')
+        : ''
+
+      return React.createElement(
+        'div',
+        {
+          style: {
+            margin: '2px 0 4px',
+            paddingLeft: 8,
+            borderLeft: '2px solid rgba(110,160,240,.45)',
+          },
+        },
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            style: { ...IS.head, opacity: 0.75, fontSize: 12, color: 'rgba(150,180,250,.95)' },
+            onClick: () => setOpen(!open),
+          },
+          (open ? '▾ ' : '▸ ') + '注入 · ' + bits.join(' · ') + namePart,
+        ),
+        open
+          ? React.createElement(
+              'div',
+              { style: IS.list },
+              singles.map((c, i) => row('c' + i, '单次', c)),
+              notes.map((n, i) =>
+                row('n' + i, '持久', {
+                  name: n.kind && n.kind !== 'notice' ? n.kind : '',
+                  text: n.text,
+                }),
+              ),
+              changed.map((c, i) => row('d' + i, '变更', c)),
+              kept.length
+                ? React.createElement(
+                    'details',
+                    { style: { marginTop: 4 } },
+                    React.createElement('summary', { style: IS.name }, '持久 · 常驻 ' + kept.length + ' 段'),
+                    ...kept.map((c, i) => row('k' + i, '持久', c)),
                   )
                 : null,
             )
@@ -1749,10 +1846,43 @@ window.__ModuleLoader__.load({
       try {
         ctx.effect(() => {
           const stop = injectionSubscribe(() => {})
+          const styleTag = document.createElement('style')
+          styleTag.textContent =
+            '#xykp-prefix-panel.collapsed{height:auto!important;max-height:none!important;resize:none!important;width:auto!important}' +
+            '#xykp-prefix-panel summary::-webkit-details-marker{display:none}' +
+            '#xykp-prefix-panel summary{list-style:none}'
+          document.head.appendChild(styleTag)
           let timer = null
           let cfgOn = true
           let cfgAt = 0
           let lastSig = ''
+          let moved = false
+          const sectionCache = new Map()
+          let sectionLoading = false
+          const loadSections = (sid) => {
+            if (sectionLoading) return
+            sectionLoading = true
+            fetch('/injection-shower/state?full=1', { cache: 'no-store' })
+              .then((r) => (r.ok ? r.json() : null))
+              .then((d) => {
+                for (const one of (d && d.sessions) || []) {
+                  const oneSnap = one.snapshots && one.snapshots[one.snapshots.length - 1]
+                  if (oneSnap && Array.isArray(oneSnap.sections)) {
+                    sectionCache.set(one.sessionId, {
+                      hash: one.prefix && one.prefix.hash,
+                      sections: oneSnap.sections,
+                    })
+                  }
+                }
+              })
+              .catch(() => {})
+              .finally(() => {
+                sectionLoading = false
+                lastSig = ''
+                const el = document.getElementById('xykp-prefix-panel')
+                if (el) render(el)
+              })
+          }
 
           const loadCfg = async () => {
             if (Date.now() - cfgAt < 5000) return
@@ -1768,13 +1898,27 @@ window.__ModuleLoader__.load({
           const mkSection = (c) => {
             const d = document.createElement('details')
             d.dataset.key = c.name
-            d.style.cssText = 'margin:6px 0 0;border-left:2px solid rgba(255,255,255,.12);padding-left:8px'
+            d.style.cssText =
+              'border:1px solid rgba(255,255,255,.07);border-radius:8px;background:rgba(255,255,255,.025);overflow:hidden'
             const s = document.createElement('summary')
-            s.style.cssText = 'cursor:pointer;font:11px ui-monospace,monospace;opacity:.75'
-            s.textContent = c.name + '（' + c.length + ' 字）'
+            s.style.cssText =
+              'display:flex;align-items:center;gap:8px;padding:5px 8px;cursor:pointer;list-style:none;' +
+              'font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:rgba(200,215,240,.85)'
+            const nm = document.createElement('span')
+            nm.textContent = c.name
+            nm.style.cssText =
+              'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'
+            const sz = document.createElement('span')
+            sz.textContent = c.length + ' 字'
+            sz.style.cssText = 'flex:none;opacity:.4;font-size:10px'
+            s.appendChild(nm)
+            s.appendChild(sz)
             const pre = document.createElement('pre')
             pre.style.cssText =
-              'margin:6px 0 0;white-space:pre-wrap;word-break:break-word;font:11px/1.55 ui-monospace,monospace;opacity:.85;max-height:260px;overflow:auto'
+              'margin:0;padding:8px;border-top:1px solid rgba(255,255,255,.05);background:rgba(0,0,0,.18);' +
+              'white-space:pre-wrap;word-break:break-word;' +
+              'font:11px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;' +
+              'color:rgba(210,220,235,.8);max-height:240px;overflow:auto'
             pre.textContent = c.text
             d.appendChild(s)
             d.appendChild(pre)
@@ -1783,7 +1927,9 @@ window.__ModuleLoader__.load({
 
           const render = (panel) => {
             const sessions = (injectionState && injectionState.sessions) || []
-            const s = sessions.find((x) => x && x.prefix)
+            const s = sessions
+              .filter((x) => x && x.prefix)
+              .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0]
             if (!s) {
               if (lastSig !== 'none') {
                 lastSig = 'none'
@@ -1794,33 +1940,144 @@ window.__ModuleLoader__.load({
             const p = s.prefix
             const versions = s.prefixVersions || []
             const latest = versions[versions.length - 1]
+            const collapsed = panel.dataset.collapsed === '1'
             const snap = s.snapshots && s.snapshots[s.snapshots.length - 1]
-            const sect = (snap && snap.sections) || []
-            const head =
-              '系统前缀 ' + p.hash + ' · ' + p.sectionCount + ' 段 · ' + p.toolCount + ' 个工具' +
-              (latest
-                ? ' · 第 ' + latest.turn + ' 轮改过 ' + (latest.changed.length + latest.added.length + latest.removed.length) + ' 处'
-                : '（未变化）')
-            const sig = head + '|' + sect.length
+            let sect = (snap && snap.sections) || []
+            // 轮询用的是精简数据（不带 sections），展开时按需拉一次全量并缓存
+            const cachedSecs = sectionCache.get(s.sessionId)
+            if (!sect.length && cachedSecs && cachedSecs.hash === p.hash) sect = cachedSecs.sections
+            if (!collapsed && !sect.length && (!cachedSecs || cachedSecs.hash !== p.hash)) {
+              loadSections(s.sessionId)
+            }
+            const changedCount = latest
+              ? latest.changed.length + latest.added.length + latest.removed.length
+              : 0
+            const sig =
+              p.hash +
+              '|' +
+              p.sectionCount +
+              '|' +
+              p.toolCount +
+              '|' +
+              sect.length +
+              '|' +
+              (latest ? latest.turn + '|' + changedCount : '') +
+              '|' +
+              (panel.dataset.collapsed === '1') +
+              '|' +
+              (panel.dataset.w || '')
             if (sig === lastSig) return
             lastSig = sig
 
             const openMap = new Map()
             for (const d of panel.querySelectorAll('details')) if (d.dataset.key) openMap.set(d.dataset.key, d.open)
-            const collapsed = panel.dataset.collapsed === '1'
 
             panel.textContent = ''
+            panel.style.width = collapsed
+              ? 'auto'
+              : panel.dataset.w || 'min(560px, calc(100vw - 48px))'
+
             const title = document.createElement('div')
-            title.style.cssText = 'font:12px/1.6 system-ui,sans-serif;opacity:.85;margin-bottom:4px;cursor:pointer'
-            title.textContent = (collapsed ? '▸ ' : '▾ ') + head
-            title.onclick = () => {
+            title.style.cssText =
+              'display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:move;user-select:none;' +
+              'background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.015));' +
+              'border-bottom:1px solid rgba(255,255,255,.06)'
+            let dragged = false
+            const caret = document.createElement('span')
+            caret.textContent = collapsed ? '▸' : '▾'
+            caret.style.cssText =
+              'flex:none;width:12px;text-align:center;font-size:11px;opacity:.7'
+            const titleText = document.createElement('span')
+            titleText.textContent = '系统提示词'
+            titleText.style.cssText = 'flex:none;font-size:12px;font-weight:500;letter-spacing:.02em'
+            const meta = document.createElement('span')
+            meta.textContent = p.sectionCount + ' 段 · ' + p.toolCount + ' 工具'
+            meta.style.cssText =
+              'flex:none;font-size:11px;opacity:.45;font-family:ui-monospace,monospace'
+            title.appendChild(caret)
+            title.appendChild(titleText)
+            title.appendChild(meta)
+            if (latest && changedCount > 0) {
+              const badge = document.createElement('span')
+              badge.textContent = '第 ' + latest.turn + ' 轮 · 改动 ' + changedCount + ' 处'
+              badge.style.cssText =
+                'flex:none;font-size:10px;padding:1px 6px;border-radius:999px;' +
+                'color:#f0c27a;background:rgba(240,194,122,.12);border:1px solid rgba(240,194,122,.2)'
+              title.appendChild(badge)
+            }
+            const spacer = document.createElement('span')
+            spacer.style.cssText = 'flex:1'
+            title.appendChild(spacer)
+            const hashEl = document.createElement('span')
+            hashEl.textContent = String(p.hash || '').slice(0, 8)
+            hashEl.style.cssText =
+              'flex:none;font-size:10px;opacity:.28;font-family:ui-monospace,monospace'
+            title.appendChild(hashEl)
+
+            const togglePanel = () => {
               panel.dataset.collapsed = panel.dataset.collapsed === '1' ? '0' : '1'
+              panel.classList.toggle('collapsed', panel.dataset.collapsed === '1')
               lastSig = ''
               render(panel)
             }
+            caret.onclick = (ev) => {
+              ev.stopPropagation()
+              togglePanel()
+            }
+            title.onclick = () => {
+              if (dragged) {
+                dragged = false
+                return
+              }
+              togglePanel()
+            }
+            // 双击标题：位置复位到默认右上角（拖飞了的兜底）
+            title.ondblclick = (ev) => {
+              ev.preventDefault()
+              moved = false
+              lastSig = ''
+              render(panel)
+            }
+            title.onpointerdown = (ev) => {
+              if (ev.button !== 0) return
+              ev.preventDefault()
+              dragged = false
+              const pr = panel.getBoundingClientRect()
+              const dx = ev.clientX - pr.left
+              const dy = ev.clientY - pr.top
+              const startX = ev.clientX
+              const startY = ev.clientY
+              const onMove = (e2) => {
+                if (Math.abs(e2.clientX - startX) + Math.abs(e2.clientY - startY) > 3) {
+                  dragged = true
+                  moved = true
+                }
+                if (!moved) return
+                // 拖动时就把位置夹在屏幕内，别让标题栏（唯一拖拽点）跑到视口外
+                const pw = panel.offsetWidth
+                const left = Math.min(
+                  Math.max(e2.clientX - dx, -(pw - 140)),
+                  window.innerWidth - 80,
+                )
+                const top = Math.min(Math.max(e2.clientY - dy, 0), window.innerHeight - 40)
+                panel.style.left = Math.round(left) + 'px'
+                panel.style.top = Math.round(top) + 'px'
+                panel.style.right = ''
+                panel.style.bottom = ''
+              }
+              const onUp = () => {
+                window.removeEventListener('pointermove', onMove)
+                window.removeEventListener('pointerup', onUp)
+              }
+              window.addEventListener('pointermove', onMove)
+              window.addEventListener('pointerup', onUp)
+            }
             panel.appendChild(title)
             const body = document.createElement('div')
-            body.style.display = collapsed ? 'none' : ''
+            body.style.cssText =
+              'display:' +
+              (collapsed ? 'none' : 'flex') +
+              ';flex-direction:column;gap:6px;padding:8px;overflow:auto;min-height:0'
             for (const c of sect) {
               const d = mkSection(c)
               if (openMap.get(c.name)) d.open = true
@@ -1848,11 +2105,16 @@ window.__ModuleLoader__.load({
               if (!panel) {
                 panel = document.createElement('div')
                 panel.id = 'xykp-prefix-panel'
+                if (panel.dataset.collapsed === '1') panel.classList.add('collapsed')
                 panel.style.cssText =
-                  'position:fixed;box-sizing:border-box;overflow:auto;resize:both;' +
-                  'background:#1b1e24;border:1px solid #2b2f38;border-radius:10px;' +
-                  'box-shadow:0 8px 24px rgba(0,0,0,.45);padding:10px 12px;z-index:60;' +
-                  'font:12px/1.6 system-ui,-apple-system,sans-serif;color:#cfd6e2'
+                  'position:fixed;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;' +
+                  'background:rgba(25,28,35,.94);backdrop-filter:blur(10px);' +
+                  'border:1px solid rgba(255,255,255,.09);border-radius:12px;' +
+                  'box-shadow:0 12px 32px rgba(0,0,0,.45);z-index:60;' +
+                  'font:12px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;color:#d7deea'
+                // 默认折叠：只占标题一行，点开再看内容
+                panel.dataset.collapsed = '1'
+                panel.classList.add('collapsed')
                 lastSig = ''
               }
               if (panel.parentElement !== document.body) document.body.appendChild(panel)
@@ -1865,12 +2127,38 @@ window.__ModuleLoader__.load({
                 sc = sc.parentElement
               }
               const sr = sc ? sc.getBoundingClientRect() : r
-              panel.style.left = Math.round(r.left + 12) + 'px'
-              panel.style.top = Math.round(sr.top + 12) + 'px'
-              panel.style.width = Math.round(Math.min(340, Math.max(240, r.width - 24))) + 'px'
-              panel.style.bottom = ''
-              panel.style.maxHeight = Math.round(Math.max(180, sr.height - 24)) + 'px'
+              panel.dataset.w = Math.round(Math.min(620, Math.max(360, r.width - 24))) + 'px'
+              panel.style.maxHeight =
+                panel.dataset.collapsed === '1'
+                  ? 'none'
+                  : Math.round(
+                      Math.max(180, Math.min(sr.height - 24, window.innerHeight * 0.62)),
+                    ) + 'px'
               render(panel)
+              if (!moved) {
+                const pr = panel.getBoundingClientRect()
+                panel.style.left = ''
+                panel.style.top = Math.round(sr.top + 12) + 'px'
+                panel.style.right =
+                  Math.round(Math.max(12, window.innerWidth - sr.right + 12)) + 'px'
+                panel.style.bottom = ''
+              } else {
+                // 兜底：已经把面板拖到屏幕外（标题栏看不见）时自动拉回来
+                const pr = panel.getBoundingClientRect()
+                let left = pr.left
+                let top = pr.top
+                if (top < 8) top = 8
+                if (top > window.innerHeight - 48) top = window.innerHeight - 48
+                if (left + pr.width < 120) left = 8
+                if (left > window.innerWidth - 96) left = window.innerWidth - 96
+                if (Math.round(left) !== Math.round(pr.left)) {
+                  panel.style.left = Math.round(left) + 'px'
+                  panel.style.right = ''
+                }
+                if (Math.round(top) !== Math.round(pr.top)) {
+                  panel.style.top = Math.round(top) + 'px'
+                }
+              }
             } catch (e) {
               console.warn('[dsh-xykp] 前缀面板渲染失败：', e)
             }
@@ -1882,6 +2170,7 @@ window.__ModuleLoader__.load({
             clearInterval(timer)
             const panel = document.getElementById('xykp-prefix-panel')
             if (panel) panel.remove()
+            styleTag.remove()
             stop()
           }
         }, 'dsh-xykp: prefix panel')
@@ -1891,6 +2180,65 @@ window.__ModuleLoader__.load({
     }
 
 
+    // 消息流里的注入行：宿主补丁在每条消息前渲染这个槽位，我们只在本轮第一条渲染一次
+    let injShownTurn = null
+    function InjectionRow(props) {
+      const turn = props ? props.turn : undefined
+      const [state, setState] = React.useState(injectionState)
+      React.useEffect(() => injectionSubscribe(setState), [])
+      if (turn === undefined || !state) return null
+      if (injShownTurn === turn) return null
+      injShownTurn = turn
+      const s = (state.sessions || []).find((x) => x && x.prefix)
+      if (!s) return null
+      const snap = (s.snapshots || []).find((x) => x.turn === turn)
+      const notes = (s.notices || []).filter((n) => n.turn === turn)
+      if (!snap && notes.length === 0) return null
+      const rows = []
+      if (snap) {
+        rows.push(
+          React.createElement(
+            'div',
+            { key: 'snap', style: { margin: '2px 0' } },
+            '单次注入 · context ' +
+              (snap.contexts || []).length +
+              ' 段' +
+              ((snap.changedSections || []).length ? ' · 变化段落 ' + snap.changedSections.length : ''),
+          ),
+        )
+      }
+      for (const n of notes) {
+        const t = new Date(n.at).toLocaleTimeString('zh-CN', { hour12: false })
+        rows.push(
+          React.createElement(
+            'div',
+            { key: 'n' + n.at, style: { margin: '2px 0' } },
+            (n.kind === 'developer' ? '持久注入(dev)' : '持久注入') +
+              ' ' +
+              t +
+              ' · ' +
+              String(n.text || '').split('\n')[0].slice(0, 90),
+          ),
+        )
+      }
+      return React.createElement(
+        'div',
+        {
+          style: {
+            margin: '6px 12px',
+            padding: '4px 10px',
+            borderLeft: '2px solid #4b8f6a',
+            background: 'rgba(75,143,106,.08)',
+            borderRadius: 6,
+            font: '11px/1.5 ui-monospace,monospace',
+            opacity: 0.85,
+            whiteSpace: 'pre-wrap',
+          },
+        },
+        rows,
+      )
+    }
+
     function apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
@@ -1899,15 +2247,15 @@ window.__ModuleLoader__.load({
       // 但它的子节点就是消息行，所以把卡片插成它的第一个子元素即可。
       installPrefixCard(ctx)
 
-      // 对话里每轮尾部的「注入」条
-      slots.inject('conversation.chat.turnTail', () => {
+      // 每个 assistant step 前面的注入行（宿主补丁提供 conversation.chat.injection 槽位，带 turn/step）
+      slots.inject('conversation.chat.injection', () => {
         try {
           return slots.register(
-            { name: 'conversation.chat.turnTail', id: 'xykp-injection', order: 90 },
-            (props) => React.createElement(InjectionTail, props),
+            { name: 'conversation.chat.injection', id: 'xykp-injection-step' },
+            (props) => React.createElement(InjectionStep, props),
           )
         } catch (e) {
-          console.warn('[dsh-xykp] 注入条注册失败：', e)
+          console.warn('[dsh-xykp] 注入行注册失败：', e)
           return undefined
         }
       })
@@ -1954,5 +2302,7 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
+
 
 
