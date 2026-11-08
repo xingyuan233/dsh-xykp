@@ -162,9 +162,12 @@ export function spawnDetached(opts) {
     detached: true,
     windowsHide: true,
     stdio: ['ignore', fd, fd],
-    cwd: join(script, '..'),
+    // cwd 绝不能落在 node_modules 的包里：Windows 不允许删除/替换「某进程的当前目录」，
+    // 那样 pnpm install 换包时会报 os error 32 并把旧目录删掉一半（2026-11-08 事故）。
+    cwd: logDir,
     env: envFor(opts),
   })
+  log(`spawn prosecutor pid=${child.pid || '?'} cwd=${logDir} script=${script}`)
   child.unref()
   if (typeof fd === 'number') {
     try {
