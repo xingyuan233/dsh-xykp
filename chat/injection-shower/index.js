@@ -138,7 +138,8 @@ export function apply(ctx, config = {}) {
             const root = join(homeDir(), 'sessions')
             for (const d of readdirSync(root, { withFileTypes: true })) {
                 if (!d.isDirectory()) continue
-                const file = join(root, d.name, 'session-' + sid, 'session.v4.jsonl.zstd')
+                // sid 本身就是目录名（session-<uuid>），别再补前缀
+                const file = join(root, d.name, sid, 'session.v4.jsonl.zstd')
                 if (existsSync(file)) return file
             }
         } catch {}
