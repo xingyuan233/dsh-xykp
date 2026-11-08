@@ -1544,7 +1544,22 @@ window.__ModuleLoader__.load({
     }
 
     function InjectionTail(props) {
-      const turn = props ? props.turn : undefined
+      const rawTurn = props ? props.turn : undefined
+      // 宿主 slot 传的 turn 有时是数字、有时是带 turn/index 的对象，两种都认
+      const turn =
+        typeof rawTurn === 'number'
+          ? rawTurn
+          : rawTurn && typeof rawTurn === 'object'
+            ? typeof rawTurn.turn === 'number'
+              ? rawTurn.turn
+              : typeof rawTurn.index === 'number'
+                ? rawTurn.index
+                : typeof rawTurn.number === 'number'
+                  ? rawTurn.number
+                  : undefined
+            : undefined
+      const debug =
+        typeof rawTurn + (rawTurn && typeof rawTurn === 'object' ? ':' + Object.keys(rawTurn).slice(0, 10).join('|') : '')
       const [state, setState] = React.useState(injectionState)
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => injectionSubscribe(setState), [])
@@ -1570,11 +1585,18 @@ window.__ModuleLoader__.load({
       // 调试探针：报告这个 turn tail 拿到的 turn 和是否命中（服务端 /injection-shower/state 的 probes 里能看到）
       const hit = snap ? 1 : 0
       React.useEffect(() => {
-        if (turn === undefined) return
-        fetch('/injection-shower/probe?turn=' + encodeURIComponent(String(turn)) + '&hit=' + hit, {
-          cache: 'no-store',
-        }).catch(() => {})
-      }, [turn, hit])
+        fetch(
+          '/injection-shower/probe?turn=' +
+            encodeURIComponent(String(turn)) +
+            '&hit=' +
+            hit +
+            '&debug=' +
+            encodeURIComponent(debug),
+          {
+            cache: 'no-store',
+          },
+        ).catch(() => {})
+      }, [turn, hit, debug])
 
       if (!snap && notices.length === 0) return null
       const ctxs = (snap && snap.contexts) || []

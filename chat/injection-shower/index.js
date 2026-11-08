@@ -183,6 +183,7 @@ export function apply(ctx, config = {}) {
                             at: Date.now(),
                             turn: url.searchParams.get('turn'),
                             hit: url.searchParams.get('hit'),
+                            debug: url.searchParams.get('debug'),
                         })
                         if (probes.length > 20) probes.splice(0, probes.length - 20)
                         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
