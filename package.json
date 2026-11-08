@@ -17,6 +17,7 @@
     "./client": "./client.js",
     "./storage/preset-loader": "./storage/preset-loader/index.js",
     "./chat/memory-layer": "./chat/memory-layer/index.js",
+    "./chat/injection-shower": "./chat/injection-shower/index.js",
     "./chat/preset-binder": "./chat/preset-binder/index.js",
     "./chat/preset-binder/table": "./chat/preset-binder/table.js",
     "./chat/token-reporter": "./chat/token-reporter/index.js",

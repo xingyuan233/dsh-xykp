@@ -39,6 +39,7 @@ DeepSeek Harness 的个人插件集合：**一个 npm 包装二十来个子插�
 | `toolret-steward` | `chat/toolret-steward` | 工具结果去留管家（旧的 `toolret-forget` 已被它取代） |
 | `token-reporter` | `chat/token-reporter` | token 用量 / 余额查询 |
 | `tooldesc-control` | `chat/tooldesc-control` | 工具说明冻结/变更通知、工具懒加载、上下文重贴 |
+| `injection-shower` | `chat/injection-shower` | 只读旁路：每轮注入的 context / section / 收件箱消息，看 `http://127.0.0.1:3080/injection-shower` |
 | `senses-screenshot` | `senses/screenshot` | 截屏（Python MCP，带窗口/区域） |
 | `senses-keymouse` | `senses/keymouse` | 鼠标键盘注入 |
 | `bili-reply` | `comms/bili-reply` | B 站评论 / 私信自动回复（含队列、去重） |

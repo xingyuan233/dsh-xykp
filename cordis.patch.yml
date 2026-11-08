@@ -35,6 +35,8 @@
       name: 'dsh-xykp/chat/token-reporter'
     - id: tooldesc-control
       name: 'dsh-xykp/chat/tooldesc-control'
+    - id: injection-shower
+      name: 'dsh-xykp/chat/injection-shower'
 
     # ── senses
     - id: senses-screenshot
