@@ -32,7 +32,8 @@ const PATCHED_RETURN = `\t\t\t/* ${MARKER} */
 \t\t\tconst injection = turn === void 0 ? null : renderSlot("conversation.chat.injection", {
 \t\t\t\tturn: turn.turn,
 \t\t\t\tstep: data.step,
-\t\t\t\tanswer: turnProcess !== void 0 && turnProcess.spec !== void 0 && turnProcess.spec.answerStep === data.step
+\t\t\t\tanswer: turnProcess !== void 0 && turnProcess.spec !== void 0 && turnProcess.spec.answerStep === data.step,
+\t\t\t\tclosed: turn.status === "closed"
 \t\t\t});
 \t\t\treturn (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, {
 \t\t\t\tchildren: [injection, (0, react_jsx_runtime.jsx)(AssistantMarkdown, {`
