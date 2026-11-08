@@ -1513,12 +1513,17 @@ window.__ModuleLoader__.load({
     let injectionState = null
     const injectionSubs = new Set()
     let injectionTimer = null
+    let injectionHint = null
 
     function injectionSubscribe(fn) {
       injectionSubs.add(fn)
       if (injectionTimer === null) {
         const load = () => {
-          fetch('/injection-shower/state', { cache: 'no-store' })
+          const url =
+            injectionHint === null
+              ? '/injection-shower/state'
+              : '/injection-shower/state?session=' + encodeURIComponent(injectionHint)
+          fetch(url, { cache: 'no-store' })
             .then((r) => (r.ok ? r.json() : null))
             .then((d) => {
               if (!d) return
@@ -1674,9 +1679,10 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState(injectionState)
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => injectionSubscribe(setState), [])
+      React.useEffect(() => {
+        if (sessionId !== undefined) injectionHint = sessionId
+      }, [sessionId])
       if (!state || turn === undefined || step === undefined) return null
-      // 最终回答那一步不在「思考」折叠组里，单独飘一行会很突兀；那一步的注入不单独显示
-      if (answer) return null
       let s = pickInjectionSession(state, turn, step, sessionId)
       if (!s) return null
       let snap = (s.snapshots || []).find((x) => x.turn === turn && x.step === step)
@@ -1696,6 +1702,14 @@ window.__ModuleLoader__.load({
         }
       }
       if (!snap) return null
+      // 有工具步骤的轮：最终回答那一步在折叠组之外，单独飘一行很突兀，不显示；
+      // 纯回答轮（整轮只有 1 个 step）没有折叠组，这一步就是整轮，照常显示
+      if (answer) {
+        const stepCount = (s.snapshots || []).filter(
+          (x) => x.turn === turn && x.step !== undefined,
+        ).length
+        if (stepCount > 1) return null
+      }
       const singles = Array.isArray(snap.addedContexts) ? snap.addedContexts : []
       const kept = step === 1 && Array.isArray(snap.persistentContexts) ? snap.persistentContexts : []
       const notes = Array.isArray(snap.notices) ? snap.notices : []

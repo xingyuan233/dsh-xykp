@@ -8,7 +8,8 @@
 // 只读：不改任何注入内容，只是旁路记录 + 提供 /injection-shower 页面。
 import { configFor } from '../../ui/store.js'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { createZstdDecompress } from 'node:zlib'
 import { dirname, join } from 'node:path'
 
 export const name = 'injection-shower'
@@ -35,7 +36,7 @@ function loadStore() {
 
 export function apply(ctx, config = {}) {
     config = configFor('injection-shower', config)
-    const maxSnapshots = Math.max(1, Number(config.maxSnapshots) || 160)
+    const maxSnapshots = Math.max(1, Number(config.maxSnapshots) || 600)
     const maxNotices = Math.max(1, Number(config.maxNotices) || 30)
     const maxChars = Math.max(200, Number(config.maxChars) || 4000)
 
@@ -129,11 +130,102 @@ export function apply(ctx, config = {}) {
         }
     }
 
+    // ── fork 继承：seeded 会话把父会话（及更上层）的注入快照并进来 ──
+    const inheritTried = new Set()
+
+    function sessionFileOf(sid) {
+        try {
+            const root = join(homeDir(), 'sessions')
+            for (const d of readdirSync(root, { withFileTypes: true })) {
+                if (!d.isDirectory()) continue
+                const file = join(root, d.name, 'session-' + sid, 'session.v4.jsonl.zstd')
+                if (existsSync(file)) return file
+            }
+        } catch {}
+        return null
+    }
+
+    /** 只解压第一行（会话 header），读到换行就掐掉，不整包展开 */
+    function firstLineOf(file) {
+        return new Promise((resolve) => {
+            let settled = false
+            let reader = null
+            let stream = null
+            const done = (value) => {
+                if (settled) return
+                settled = true
+                try { reader && reader.destroy() } catch {}
+                try { stream && stream.destroy() } catch {}
+                resolve(value)
+            }
+            try {
+                reader = createReadStream(file)
+                stream = createZstdDecompress()
+                let text = ''
+                stream.on('data', (chunk) => {
+                    text += chunk.toString('utf8')
+                    const i = text.indexOf('\n')
+                    if (i >= 0) done(text.slice(0, i))
+                    else if (text.length > 65536) done(null)
+                })
+                stream.on('error', () => done(null))
+                reader.on('error', () => done(null))
+                reader.pipe(stream)
+            } catch {
+                done(null)
+            }
+        })
+    }
+
+    async function inheritSession(sid, depth = 0, visited = new Set()) {
+        if (depth > 5 || visited.has(sid)) return
+        visited.add(sid)
+        const st = store.get(sid)
+        if (st && (st.snapshots || []).some((x) => x.inherited)) return
+        const file = sessionFileOf(sid)
+        if (!file) return
+        const line = await firstLineOf(file)
+        if (!line) return
+        let header = null
+        try { header = JSON.parse(line) } catch { return }
+        if (!header || header.id !== sid) return
+        if (!header.isSeeded || !header.parentSession) return
+        const parentId = String(header.parentSession)
+        await inheritSession(parentId, depth + 1, visited)
+        const parent = store.get(parentId)
+        if (!parent || !(parent.snapshots || []).length) return
+        const own = stateOf({ sessionId: sid })
+        const merged = []
+        const seen = new Set()
+        for (const snap of own.snapshots || []) {
+            if (snap.turn === undefined || snap.step === undefined) continue
+            const key = snap.turn + ':' + snap.step
+            if (seen.has(key)) continue
+            seen.add(key)
+            merged.push(snap)
+        }
+        for (const snap of parent.snapshots || []) {
+            if (snap.turn === undefined || snap.step === undefined) continue
+            const key = snap.turn + ':' + snap.step
+            if (seen.has(key)) continue
+            seen.add(key)
+            merged.push({ ...snap, inherited: true })
+        }
+        if (!merged.length) return
+        merged.sort((a, b) => (a.at || 0) - (b.at || 0))
+        own.snapshots = merged.slice(-maxSnapshots)
+        own.updatedAt = Date.now()
+        own.preset = own.preset || parent.preset || ''
+        save()
+    }
+
     function recordAssemble(agent, assembly) {
         const st = stateOf(agent)
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
         const turn = turnOf.get(agent) ?? null
+        // 继承来的旧快照在本轮真正跑起来之后，以新记录为准
+        st.snapshots = (st.snapshots || []).filter((x) => !(x.inherited && x.turn === turn))
         // 每个 step 都会 assemble 一次：按 step 存，不覆盖，才能在对话里按位置显示
         let cur = stepOf.get(agent)
         if (!cur || cur.turn !== turn) {
@@ -348,6 +440,14 @@ export function apply(ctx, config = {}) {
                 handler: async (req, res) => {
                     const url = new URL(req.url || '/injection-shower', 'http://127.0.0.1')
                     if (url.pathname === '/injection-shower/state') {
+                        // 客户端带上当前会话 id：fork 出来的会话第一次被打开时，把父会话的快照继承过来
+                        const hint = url.searchParams.get('session')
+                        if (hint && !inheritTried.has(hint)) {
+                            inheritTried.add(hint)
+                            try { await inheritSession(hint) } catch (e) {
+                                console.warn('[injection-shower] fork 继承失败：', e)
+                            }
+                        }
                         const full = url.searchParams.get('full') === '1'
                         const sessions = [...store.values()].sort((a, b) => b.updatedAt - a.updatedAt)
                         // 轮询（对话里的注入行）只要单次/持久/变化，不需要整份 sections 和累计 contexts，
