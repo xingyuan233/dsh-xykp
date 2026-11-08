@@ -1767,6 +1767,7 @@ window.__ModuleLoader__.load({
 
           const mkSection = (c) => {
             const d = document.createElement('details')
+            d.dataset.key = c.name
             d.style.cssText = 'margin:6px 0 0;border-left:2px solid rgba(255,255,255,.12);padding-left:8px'
             const s = document.createElement('summary')
             s.style.cssText = 'cursor:pointer;font:11px ui-monospace,monospace;opacity:.75'
@@ -1803,12 +1804,29 @@ window.__ModuleLoader__.load({
             const sig = head + '|' + sect.length
             if (sig === lastSig) return
             lastSig = sig
+
+            const openMap = new Map()
+            for (const d of panel.querySelectorAll('details')) if (d.dataset.key) openMap.set(d.dataset.key, d.open)
+            const collapsed = panel.dataset.collapsed === '1'
+
             panel.textContent = ''
             const title = document.createElement('div')
-            title.textContent = head
-            title.style.cssText = 'font:12px/1.6 system-ui,sans-serif;opacity:.85;margin-bottom:4px'
+            title.style.cssText = 'font:12px/1.6 system-ui,sans-serif;opacity:.85;margin-bottom:4px;cursor:pointer'
+            title.textContent = (collapsed ? '▸ ' : '▾ ') + head
+            title.onclick = () => {
+              panel.dataset.collapsed = panel.dataset.collapsed === '1' ? '0' : '1'
+              lastSig = ''
+              render(panel)
+            }
             panel.appendChild(title)
-            for (const c of sect) panel.appendChild(mkSection(c))
+            const body = document.createElement('div')
+            body.style.display = collapsed ? 'none' : ''
+            for (const c of sect) {
+              const d = mkSection(c)
+              if (openMap.get(c.name)) d.open = true
+              body.appendChild(d)
+            }
+            panel.appendChild(body)
           }
 
           const tick = () => {
@@ -1838,10 +1856,20 @@ window.__ModuleLoader__.load({
                 lastSig = ''
               }
               if (panel.parentElement !== document.body) document.body.appendChild(panel)
+              // 左上角：x 用输入框容器的左边界（=对话面板左边界），y 用消息滚动容器的上边界
+              let sc = document.querySelector('[data-slot="conversation.chat.flow"]')
+              while (sc) {
+                const sr = sc.getBoundingClientRect()
+                const cs = window.getComputedStyle(sc)
+                if (sr.height > 200 && (cs.overflowY === 'auto' || cs.overflowY === 'scroll')) break
+                sc = sc.parentElement
+              }
+              const sr = sc ? sc.getBoundingClientRect() : r
               panel.style.left = Math.round(r.left + 12) + 'px'
+              panel.style.top = Math.round(sr.top + 12) + 'px'
               panel.style.width = Math.round(Math.min(340, Math.max(240, r.width - 24))) + 'px'
-              panel.style.bottom = Math.round(window.innerHeight - r.top + 12) + 'px'
-              panel.style.maxHeight = Math.round(Math.min(560, Math.max(180, r.top - 80))) + 'px'
+              panel.style.bottom = ''
+              panel.style.maxHeight = Math.round(Math.max(180, sr.height - 24)) + 'px'
               render(panel)
             } catch (e) {
               console.warn('[dsh-xykp] 前缀面板渲染失败：', e)
