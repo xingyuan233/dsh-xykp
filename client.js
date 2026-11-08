@@ -1669,74 +1669,18 @@ window.__ModuleLoader__.load({
     function PrefixBar() {
       const [state, setState] = React.useState(injectionState)
       const [open, setOpen] = React.useState(false)
-      const [box, setBox] = React.useState(null)
       React.useEffect(() => injectionSubscribe(setState), [])
-      // 宿主没有「消息列表上方」的槽位（conversation.chat.flow 是 single 且被 ui-chat 占着），
-      // 所以用 shell.overlay 浮在 flow 的上沿；flow 顶部留出 28px 由下面的 style 注入负责。
-      React.useEffect(() => {
-        let raf = 0
-        const measure = () => {
-          // 优先用会话内容区（不随滚动移动）；找不到再退回 chat flow
-          let rect = null
-          const content = document.querySelector('[data-slot="conversation.content"]')
-          if (content) {
-            const c = content.getBoundingClientRect()
-            if (c.width > 200 && c.height > 100) rect = c
-          }
-          if (!rect) {
-            for (const node of document.querySelectorAll('[data-slot="conversation.chat.flow"]')) {
-              const r = node.getBoundingClientRect()
-              if (r.width > 100 && r.height > 50) {
-                rect = r
-                break
-              }
-            }
-          }
-          if (!rect) {
-            setBox(null)
-            return
-          }
-          setBox({ top: Math.max(rect.top, 44) + 8, left: rect.left + 12, width: Math.max(240, rect.width - 24) })
-        }
-        const soon = () => {
-          cancelAnimationFrame(raf)
-          raf = requestAnimationFrame(measure)
-        }
-        soon()
-        window.addEventListener('resize', soon)
-        const timer = setInterval(soon, 1500)
-        return () => {
-          window.removeEventListener('resize', soon)
-          clearInterval(timer)
-          cancelAnimationFrame(raf)
-        }
-      }, [])
 
       const s = state && state.sessions && state.sessions[0]
-      if (!box || !s || !s.prefix) return null
+      if (!s || !s.prefix) return null
       const p = s.prefix
       const versions = s.prefixVersions || []
       const latest = versions[versions.length - 1]
       const parts = latest ? latest.changed.length + latest.added.length + latest.removed.length : 0
-      const snapLast = s.snapshots && s.snapshots[s.snapshots.length - 1]
-      const sect = (snapLast && snapLast.sections) || []
 
       return React.createElement(
         'div',
-        {
-          style: {
-            ...PB.wrap,
-            position: 'fixed',
-            top: box.top,
-            left: box.left,
-            width: box.width,
-            zIndex: 6,
-            background: '#1b1e24',
-            border: '1px solid #2b2f38',
-            borderRadius: 10,
-            boxSizing: 'border-box',
-          },
-        },
+        { style: PB.wrap },
         React.createElement(
           'button',
           { style: PB.head, onClick: () => setOpen(!open) },
@@ -1792,19 +1736,6 @@ window.__ModuleLoader__.load({
                     v.toolsChanged ? React.createElement('div', null, '工具定义变化（名称或描述）') : null,
                   ),
                 ),
-              React.createElement(
-                'details',
-                { style: { marginTop: 8 } },
-                React.createElement('summary', { style: PB.name }, '当前系统提示词全文（' + sect.length + ' 段）'),
-                ...sect.map((c, i) =>
-                  React.createElement(
-                    'div',
-                    { key: 't' + i, style: PB.item },
-                    React.createElement('div', { style: PB.name }, c.name + ' · ' + c.length + ' 字'),
-                    React.createElement('pre', { style: PB.pre }, c.text),
-                  ),
-                ),
-              ),
             )
           : null,
       )
@@ -1819,31 +1750,19 @@ window.__ModuleLoader__.load({
       //   single slot "conversation.header" already has a registration at priority 0
       // 而且这个异常是在 inject 回调里抛的，外层 try/catch 根本接不到，
       // 会直接把 ui-conversation 的激活搞失败 —— 首页就停在 "Failed to load plugins"。
-      // 因此改挂到 shell.overlay（多条目槽），用固定定位浮在消息列表上方；
+      // 因此改用官方槽位表里当前无占用的 conversation.header.leading（single/root），
       // 并把 try/catch 挪进回调：注册失败只丢这一条，不再拖垮整个界面。
-      slots.inject('shell.overlay', function* () {
+      slots.inject('conversation.header.leading', () => {
         try {
-          yield slots.register(
-            { name: 'shell.overlay', id: 'xykp-prefix', order: 10 },
+          return slots.register(
+            { name: 'conversation.header.leading', id: 'xykp-prefix' },
             () => React.createElement(PrefixBar),
           )
         } catch (e) {
           console.warn('[dsh-xykp] 系统前缀条注册失败：', e)
+          return undefined
         }
       })
-
-      // 消息列表顶端留出前缀条的高度（只加一条样式，不改宿主代码）
-      try {
-        ctx.effect(() => {
-          const tag = document.createElement('style')
-          tag.dataset.plugin = 'dsh-xykp-prefix'
-          tag.textContent = '[data-slot="conversation.chat.flow"]{padding-top:28px !important}'
-          document.head.appendChild(tag)
-          return () => tag.remove()
-        }, 'dsh-xykp: prefix spacing')
-      } catch (e) {
-        console.warn('[dsh-xykp] 前缀条样式注入失败：', e)
-      }
 
       // 对话里每轮尾部的「注入」条
       slots.inject('conversation.chat.turnTail', () => {
@@ -1900,4 +1819,3 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
-
