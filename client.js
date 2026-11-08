@@ -1676,7 +1676,15 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         let raf = 0
         const measure = () => {
-          const el = document.querySelector('[data-slot="conversation.chat.flow"]')
+          // 可能有多个 chat flow（隐藏的会话/视图），只取真正可见的那个
+          let el = null
+          for (const node of document.querySelectorAll('[data-slot="conversation.chat.flow"]')) {
+            const rect = node.getBoundingClientRect()
+            if (rect.width > 100 && rect.height > 50) {
+              el = node
+              break
+            }
+          }
           if (!el) {
             setBox(null)
             return
