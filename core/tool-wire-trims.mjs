@@ -10,8 +10,8 @@
 // 文案约定：英文（和自带工具一致）、短句、不讲究语法客套，说清做什么就行。
 //
 // 改文案只改下面 TRIMS 表，然后：
-//   pwsh -File patches\core\apply-all.ps1 -Restore
-//   pwsh -File patches\core\apply-all.ps1
+//   pwsh -File plugins\core\apply-all.ps1 -Restore
+//   pwsh -File plugins\core\apply-all.ps1
 //   重启 dsh web
 export const id = 'dsh-tools/tool-wire-trims'
 export const description = '自带工具的描述/参数说明改成简短版，去掉废话'
@@ -228,3 +228,4 @@ function apply(text) {
 }
 
 export const edits = [{ target: TARGET, marker: MARKER, apply }]
+

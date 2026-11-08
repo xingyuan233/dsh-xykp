@@ -44,7 +44,7 @@ params: (file_path; offset?<从第几行开始（1 起）; limit?=2000<最多读
 ## 改文案
 
 1. 改 `tool-wire-trims.mjs` 里的 `TRIMS`；
-2. `pwsh -File patches\core\apply-all.ps1 -Restore` 然后 `apply-all.ps1`
+2. `pwsh -File plugins\core\apply-all.ps1 -Restore` 然后 `apply-all.ps1`
    （已应用状态下会跳过，必须先还原再打）；
 3. 重启 `dsh web`，新会话生效。
 
@@ -53,3 +53,4 @@ params: (file_path; offset?<从第几行开始（1 起）; limit?=2000<最多读
 - 描述就是模型对这个工具的全部认知（schema 已经不在提示词里），删描述前确认参数名真的自解释。
 - 删掉的内容里有操作性约束的（比如 pwsh 的沙箱拒绝、EPERM 边界），确认别的地方还有覆盖，
   否则模型会重试错误做法。
+

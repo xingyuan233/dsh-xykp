@@ -482,7 +482,7 @@ global.__QQ_BOOT = { port, log, cmd, res, config, qrFile, own, uin }
   —— 因为它的壳是我们手动起的，需要自动重启时再打开（打开前先确认单实例守卫在位）
 - **NapCat 的哨兵已经退役**：脚本搬到 `tools\_retired\napcat-sentinel\`（带 README），
   开机启动里的 `NapCatSentinel.vbs`（→ `start-sentinel.cmd`）和 `NapCat-QQBot.lnk`
-  （→ `start-napcat.cmd`）也摘掉了，备份在 `patches\backups\startup-retired-2026-10-27\`。
+  （→ `start-napcat.cmd`）也摘掉了，（原备份目录 `patches\backups\` 已删除）。
   NapCat 本体还留在 `tools\NapCat` 当参考，**但不会自启动**——它一登录就会把我们的壳顶下线。
   要给鲸鱼娘的壳做保活，得另写一个哨兵（探 39273，掉了用 WMI 拉 `QQ-shell2`）。
 
@@ -1106,3 +1106,4 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
   `0` = 关掉这个行为（只等，不杀）。
 - 改动在 `lib/index.js`：`ensureShell()` + Schema 新增 `stuckShellSec`；热重载管不到 ESM，**要重启宿主**。
 - 两份副本（`plugins\...` 和 `home\profiles\web\node_modules\dsh-xykp\...`）已同步。
+

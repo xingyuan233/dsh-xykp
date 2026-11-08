@@ -28,9 +28,9 @@ plugins\core\
 | 谁 | 什么时候触发 | 跑什么 |
 |---|---|---|
 | `DSH\npm\package.json`（宿主本体） | `npm install`（升级 dsh） | `plugins\core\auto-restore.cmd` → 只打 `plugins\core` |
-| `HOME\profiles\web\package.json`（profile） | `pnpm install` | `plugins\core\auto-restore.cmd --full` → 核心补丁 + `patches\restore-all.ps1` |
+| `HOME\profiles\web\package.json`（profile） | `pnpm install` | `plugins\core\auto-restore.cmd --full` → 核心补丁 + `plugins\core\restore-all.ps1` |
 
-`auto-restore.cmd` 永远 `exit 0`，日志追加到 `patches\auto-restore.log`——补丁失败也不会把安装搞崩。
+`auto-restore.cmd` 永远 `exit 0`，日志追加到 `plugins\core\auto-restore.log`——补丁失败也不会把安装搞崩。
 补丁打完仍是**下次启动**才生效（宿主已经 import 过的模块改文件没用）。
 
 缺口：`pnpm add`（`dsh plugin add` 走的就是它）**不会**触发根 `postinstall`，这是 pnpm 的行为。
@@ -77,5 +77,7 @@ pwsh -File apply-all.ps1 -Restore  还原全部
 `restore-all.ps1`（dsh 升级/装插件之后跑的那个）现在也只调用这里，不写死任何补丁名。
 
 补丁打完要**重启 dsh web** 才生效；工具定义类的补丁只对**新会话**生效（工具目录会进会话历史）。
+
+
 
 

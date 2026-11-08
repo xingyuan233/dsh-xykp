@@ -67,7 +67,7 @@ chat/ comms/ senses/ storage/ observer/    子插件
 ui/store.js                共用配置读取器
 ui/console/                设置页
 core/                      宿主核心补丁（不在装配树里，见下）
-attic/                     退役代码：不在 files 里，不进安装包
+deprecated/                退役代码：不在 files 里，不进安装包
 ```
 
 ## 宿主核心补丁 `core/`
@@ -78,7 +78,7 @@ attic/                     退役代码：不在 files 里，不进安装包
 - `core/apply-all.mjs` 扫 `core/*.mjs`，按文件顺序幂等应用（文件里有 `marker` 就跳过），
   原文件存 `core/.backup/`；目标文件换了版本时旧备份会留档成 `*.old` 再重新备份。
 - `core/auto-restore.cmd` 给两个 `postinstall` 钩子调用：宿主 `npm install`（升级 dsh）后自动重打核心补丁，
-  profile `pnpm install` 后自动跑 `patches\restore-all.ps1`。永远 `exit 0`，日志在 `patches\auto-restore.log`。
+  profile `pnpm install` 后自动跑 `core\restore-all.ps1`。永远 `exit 0`，日志在 `core\auto-restore.log`。
 - `core/install-hooks.ps1` 幂等安装/修复这两个钩子（`-Check` 只看状态）。
 
 ```powershell
@@ -110,10 +110,11 @@ git push
 # 起来后看 D:\AI\DeepseekHarness\dsh-web.log：有 failed to import / 挂载失败 就是炸了
 ```
 
-## attic/
+## deprecated/
 
 退役但保留下来的代码：`memory-refine`（鱼的记忆 + `memory_movctx`）、`toolret-forget`（被 `toolret-steward` 取代）。
 它们不在 `files` 里、不随包安装；要恢复就 move 回 `chat/`，再补 `exports` 和 `insert` 行。
 
 > 注意：`memory_movctx` 是 `memory-refine` 提供的，`qq-adapter` 的 `/compact` 和 `token-reporter` 的提示都指着它。
 > 退役后这条链没了；要恢复只想要交接能力的话，可以把它拆成一个独立小插件。
+

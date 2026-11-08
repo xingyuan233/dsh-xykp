@@ -62,9 +62,10 @@ params: (file_path<文件的绝对路径; offset?:number<从第几行开始; lim
 ## 验证方法
 
 ```
-pwsh -File patches\core\apply-all.ps1 -Check
+pwsh -File plugins\core\apply-all.ps1 -Check
 ```
 
 重启宿主 → 开新会话 → 看会话日志里新会话的 `request/header.header.tools`：
 - 每个工具的 `description` 第一行是 `params: (...)`
 - `parameters` 只剩 `{"type":"object"}`
+

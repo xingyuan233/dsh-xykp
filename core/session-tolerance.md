@@ -51,7 +51,8 @@ dsh: warning: skipping unreadable session log <路径>: <原因>
 所以模块里实现了一个 `revert()`（把补丁块反推回官方 block）。跑：
 
 ```
-pwsh -File patches\core\apply-all.ps1 -Restore
+pwsh -File plugins\core\apply-all.ps1 -Restore
 ```
 
 即可退回官方行为。升级 dsh 后重跑 `apply-all.ps1` 会自动重新打上。
+

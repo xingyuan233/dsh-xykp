@@ -1,6 +1,6 @@
 // dsh 核心补丁的总入口（apply-all）
 //
-// 约定：patches\core\ 下的每一个 *.mjs 就是一个「功能补丁」，文件名就是功能名。
+// 约定：plugins\core\ 下的每一个 *.mjs 就是一个「功能补丁」，文件名就是功能名。
 // 每个补丁模块导出：
 //   export const id          功能标识（打印用）
 //   export const description 一句话说明
@@ -10,7 +10,7 @@
 //     apply   纯文本变换，必须只改自己那一段
 //
 // 这个脚本不认识任何具体补丁名：扫目录、按文件名排序、逐个应用。
-// 旧格式（patches\core\<名字>\apply.ps1）也自动兼容，动态枚举，不写死。
+// 旧格式（plugins\core\<名字>\apply.ps1）也自动兼容，动态枚举，不写死。
 //
 // 用法：
 //   node apply-all.mjs            应用全部（幂等）
@@ -179,3 +179,5 @@ if (problems > 0) {
   process.exit(1)
 }
 console.log('\n全部功能补丁已就绪。重启 dsh web 后生效。')
+
+

@@ -107,7 +107,7 @@ await agent.followup(message)              // ✓ followup 的 rejection 必须�
 onebot 读到这种日志会把整份会话当坏档归档（7859 就这样被移进 `sessions-archive`）。
 `createUserMessage` 自带 `randomUUID()` 的 id，两个雷一起拆掉。
 
-> 旧的修坏档脚本原来在 `patches\plugins\dsh-bili-reply\repair-bili-reply-events.mjs`，
+> 旧的修坏档脚本原来在 `patches\plugins\dsh-bili-reply\repair-bili-reply-events.mjs`（`patches\` 目录已删除，需要时从 git 历史里找），
 > 2026-10-27 清理时已删（备份在 `D:\askii\cache\` 的清理目录里）；真再遇到坏档，
 > 用同样的思路：停宿主 → 给缺 source 的 `user/message` 补 `source: { kind: 'plugin:bili-reply' }` → 起宿主。
 
@@ -131,3 +131,4 @@ node test/dm-test.mjs
 node test/names-test.mjs
 node test/refresh-bg-test.mjs
 ```
+
