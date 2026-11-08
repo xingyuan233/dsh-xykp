@@ -1558,8 +1558,6 @@ window.__ModuleLoader__.load({
                   ? rawTurn.number
                   : undefined
             : undefined
-      const debug =
-        typeof rawTurn + (rawTurn && typeof rawTurn === 'object' ? ':' + Object.keys(rawTurn).slice(0, 10).join('|') : '')
       const [state, setState] = React.useState(injectionState)
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => injectionSubscribe(setState), [])
@@ -1582,22 +1580,7 @@ window.__ModuleLoader__.load({
         for (const n of session.notices || []) if (n.turn === turn) notices.push(n)
       }
 
-      // 调试探针：报告这个 turn tail 拿到的 turn 和是否命中（服务端 /injection-shower/state 的 probes 里能看到）
-      const hit = snap ? 1 : 0
-      React.useEffect(() => {
-        fetch(
-          '/injection-shower/probe?turn=' +
-            encodeURIComponent(String(turn)) +
-            '&hit=' +
-            hit +
-            '&debug=' +
-            encodeURIComponent(debug),
-          {
-            cache: 'no-store',
-          },
-        ).catch(() => {})
-      }, [turn, hit, debug])
-
+      // 调试探针已移除（turn 结构确认过：在 rawTurn.turn 里）
       if (!snap && notices.length === 0) return null
       const ctxs = (snap && snap.contexts) || []
       const secs = (snap && snap.sections) || []
