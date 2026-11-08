@@ -11,3 +11,6 @@ __pycache__/
 
 # 测试产物：screenshot/test_client.py 会存一张
 mcp_test.jpg
+
+# 核心补丁的原始备份（宿主文件副本，不进 git）
+core/.backup/
