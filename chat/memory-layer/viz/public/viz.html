@@ -1,0 +1,830 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>记忆宇宙</title>
+<style>
+  :root{color-scheme:dark}
+  html,body{margin:0;height:100%;background:radial-gradient(circle at 50% 45%,#0d1424 0%,#070a12 55%,#04060b 100%);overflow:hidden;
+    font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#cdd6f4;user-select:none}
+  canvas{display:block;position:absolute;inset:0}
+  #hud{position:fixed;left:20px;top:16px;font-size:13px;line-height:1.8;pointer-events:none;text-shadow:0 0 10px #000}
+  #hud .k{color:#67b8ff}
+  #hud .big{font-size:22px;color:#e8f0ff;letter-spacing:.5px}
+  
+  #log .t{color:#8b9bc4}
+  #log .hit{color:#7ee0a8}
+  #log .miss{color:#e08a7e}
+  #bar{position:fixed;left:0;right:0;bottom:0;padding:14px 26px 18px;display:flex;gap:14px;align-items:center;
+    background:linear-gradient(transparent,#04060b 55%)}
+  input[type=range]{flex:1;accent-color:#67b8ff;height:4px}
+  select{background:#0b1220;color:#cdd6f4;border:1px solid #22304d;border-radius:6px;padding:4px 8px;font-size:12px}
+  #turn{font-variant-numeric:tabular-nums;min-width:76px;text-align:right;color:#67b8ff;font-size:13px}
+  #tip{position:fixed;pointer-events:none;padding:6px 10px;border-radius:8px;background:#0b1220ee;border:1px solid #22304d;
+    font-size:12px;line-height:1.6;opacity:0;transition:opacity .12s;max-width:300px}
+  a{color:#67b8ff;font-size:12px;text-decoration:none}
+  .panel{position:fixed;z-index:20;width:262px;background:#0a1120f2;border:1px solid #1c2a44;border-radius:12px;backdrop-filter:blur(6px);font-size:12px;overflow:hidden;box-shadow:0 8px 30px #0008}
+  #presetBar{position:fixed;right:20px;top:20px;z-index:21}
+  #presetBar select{background:#0b1220;color:#cdd6f4;border:1px solid #22304d;border-radius:7px;padding:4px 10px;font-size:12px}
+  #panel{right:20px;top:70px}
+  #panelL{left:20px;top:92px}
+  .phead{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:move;background:#0e1830;color:#9fd0ff;font-size:12px;letter-spacing:.5px}
+  .card{border-top:1px solid #16233a}
+  .card>header{display:flex;justify-content:space-between;padding:7px 12px;cursor:pointer;color:#8fb4e6}
+  .card>header:hover{background:#0e1830}
+  .card .body{padding:4px 12px 10px}
+  .card.min .body{display:none}
+  .list{max-height:172px;overflow:auto;margin-top:6px}
+  .item{padding:3px 6px;border-radius:5px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+  .item:hover{background:#16233a}
+  .item .n{color:#cfe2ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .v{color:#5f7095;font-variant-numeric:tabular-nums;font-size:11px}
+  #panel input[type=text]{width:100%;box-sizing:border-box;background:#0b1220;color:#cdd6f4;border:1px solid #22304d;
+    border-radius:6px;padding:5px 8px;font:inherit;margin-top:6px}
+  #panel input[type=range]{width:100%;accent-color:#67b8ff;height:3px}
+  .lbl{display:flex;justify-content:space-between;color:#6b7a99;font-size:11px;margin-top:8px}
+  .r2{position:relative;height:20px;margin-top:2px;cursor:pointer}
+  .r2 .track{position:absolute;left:0;right:0;top:9px;height:3px;background:#1b2a44;border-radius:2px}
+  .r2 .fill{position:absolute;top:0;height:3px;background:#67b8ff;border-radius:2px}
+  .r2 .h{position:absolute;top:4px;width:11px;height:11px;margin-left:-5px;border-radius:50%;background:#d8ecff;
+    border:1px solid #2c4166;box-shadow:0 0 8px #67b8ff88;cursor:grab}
+  .r2 .h:active{cursor:grabbing}
+  .colrow{display:flex;gap:8px;align-items:center;margin-top:6px}
+  .colrow input[type=color]{width:34px;height:22px;padding:0;border:1px solid #22304d;border-radius:6px;background:#0b1220}
+  button.mini{background:#16233a;color:#bcd4f5;border:1px solid #22304d;border-radius:7px;padding:4px 10px;font:inherit;cursor:pointer;width:100%;margin-top:10px}
+  button.mini:hover{background:#1d2f4d}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="presetBar"><select id="preset"></select></div>
+<div id="panel" class="panel">
+  <div class="phead"><span>筛选</span><span id="pmin" style="cursor:pointer;color:#5f7095">—</span></div>
+  <div id="pbody">
+    <div class="card">
+      <header>取值范围 <span>▾</span></header>
+      <div class="body">
+    <div class="lbl"><span>cm 概念在场</span><span data-v="cm">0.00 – 1.00</span></div>
+    <div class="r2" data-k="cm"><div class="track"></div><div class="fill"></div><div class="h lo"></div><div class="h hi"></div></div>
+    <div class="lbl"><span>cc 概念关联</span><span data-v="cc">0.00 – 1.00</span></div>
+    <div class="r2" data-k="cc"><div class="track"></div><div class="fill"></div><div class="h lo"></div><div class="h hi"></div></div>
+    <div class="lbl"><span>ce 事件关联</span><span data-v="ce">0.00 – 1.00</span></div>
+    <div class="r2" data-k="ce"><div class="track"></div><div class="fill"></div><div class="h lo"></div><div class="h hi"></div></div></div>
+    </div>
+    <div class="card">
+      <header>颜色 <span>▾</span></header>
+      <div class="body">
+        <div class="colrow"><span style="width:44px">cc</span><input type="color" id="colCC" value="#96cdff"></div>
+        <div class="colrow"><span style="width:44px">ce</span><input type="color" id="colCE" value="#3a68be"></div>
+        <div class="colrow"><span style="width:44px">事件</span><input type="color" id="colEV" value="#ffc478"></div>
+        <button class="mini" id="reset">恢复默认</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="panelL" class="panel">
+  <div class="phead"><span>搜索</span><span id="pmin2" style="cursor:pointer;color:#5f7095">—</span></div>
+  <div id="pbodyL">
+    <div class="card">
+      <header>概念 <span>▾</span></header>
+      <div class="body">
+        <input type="text" id="q1" placeholder="搜概念…">
+        <div class="list" id="listC"></div>
+      </div>
+    </div>
+    <div class="card">
+      <header>事件 <span>▾</span></header>
+      <div class="body">
+        <input type="text" id="q2" placeholder="搜事件…">
+        <div class="list" id="listE"></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div id="tip"></div>
+<script type="module">
+const cv = document.getElementById('c'), ctx = cv.getContext('2d')
+const tip = document.getElementById('tip')
+
+let W = 0, H = 0
+let frames = [], nodes = [], links = [], nodeMap = new Map()
+let bornC = new Map(), bornE = new Map()
+let frameIdx = 0, zoom = 1, hovered = null, selected = null
+let panX = 0, panY = 0, drag = null, dragged = false, lastProj = null, hoverEdge = null, selectedEdge = null
+let selSet = new Set()
+let preset = new URLSearchParams(location.search).get('preset') || 'test'
+let src = null
+
+const rand = () => (Math.random() - 0.5) * 500
+
+function resize() {
+  W = document.documentElement.clientWidth
+  H = document.documentElement.clientHeight
+  cv.width = W; cv.height = H
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+}
+addEventListener('resize', resize)
+resize()
+
+function computeBorn() {
+  bornC = new Map(); bornE = new Map()
+  for (let i = 0; i < frames.length; i++) {
+    for (const c of frames[i].concepts) if (!bornC.has(c.id)) bornC.set(c.id, i)
+    for (const e of frames[i].events) if (!bornE.has(e.id)) bornE.set(e.id, i)
+  }
+}
+
+function rebuild(full) {
+  const last = frames[frames.length - 1]
+  if (!last) return
+  const seen = new Set()
+  for (const c of last.concepts) {
+    seen.add('c' + c.id)
+    let n = nodeMap.get('c' + c.id)
+    if (!n) {
+      n = { kind: 'c', id: c.id, key: c.key, x: rand(), y: rand(), vx: 0, vy: 0, hue: (c.id * 67) % 360, adj: [] }
+      nodeMap.set('c' + c.id, n); nodes.push(n)
+    }
+    n.key = c.key
+  }
+  for (const e of last.events) {
+    seen.add('e' + e.id)
+    let n = nodeMap.get('e' + e.id)
+    if (!n) {
+      n = { kind: 'e', id: e.id, brief: e.brief, x: rand() * 0.7, y: rand() * 0.7, vx: 0, vy: 0, adj: [] }
+      nodeMap.set('e' + e.id, n); nodes.push(n)
+    }
+    n.brief = e.brief
+  }
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i], k = (n.kind === 'c' ? 'c' : 'e') + n.id
+    if (!seen.has(k)) { nodes.splice(i, 1); nodeMap.delete(k) }
+  }
+
+  links = []
+  for (const ed of last.edges) {
+    const a = nodeMap.get('c' + ed.a), b = nodeMap.get('c' + ed.b)
+    if (a && b) links.push({ a, b, w: Math.max(ed.wAB, ed.wBA), kind: 'cc', ed })
+  }
+  for (const e of last.events) {
+    const a = nodeMap.get('e' + e.id)
+    if (!a) continue
+    for (const it of (e.links ?? [])) {
+      const b = nodeMap.get('c' + it.cid)
+      if (b) links.push({ a, b, w: 0.1, kind: 'ev', ce: it.ce, eid: e.id })
+    }
+  }
+  for (const n of nodes) n.adj = []
+  for (const l of links) { l.a.adj.push(l.b); l.b.adj.push(l.a) }
+
+  computeBorn()
+  relax(full ? 1500 : 90)
+  if (frameIdx > frames.length - 1) frameIdx = frames.length - 1
+  updateHud()
+  renderLists()
+}
+
+function relax(iters) {
+  const N = nodes.length
+  if (!N) return
+  for (let it = 0; it < iters; it++) {
+    const k = 1 - it / iters
+    for (let i = 0; i < N; i++) {
+      const a = nodes[i]
+      for (let j = i + 1; j < N; j++) {
+        const b = nodes[j]
+        const dx = b.x - a.x, dy = b.y - a.y
+        const d2 = dx * dx + dy * dy + 1
+        if (d2 > 90000) continue
+        const d = Math.sqrt(d2)
+        const f = 2600 / d2
+        const ux = dx / d, uy = dy / d
+        a.vx -= ux * f; a.vy -= uy * f
+        b.vx += ux * f; b.vy += uy * f
+      }
+    }
+    for (const l of links) {
+      const { a, b } = l
+      const dx = b.x - a.x, dy = b.y - a.y
+      const d = Math.sqrt(dx * dx + dy * dy) + 0.001
+      const rest = l.kind === 'cc' ? 140 - l.w * 40 : 50
+      const f = (d - rest) * (l.kind === 'cc' ? 0.022 : 0.05)
+      const ux = dx / d, uy = dy / d
+      a.vx += ux * f; a.vy += uy * f
+      b.vx -= ux * f; b.vy -= uy * f
+    }
+    for (const n of nodes) {
+      n.vx -= n.x * 0.0035
+      n.vy -= n.y * 0.0035
+      n.x += n.vx * k * 0.55
+      n.y += n.vy * k * 0.55
+      n.vx *= 0.8; n.vy *= 0.8
+    }
+  }
+}
+
+function curFrame() { return frames[frameIdx] || frames[frames.length - 1] }
+function cmOf(id) {
+  const f = curFrame()
+  const c = f.concepts.find((x) => x.id === id)
+  return c ? c.cm : 0
+}
+function visible(n) {
+  if (n.kind === 'c') {
+    if ((bornC.get(n.id) ?? 1e9) > frameIdx) return false
+    const c = cmOf(n.id)
+    return c >= RANGES.cm[0] && c <= RANGES.cm[1]
+  }
+  if ((bornE.get(n.id) ?? 1e9) > frameIdx) return false
+  const f = curFrame()
+  const ev = f && f.events.find((x) => x.id === n.id)
+  if (!ev) return false
+  return ev.cids.some((cid) => {
+    const c = f.concepts.find((x) => x.id === cid)
+    return c && c.cm >= RANGES.cm[0] && c.cm <= RANGES.cm[1]
+  })
+}
+
+function updateHud() {
+  const f = curFrame()
+  if (!f) return
+  document.getElementById('hud').innerHTML =
+    `<div class="big">记忆宇宙</div>` +
+    `<span class="k">${f.concepts.length}</span> 概念 · <span class="k">${f.events.length}</span> 事件 · <span class="k">${f.edges.length}</span> 条关联`
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H)
+  const f = curFrame()
+  if (!f) { requestAnimationFrame(draw); return }
+
+  let bx0 = 1e9, bx1 = -1e9, by0 = 1e9, by1 = -1e9
+  for (const n of nodes) {
+    if (!visible(n)) continue
+    if (n.x < bx0) bx0 = n.x
+    if (n.x > bx1) bx1 = n.x
+    if (n.y < by0) by0 = n.y
+    if (n.y > by1) by1 = n.y
+  }
+  const spanW = Math.max(1, bx1 - bx0), spanH = Math.max(1, by1 - by0)
+  const mx = (bx0 + bx1) / 2, my = (by0 + by1) / 2
+  const cx = W / 2, cy = H / 2 - 10
+  const sc = Math.min((W * 0.84) / spanW, (H * 0.80) / spanH) * zoom
+  const ox = cx + panX, oy = cy + panY
+  lastProj = { mx, my, sc, ox, oy }
+  const tx = (n) => ({ x: ox + (n.x - mx) * sc, y: oy + (n.y - my) * sc })
+
+  const g0 = ctx.createRadialGradient(cx, cy, 0, cx, cy, 260 * sc)
+  g0.addColorStop(0, 'rgba(80,140,255,0.10)')
+  g0.addColorStop(1, 'rgba(80,140,255,0)')
+  ctx.fillStyle = g0
+  ctx.fillRect(0, 0, W, H)
+
+  const t = performance.now() / 1000
+  const emph = selected || hovered
+  // 选中 = 只留相关；经过 = 只高亮，不淡出
+  const focusNodes = new Set()
+  for (const x of selSet) if (x && x.kind) focusNodes.add(x)
+  if (selected) focusNodes.add(selected)
+  const focusEdges = new Set()
+  for (const x of selSet) if (x && !x.kind) focusEdges.add(x)
+  if (selectedEdge) focusEdges.add(selectedEdge)
+
+  const relNode = (n) => {
+    if (!focusNodes.size && !focusEdges.size) return true
+    if (focusNodes.has(n)) return true
+    for (const e of focusEdges) if (e.a === n || e.b === n) return true
+    for (const f of focusNodes) if ((n.adj || []).includes(f)) return true
+    return false
+  }
+  const relEdge = (l) => {
+    if (!focusNodes.size && !focusEdges.size) return true
+    if (focusEdges.has(l)) return true
+    return focusNodes.has(l.a) || focusNodes.has(l.b)
+  }
+
+  for (const l of links) {
+    if (l.kind !== 'ev') continue
+    if (!visible(l.a) || !visible(l.b)) continue
+    if ((l.ce ?? 0) < RANGES.ce[0] || (l.ce ?? 0) > RANGES.ce[1]) continue
+    const p = tx(l.a), q = tx(l.b)
+    const picked = selectedEdge === l
+    const hot = picked || hoverEdge === l || (emph && (emph === l.a || emph === l.b))
+    ctx.globalAlpha = picked ? 1 : (relEdge(l) ? 1 : 0.11)
+    // 事件连线用暗蓝，别跟概念连线的亮蓝抢
+    ctx.strokeStyle = hot ? hexA(COL.ce, 0.95) : hexA(COL.ev, 0.09)
+    ctx.lineWidth = picked ? 2.6 : hot ? 1.8 : 1
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke()
+    const near = emph && (emph === l.a || emph === l.b)
+    if ((picked || near || hoverEdge === l) && l.ce != null) {
+      ctx.save()
+      ctx.globalAlpha = 1
+      ctx.textAlign = 'center'
+      ctx.font = picked ? 'bold 13px ui-monospace,monospace' : '10px ui-monospace,monospace'
+      const mx2 = (p.x + q.x) / 2, my2 = (p.y + q.y) / 2 - (picked ? 6 : 4)
+      const txt = 'ce ' + l.ce.toFixed(3)
+      ctx.lineWidth = 3
+      ctx.strokeStyle = 'rgba(4,7,14,0.85)'
+      ctx.strokeText(txt, mx2, my2)
+      ctx.fillStyle = picked ? '#ffe0b0' : hexA(COL.ce, 0.9)
+      ctx.fillText(txt, mx2, my2)
+      ctx.restore()
+    }
+  }
+
+  for (const l of links) {
+    if (l.kind !== 'cc') continue
+    if (!visible(l.a) || !visible(l.b)) continue
+    if (l.w < RANGES.cc[0] || l.w > RANGES.cc[1]) continue
+    const p = tx(l.a), q = tx(l.b)
+    const picked = selectedEdge === l
+    const on = picked || (emph && (emph === l.a || emph === l.b)) || hoverEdge === l
+    ctx.globalAlpha = picked ? 1 : (relEdge(l) ? 1 : 0.13)
+    ctx.strokeStyle = picked ? 'rgba(180,225,255,0.95)'
+      : on ? hexA(COL.cc, 0.92) : hexA(COL.cc, 0.06 + l.w * 0.42)
+    ctx.lineWidth = picked ? 3.2 : on ? 2 + l.w * 2 : 0.4 + l.w * 2.4
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke()
+    if (on && l.ed) {
+      ctx.save()
+      ctx.globalAlpha = 1
+      ctx.textAlign = 'center'
+      ctx.font = picked ? 'bold 14px ui-monospace,monospace' : '11px ui-monospace,monospace'
+      ctx.fillStyle = picked ? '#d8f0ff' : hexA(COL.cc, 0.95)
+      const mx2 = (p.x + q.x) / 2, my2 = (p.y + q.y) / 2
+      const txt = l.ed.wAB.toFixed(3) + ' / ' + l.ed.wBA.toFixed(3)
+      ctx.lineWidth = 3
+      ctx.strokeStyle = 'rgba(4,7,14,0.85)'
+      ctx.strokeText(txt, mx2, my2 - (picked ? 8 : 5))
+      ctx.fillText(txt, mx2, my2 - (picked ? 8 : 5))
+      if (picked) {
+        ctx.font = '11px system-ui,sans-serif'
+        ctx.fillStyle = 'rgba(150,190,235,0.95)'
+        ctx.fillText(`共现 ${l.ed.count} · 走过 ${l.ed.pass} · 命中 ${l.ed.hit}`, mx2, my2 + 12)
+      }
+      ctx.restore()
+    }
+    ctx.globalAlpha = 1
+  }
+
+  for (const n of nodes) {
+    if (n.kind !== 'e' || !visible(n)) continue
+    const p = tx(n)
+    const on = emph && (emph === n || (n.adj || []).includes(emph))
+    ctx.globalAlpha = relNode(n) ? 1 : 0.12
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.rotate(Math.PI / 4)
+    ctx.fillStyle = on ? '#ffe0a0' : hexA(COL.ev, 0.6)
+    ctx.shadowColor = on ? '#ffb020' : hexA(COL.ev, 0.45)
+    ctx.shadowBlur = on ? 14 : 6
+    const s = on ? 7 : 5
+    ctx.fillRect(-s / 2, -s / 2, s, s)
+    ctx.restore()
+    ctx.globalAlpha = 1
+    if (selected === n || selectedEdge === n) {
+      const rr = s * 1.9
+      ctx.save()
+      ctx.strokeStyle = 'rgba(255,215,140,0.95)'
+      ctx.lineWidth = 1.6
+      ctx.setLineDash([4, 5])
+      ctx.lineDashOffset = -(t * 26) % 9
+      ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, 6.2832); ctx.stroke()
+      ctx.restore()
+    }
+  }
+
+  const labels = []
+  for (const n of nodes) {
+    if (n.kind !== 'c' || !visible(n)) continue
+    const p = tx(n)
+    const cm = cmOf(n.id)
+    const r = (5 + cm * 18) * sc
+    const on = emph === n || (emph && (n.adj || []).includes(emph))
+    const hot = selSet.has(n)
+    const sel = selected === n || (selectedEdge && (selectedEdge.a === n || selectedEdge.b === n))
+    ctx.globalAlpha = relNode(n) ? 1 : 0.12
+    ctx.save()
+    ctx.shadowColor = `hsla(${n.hue},95%,${sel ? 78 : 65}%,${sel ? 0.95 : 0.5 + cm * 0.5})`
+    ctx.shadowBlur = sel ? 34 + Math.sin(t * 3) * 6 : on ? 26 : 12 + cm * 18
+    ctx.fillStyle = `hsla(${n.hue},85%,${sel ? 74 : hot ? 62 : 46 + cm * 30}%,${sel ? 1 : hot ? 0.85 : 0.45 + cm * 0.55})`
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.2832); ctx.fill()
+    ctx.restore()
+    ctx.globalAlpha = 1
+
+    // 选中的节点：外面套一圈流动的亮环
+    if (sel) {
+      ctx.save()
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+      ctx.lineWidth = 2.4
+      ctx.setLineDash([7, 9])
+      ctx.lineDashOffset = -(t * 34) % 16
+      ctx.shadowColor = 'rgba(180,225,255,0.95)'
+      ctx.shadowBlur = 18
+      ctx.beginPath(); ctx.arc(p.x, p.y, r + 8, 0, 6.2832); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.globalAlpha = 0.35 + Math.sin(t * 4) * 0.15
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.arc(p.x, p.y, r + 15, 0, 6.2832); ctx.stroke()
+      ctx.restore()
+    }
+
+    if (cm > 0.02 || on || sel || hot) labels.push({ x: p.x, y: p.y + r + 12, text: n.key, on: on || sel || hot, cm, sel })
+  }
+
+  ctx.font = '12px system-ui,-apple-system,"Microsoft YaHei",sans-serif'
+  ctx.textAlign = 'center'
+  for (const l of labels) {
+    ctx.fillStyle = l.sel ? '#ffffff' : l.on ? '#e8f0ff' : `rgba(220,232,255,${0.35 + l.cm * 0.55})`
+    ctx.fillText(l.text, l.x, l.y)
+  }
+  requestAnimationFrame(draw)
+}
+
+// ── 交互 ──
+function pick(mx, my) {
+  if (!lastProj) return null
+  const { mx: mxx, my: myy, sc, ox, oy } = lastProj
+  let best = null, bd = 1e9
+  for (const n of nodes) {
+    if (!visible(n)) continue
+    const px = ox + (n.x - mxx) * sc, py = oy + (n.y - myy) * sc
+    const cm = n.kind === 'c' ? cmOf(n.id) : 0
+    const r = (n.kind === 'c' ? 4 + cm * 16 : 4) * sc + 4
+    const d = Math.hypot(px - mx, py - my)
+    if (d < r && d < bd) { bd = d; best = n }
+  }
+  return best
+}
+
+function distToSeg(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy + 1e-6)))
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+
+function pickEdge(mx, my) {
+  if (!lastProj) return null
+  const { mx: mxx, my: myy, sc, ox, oy } = lastProj
+  let best = null, bd = 26
+  for (const l of links) {
+    if (!visible(l.a) || !visible(l.b)) continue
+    if (l.kind === 'cc' && (l.w < RANGES.cc[0] || l.w > RANGES.cc[1])) continue
+    if (l.kind === 'ev' && ((l.ce ?? 0) < RANGES.ce[0] || (l.ce ?? 0) > RANGES.ce[1])) continue
+    const px = ox + (l.a.x - mxx) * sc, py = oy + (l.a.y - myy) * sc
+    const qx = ox + (l.b.x - mxx) * sc, qy = oy + (l.b.y - myy) * sc
+    const d = distToSeg(mx, my, px, py, qx, qy)
+    if (d < bd) { bd = d; best = l }
+  }
+  return best
+}
+
+cv.onmousedown = (ev) => {
+  drag = { x: ev.clientX, y: ev.clientY, px: panX, py: panY }
+  dragged = false
+  cv.style.cursor = 'grabbing'
+}
+addEventListener('mouseup', (ev) => {
+  const wasDrag = dragged
+  const d = drag
+  drag = null
+  cv.style.cursor = hovered ? 'pointer' : 'default'
+  if (!d || wasDrag) return
+  // 没拖动 = 一次点击，按坐标判定选中什么
+  if (Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 4) return
+  // ctrl 只能在「已经亮着的」范围内挪焦点
+  const lit = (x) => {
+    if (!x) return false
+    if (selSet.has(x)) return true
+    if (x.kind) {
+      if (selected && (x.adj || []).includes(selected)) return true
+      if (selectedEdge && (selectedEdge.a === x || selectedEdge.b === x)) return true
+      for (const o of selSet) if (o && o.kind && (x.adj || []).includes(o)) return true
+      return false
+    }
+    if (selected && (x.a === selected || x.b === selected)) return true
+    if (selectedEdge === x) return true
+    for (const o of selSet) if (o && o.kind && (x.a === o || x.b === o)) return true
+    return false
+  }
+
+  const dropFocus = () => {
+    const rest = [...selSet]
+    const nxt = rest.length ? rest[Math.floor(Math.random() * rest.length)] : null
+    selected = nxt && nxt.kind ? nxt : null
+    selectedEdge = nxt && !nxt.kind ? nxt : null
+  }
+  const mod = ev.shiftKey ? 'add' : ev.altKey ? 'del' : (ev.ctrlKey || ev.metaKey) ? 'focus' : 'one'
+
+  const picked = pick(ev.clientX, ev.clientY)
+  if (picked) {
+    if (mod === 'add') { selSet.add(picked); selected = picked; selectedEdge = null; return }
+    if (mod === 'del') {
+      selSet.delete(picked)
+      if (selected === picked) dropFocus()
+      return
+    }
+    if (mod === 'focus') { if (lit(picked)) { selected = picked; selectedEdge = null } return }
+    selSet = new Set([picked]); selected = picked; selectedEdge = null; return
+  }
+
+  const e2 = pickEdge(ev.clientX, ev.clientY)
+  if (e2) {
+    if (mod === 'add') { selSet.add(e2); selectedEdge = e2; selected = null; return }
+    if (mod === 'del') {
+      selSet.delete(e2)
+      if (selectedEdge === e2) dropFocus()
+      return
+    }
+    if (mod === 'focus') { if (lit(e2)) { selectedEdge = e2; selected = null } return }
+    selSet = new Set([e2]); selectedEdge = e2; selected = null; return
+  }
+
+  // 空白：全清
+  selected = null
+  selectedEdge = null
+  selSet = new Set()
+})
+
+cv.onmousemove = (ev) => {
+  if (drag) {
+    const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragged = true
+    panX = drag.px + dx
+    panY = drag.py + dy
+    return
+  }
+  const n = pick(ev.clientX, ev.clientY)
+  hovered = n
+
+  // 没落在节点上，就看是不是蹭到线了
+  if (!n) {
+    hoverEdge = pickEdge(ev.clientX, ev.clientY)
+    if (hoverEdge) {
+      const f = curFrame()
+      let html
+      if (hoverEdge.kind === 'cc') {
+        const ed = hoverEdge.ed
+        const ka = (f.concepts.find((c) => c.id === hoverEdge.a.id) || {}).key
+        const kb = (f.concepts.find((c) => c.id === hoverEdge.b.id) || {}).key
+        html = '<b style="color:#9fd0ff">' + ka + ' ↔ ' + kb + '</b><br>' +
+          'cc ' + ed.wAB.toFixed(3) + ' ／ ' + ed.wBA.toFixed(3) + '<br>' +
+          '<span style="color:#8b9bc4">共现 ' + ed.count + ' · 走过 ' + ed.pass + ' · 命中 ' + ed.hit + '</span>'
+      } else {
+        const ka = (f.concepts.find((c) => c.id === hoverEdge.b.id) || {}).key
+        html = '<b style="color:#ffd479">事件 #' + hoverEdge.eid + '</b><br>' +
+          ka + ' → 事件&nbsp; ce ' + hoverEdge.ce.toFixed(3)
+      }
+      tip.innerHTML = html
+      tip.style.opacity = 1
+      tip.style.left = Math.min(ev.clientX + 16, W - 320) + 'px'
+      tip.style.top = ev.clientY + 16 + 'px'
+      cv.style.cursor = 'default'
+      return
+    }
+  }
+  hoverEdge = null
+
+  cv.style.cursor = n ? 'pointer' : 'default'
+  if (n) {
+    const f = curFrame()
+    let html
+    if (n.kind === 'c') {
+      const c = f.concepts.find((x) => x.key === n.key)
+      html = `<b style="color:#9fd0ff">${n.key}</b><br>cm ${c ? c.cm.toFixed(2) : '-'} · 挂 ${c ? c.df : 0} 条事件<br>` +
+        `<span style="color:#8b9bc4">${(n.adj || []).length} 条关联</span>`
+    } else {
+      const ev2 = f.events.find((x) => x.id === n.id)
+      const keys = (ev2 ? ev2.cids : []).map((cid) => (f.concepts.find((c) => c.id === cid) || {}).key).filter(Boolean)
+      html = `<b style="color:#ffd479">事件 #${n.id}</b><br>${n.brief}<br><span style="color:#8b9bc4">${keys.join(' · ')}</span>`
+    }
+    tip.innerHTML = html
+    tip.style.opacity = 1
+    tip.style.left = Math.min(ev.clientX + 16, W - 310) + 'px'
+    tip.style.top = ev.clientY + 16 + 'px'
+  } else tip.style.opacity = 0
+}
+
+addEventListener('wheel', (e) => {
+  // 面板里滚就别缩放
+  if (e.target.closest && e.target.closest('.panel')) return
+  const z0 = zoom
+  zoom = Math.max(0.12, Math.min(10, zoom * (e.deltaY > 0 ? 0.9 : 1.1)))
+  if (!lastProj) return
+  // 保持鼠标底下那个点不动：按比例反推平移
+  const r = zoom / z0
+  const cx = W / 2, cy = H / 2 - 10
+  panX = e.clientX - (e.clientX - cx - panX) * r - cx
+  panY = e.clientY - (e.clientY - cy - panY) * r - cy
+}, { passive: true })
+addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft') { frameIdx = Math.max(0, frameIdx - 1); updateHud() }
+  if (e.key === 'ArrowRight') { frameIdx = Math.min(frames.length - 1, frameIdx + 1); updateHud() }
+})
+
+// ── 面板 ──
+const $p = (id) => document.getElementById(id)
+
+function centerOn(n) {
+  if (!lastProj) return
+  const { mx, my, sc } = lastProj
+  panX = -(n.x - mx) * sc
+  panY = 10 - (n.y - my) * sc
+}
+
+function renderLists() {
+  const f = curFrame()
+  if (!f) return
+  const q1 = ($p('q1').value || '').trim().toLowerCase()
+  const q2 = ($p('q2').value || '').trim().toLowerCase()
+  const cs = f.concepts
+    .filter((c) => c.cm >= RANGES.cm[0] && c.cm <= RANGES.cm[1] && (!q1 || c.key.toLowerCase().includes(q1)))
+    .sort((a, b) => b.cm - a.cm).slice(0, 150)
+  $p('listC').innerHTML = cs.length
+    ? cs.map((c) => `<div class="item" data-c="${c.id}"><span class="n">${c.key}</span><span class="v">${c.cm.toFixed(2)}</span></div>`).join('')
+    : '<div class="v" style="padding:4px 6px">没有</div>'
+
+  const es = f.events
+    .filter((e) => !e.forgotten && (!q2 || e.brief.toLowerCase().includes(q2)))
+    .filter((e) => e.cids.some((cid) => { const c = f.concepts.find((x) => x.id === cid); return c && c.cm >= RANGES.cm[0] && c.cm <= RANGES.cm[1] }))
+    .slice(-150).reverse()
+  $p('listE').innerHTML = es.length
+    ? es.map((e) => `<div class="item" data-e="${e.id}"><span class="n">${e.brief.slice(0, 22)}</span><span class="v">#${e.id}</span></div>`).join('')
+    : '<div class="v" style="padding:4px 6px">没有</div>'
+}
+
+$p('listC').onclick = (ev) => {
+  const el = ev.target.closest('[data-c]')
+  if (!el) return
+  const n = nodeMap.get('c' + el.dataset.c)
+  if (!n) return
+  selected = n; selectedEdge = null; centerOn(n)
+}
+$p('listE').onclick = (ev) => {
+  const el = ev.target.closest('[data-e]')
+  if (!el) return
+  const n = nodeMap.get('e' + el.dataset.e)
+  if (!n) return
+  selected = n; selectedEdge = null; centerOn(n)
+}
+$p('q1').oninput = renderLists
+$p('q2').oninput = renderLists
+
+// 一条轨道两个手柄
+const RANGES = { cm: [0, 1], cc: [0, 1], ce: [0, 1] }
+const COL = { cc: '#96cdff', ce: '#3a68be', ev: '#ffc478' }
+const hexA = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16)
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')'
+}
+
+function makeRange(el, key) {
+  const lo = el.querySelector('.h.lo')
+  const hi = el.querySelector('.h.hi')
+  const fill = el.querySelector('.fill')
+  const label = document.querySelector('[data-v="' + key + '"]')
+  const st = { lo: 0, hi: 1 }
+  function paint() {
+    const w = el.clientWidth || 1
+    lo.style.left = st.lo * w + 'px'
+    hi.style.left = st.hi * w + 'px'
+    fill.style.left = st.lo * w + 'px'
+    fill.style.width = (st.hi - st.lo) * w + 'px'
+    label.textContent = st.lo.toFixed(2) + ' – ' + st.hi.toFixed(2)
+    RANGES[key] = [st.lo, st.hi]
+  }
+  el.onmousedown = (e) => {
+    const r = el.getBoundingClientRect()
+    const at = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)))
+    const dl = Math.abs(at - st.lo)
+    const dh = Math.abs(at - st.hi)
+    const near = 0.035
+    // 两个手柄叠在一起：先不定，等拖的方向出来
+    let which = dl < near && dh < near ? null : dl < dh ? 'lo' : 'hi'
+    const startX = e.clientX
+    let jumped = false
+
+    const move = (ev) => {
+      if (which === null) {
+        const dx = ev.clientX - startX
+        if (Math.abs(dx) < 2) return
+        which = dx < 0 ? 'lo' : 'hi'
+      }
+      const rr = el.getBoundingClientRect()
+      let v = (ev.clientX - rr.left) / Math.max(1, rr.width)
+      v = Math.max(0, Math.min(1, v))
+      if (which === 'lo') st.lo = Math.min(v, st.hi)
+      else st.hi = Math.max(v, st.lo)
+      paint()
+    }
+    const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up) }
+    addEventListener('mousemove', move)
+    addEventListener('mouseup', up)
+
+    // 点轨道空白处直接跳（叠在一起时不动，交给拖动方向判断）
+    if (which !== null && dl > near && dh > near && !jumped) {
+      jumped = true
+      if (which === 'lo') st.lo = Math.min(at, st.hi)
+      else st.hi = Math.max(at, st.lo)
+      paint()
+    }
+    e.preventDefault()
+  }
+  paint()
+  requestAnimationFrame(paint)
+  setTimeout(paint, 120)
+  return st
+}
+const painters = []
+document.querySelectorAll('.r2').forEach((el) => painters.push({ el, key: el.dataset.k, st: makeRange(el, el.dataset.k) }))
+addEventListener('resize', () => painters.forEach(({ el, st }) => {
+  const w = el.clientWidth || 1
+  el.querySelector('.h.lo').style.left = st.lo * w + 'px'
+  el.querySelector('.h.hi').style.left = st.hi * w + 'px'
+  const f = el.querySelector('.fill')
+  f.style.left = st.lo * w + 'px'
+  f.style.width = (st.hi - st.lo) * w + 'px'
+}))
+
+const pickCol = (id, key) => {
+  $p(id).oninput = (e) => { COL[key] = e.target.value }
+}
+pickCol('colCC', 'cc'); pickCol('colCE', 'ce'); pickCol('colEV', 'ev')
+
+$p('reset').onclick = () => {
+  RANGES.cm = [0, 1]; RANGES.cc = [0, 1]; RANGES.ce = [0, 1]
+  painters.forEach(({ el, st }) => {
+    st.lo = 0; st.hi = 1
+    const w = el.clientWidth || 1
+    el.querySelector('.h.lo').style.left = '0px'
+    el.querySelector('.h.hi').style.left = w + 'px'
+    const f = el.querySelector('.fill')
+    f.style.left = '0px'; f.style.width = w + 'px'
+    document.querySelector('[data-v="' + el.dataset.k + '"]').textContent = '0.00 – 1.00'
+  })
+  COL.cc = '#96cdff'; COL.ce = '#3a68be'; COL.ev = '#ffc478'
+  $p('colCC').value = COL.cc; $p('colCE').value = COL.ce; $p('colEV').value = COL.ev
+  renderLists()
+}
+
+document.querySelectorAll('.card > header').forEach((h) => {
+  h.onclick = () => h.parentElement.classList.toggle('min')
+})
+
+// 两个面板都能拖、都能折叠
+document.querySelectorAll('.phead').forEach((h) => {
+  const panel = h.parentElement
+  const btn = h.querySelector('span:last-child')
+  btn.onclick = (e) => {
+    e.stopPropagation()
+    const body = panel.querySelector('[id^="pbody"]')
+    if (body) body.style.display = body.style.display === 'none' ? '' : 'none'
+  }
+  h.onmousedown = (e) => {
+    if (e.target === btn) return
+    const st = { x: e.clientX, y: e.clientY, l: panel.offsetLeft, t: panel.offsetTop }
+    const move = (ev) => {
+      panel.style.left = st.l + ev.clientX - st.x + 'px'
+      panel.style.top = st.t + ev.clientY - st.y + 'px'
+      panel.style.right = 'auto'
+    }
+    const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up) }
+    addEventListener('mousemove', move)
+    addEventListener('mouseup', up)
+    e.preventDefault()
+  }
+})
+
+// ── 启动 ──
+async function boot(name) {
+  preset = name || preset
+  const sel = document.getElementById('preset')
+  const pr = await (await fetch('/api/presets')).json()
+  sel.innerHTML = pr.presets.map((p) => `<option ${p === preset ? 'selected' : ''}>${p}</option>`).join('')
+  sel.onchange = () => { location.search = '?preset=' + sel.value }
+
+  const d = await (await fetch('/api/state?preset=' + encodeURIComponent(preset))).json()
+  frames = d.frames
+  frameIdx = frames.length - 1
+  nodes = []; links = []; nodeMap.clear()
+  rebuild(true)
+  history.replaceState(null, '', '?preset=' + preset)
+
+  if (src) src.close()
+  src = new EventSource('/api/stream?preset=' + encodeURIComponent(preset))
+  src.onmessage = (e) => {
+    const { frame } = JSON.parse(e.data)
+    frames.push(frame)
+    if (frames.length > 500) frames.shift()
+    if (frameIdx === frames.length - 2) frameIdx = frames.length - 1
+    rebuild(false)
+  }
+}
+
+boot()
+draw()
+</script>
+</body>
+</html>

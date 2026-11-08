@@ -20,7 +20,7 @@
   var CMD = BOOT.cmd || (WS + '\\qq-cmd.json')
   var RES = BOOT.res || (WS + '\\qq-cmd-result.json')
   var TAG = '[' + p.pid + ']'
-  function w(s) { try { fs.appendFileSync(LOG, TAG + ' ' + s + '\n') } catch (e) { } }
+  function w(s) { try { fs.appendFileSync(LOG, TAG + ' ' + new Date().toTimeString().slice(0, 8) + ' ' + s + '\n') } catch (e) { } }
   function J(o) { try { var s = JSON.stringify(o); return s === undefined ? String(o) : s } catch (e) { return 'ERR ' + e } }
 
   // ---------- 自热重载（所有实例） ----------
@@ -77,7 +77,10 @@
   var GLOBAL_PATH = OWN + '\\global'
   var PORT = Number(BOOT.port) || 39272
   var QUICK_UIN = String(BOOT.uin || '3793339506')
-  var LISTENER_VER = 'v17'
+  // 2026-11-01：以前是常量 'v17' → 热重载后 S.listenerVer 还等于它，ensureMsgListener 认为
+  //   「已经挂过了」不再重挂；可 msf 重连会把监听器丢掉 → 桥照样回 ready，但入站消息一条都收不到。
+  //   改成每次 eval 唯一 → 重载/重连后必定重挂；旧监听器由 __qqVer 守卫挡掉。
+  var LISTENER_VER = 'v18-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e6).toString(36)
   var HTTP_VER = 'v11'
   var CMD_VER = 'v10'
 
@@ -218,8 +221,8 @@
     try {
       session.init(infoObj,
         {
-          onMSFStatusChange: function (a, b) { w('[qq] cb onMSFStatusChange ' + J([a, b])) },
-          onMSFSsoError: function () { w('[qq] cb onMSFSsoError') },
+          onMSFStatusChange: function (a, b) { noteMsf(a, b) },
+          onMSFSsoError: function () { noteSso() },
           getGroupCode: function () { return '' }
         },
         {
@@ -298,7 +301,13 @@
           startSession(info)
         },
         onQRCodeLoginFail: function (e) { w('[qq] login cb qr fail ' + J(e)) },
-        onQRCodeSessionFailed: function (a, b) { w('[qq] login cb onQRCodeSessionFailed type=' + J(a) + ' code=' + J(b)) },
+        onQRCodeSessionFailed: function (a, b) {
+          w('[qq] login cb onQRCodeSessionFailed type=' + J(a) + ' code=' + J(b) + ' stage=' + S.stage)
+          S.qrFailedAt = Date.now()
+          // ⚠ 别在这里翻 stage：掉线时 QQ 自己也会偷偷试重登，失败照样走这个回调，
+          // 但账号往往还是登录态（isUserLogin=true），翻成 login 会让插件白白推一堆码。
+          // 「socket 死了但还登录着」交给下面的 msf 看门狗（online() → 退进程重启）。
+        },
         onUserLoggedIn: function (u) { w('[qq] login cb onUserLoggedIn ' + J(u)) },
         onLogoutSucceed: function () { w('[qq] login cb logout') },
         onLoginFailed: function (e) { w('[qq] login cb loginFailed ' + J(e)) }
@@ -313,6 +322,20 @@
   }
 
   function tryQuickLogin() {
+    // 2026-11-01：getLoginList 在这套壳里必抛 "w(...) is not a function" → 以前一失败就出码，
+    //   明明有有效凭证也得人扫（越扫越掉）。先直接用已知 uin 调 quickLoginWithUin，
+    //   不行再退回「查列表」那条路。
+    try {
+      login.quickLoginWithUin(QUICK_UIN).then(function (u) {
+        w('[qq] quickLogin(直接) -> ' + J(u).slice(0, 300))
+        var uid = String((u && (u.uid || u.uidStr)) || '')
+        if (u && String(u.result) === '0' && uid && !(u.loginErrorInfo && u.loginErrorInfo.errMsg)) {
+          startSession({ uin: QUICK_UIN, uid: uid })
+        } else { listQuickLogin() }
+      }).catch(function (e) { w('[qq] quickLogin(直接) err ' + e.message); listQuickLogin() })
+    } catch (e) { w('[qq] quickLogin(直接) THREW ' + e.message); listQuickLogin() }
+  }
+  function listQuickLogin() {
     try {
       login.getLoginList().then(function (r) {
         var list = (r && r.LocalLoginInfoList) || []
@@ -377,7 +400,7 @@
       S.msgListener = {
         __qqVer: LISTENER_VER,
         onRecvMsg: function (arr) { (arr || []).forEach(onOneMsg) },
-        onAddSendMsg: function (m) { w('[qq] SENT-LOCAL msgId=' + m.msgId + ' status=' + m.sendStatus) },
+        onAddSendMsg: function (m) { S.lastAliveAt = Date.now(); w('[qq] SENT-LOCAL msgId=' + m.msgId + ' status=' + m.sendStatus) },
         onMsgInfoListUpdate: function () { },
         onRichMediaDownloadComplete: function (d) { w('[qq] cb onRichMediaDownloadComplete ' + J(d).slice(0, 300)); onDownloadComplete(d) },
         onRichMediaProgressUpdate: function (d) { w('[qq] cb onRichMediaProgressUpdate ' + J(d).slice(0, 200)) },
@@ -392,8 +415,9 @@
   ensureMsgListener()
   // 旧 eval 的 onOneMsg 引用的这两个函数可能不在它自己的作用域里 → 兜到全局，免得每次回调都 ReferenceError
   try { global.ensurePttTranscribed = ensurePttTranscribed; global.ensurePicDownloaded = ensurePicDownloaded } catch (e) { }
+  // 2026-11-01：这行必须每次 eval 都刷新（原来在 if 里面，重载后定时器永远跑第一份 eval 的闭包）
+  global.__qqEnsureMsgListener = ensureMsgListener
   if (!S.ensureTimer) {
-    global.__qqEnsureMsgListener = ensureMsgListener
     S.ensureTimer = setInterval(function () { try { if (global.__qqEnsureMsgListener) global.__qqEnsureMsgListener() } catch (e) { } }, 10000)
     w('[qq] ensure-msg-listener timer ON')
   }
@@ -482,6 +506,7 @@
   }
   function onOneMsg(m) {
     try {
+      S.lastRecvAt = Date.now()
       var evt = {
         time: Date.now(), chatType: m.chatType, peerUid: m.peerUid, senderUid: m.senderUid,
         senderName: m.sendMemberName || m.sendNickName || '', msgId: m.msgId, msgSeq: m.msgSeq,
@@ -560,6 +585,7 @@
       }
       ensurePicDownloaded(evt)
       ensurePttTranscribed(evt)
+      S.lastAliveAt = Date.now()
       w('[qq] RECV ct=' + evt.chatType + ' peer=' + evt.peerUid + ' seq=' + evt.msgSeq +
         ' text=' + J(evt.text) + ' types=' + J(evt.elements.map(function (e) { return e.type })))
     } catch (e) { w('[qq] onOneMsg err ' + e.message) }
@@ -761,6 +787,83 @@
     return s.sendMsg('0', peer, elems, new Map())
   }
 
+  // ---------- 3.5) 掉线看门狗（2026-10-31 事故后加） ----------
+  // 事故：08:06:50 MSF 被对端关掉（socket 停在 CloseWait 不再重连），QQ 自己重登失败后静默卡住；
+  // 而 /status 的 ms 只看 msgService() 存不存在 → 永远 true，stage 也一直 ready。
+  // 插件据此判定「已登录」→ 不推码、也不重启壳，服务躺了 9 小时没人知道。
+  // 这里按真实 msf 状态兜底：掉线 grace 秒后试 msf.online()，再不行就退出进程让哨兵重启壳。
+  var MSF_GRACE = Number((BOOT.config || {}).msfGraceSec) || 120
+  var MSF_KILL = Number((BOOT.config || {}).msfKillSec) || 600
+  function msfNow() {
+    try { var v = login.getMsfStatus(); if (typeof v === 'number') return v } catch (e) { }
+    try {
+      var s2 = S.session && S.session.getMSFService ? S.session.getMSFService() : null
+      if (s2 && s2.getMsfStatus) { var v2 = s2.getMsfStatus(); if (typeof v2 === 'number') return v2 }
+    } catch (e) { }
+    return null
+  }
+  function noteMsf(a, b, silent) {
+    if (!silent) w('[qq] cb onMSFStatusChange ' + J([a, b]))
+    var prev = S.msf
+    S.msf = a
+    if (a !== 2) { S.msfOffSince = 0; S.msfHealTried = 0 }
+    // 2026-11-01：msf 重连会把监听器从内核侧丢掉，但 S.listenerVer 还留着 → 永远不再重挂。
+    //   状态一变就让版本对不上，ensure 定时器 10s 内会重新挂上。
+    if (prev !== undefined && prev !== a) { S.listenerVer = null }
+  }
+  // 鉴权健康：MSF 通了但 SSO 一直报错 = 「传输层活着、登录态死了」。
+  // 2026-10-31 17:24 调 msf.online() 后就是这个状态：msf=1，但 SSO 每 20~45s 报一次。
+  // 健康时 4 小时 0 次，所以 5 次/10 分钟足够判死。
+  var SSO_WINDOW = 600000
+  var SSO_BAD = 5
+  function noteSso() {
+    var now = Date.now()
+    S.ssoErrs = (S.ssoErrs || []).filter(function (t) { return now - t < SSO_WINDOW })
+    S.ssoErrs.push(now)
+    w('[qq] cb onMSFSsoError（近 10 分钟 ' + S.ssoErrs.length + ' 次）')
+  }
+  function authBad() {
+    var now = Date.now()
+    S.ssoErrs = (S.ssoErrs || []).filter(function (t) { return now - t < SSO_WINDOW })
+    if (S.ssoErrs.length < SSO_BAD) return false
+    // 最近 10 分钟还在正常收/发消息 → 鉴权没坏，这些报错是别的子服务闹的
+    if (S.lastAliveAt && now - S.lastAliveAt < SSO_WINDOW) return false
+    return true
+  }
+  try { if (S.msfTimer) clearInterval(S.msfTimer) } catch (e) { }
+  S.msfTimer = setInterval(function () {
+    if (S.stage !== 'ready') { S.msfOffSince = 0; S.msfHealTried = 0; return }
+    var v = msfNow()
+    if (v === null) return
+    var bad = (v === 2) ? 'msf' : (authBad() ? 'sso' : null)
+    if (!bad) {
+      if (S.msfOffSince) w('[qq] 恢复健康（之前盯了 ' + Math.round((Date.now() - S.msfOffSince) / 1000) + 's，' + (S.msfBadKind || '') + '）')
+      S.msfOffSince = 0; S.msfHealTried = 0; S.msfBadKind = null
+      return
+    }
+    if (!S.msfOffSince) {
+      S.msfOffSince = Date.now(); S.msfBadKind = bad
+      w('[qq] ⚠ 假在线（' + (bad === 'sso' ? 'MSF 通但 SSO 一直失败' : 'msf 掉线') + '，stage 还是 ready）：'
+        + MSF_GRACE + 's 后自救 / ' + MSF_KILL + 's 后退进程让哨兵重启壳')
+    }
+    var off = Math.round((Date.now() - S.msfOffSince) / 1000)
+    if (off >= MSF_GRACE && !S.msfHealTried) {
+      S.msfHealTried = 1
+      if (bad === 'msf') {
+        var r = '-'
+        try { var msf = S.session.getMSFService(); r = String(msf && msf.online ? msf.online() : 'no online()') } catch (e) { r = 'err ' + e.message }
+        w('[qq] msf 掉线 ' + off + 's，试 msf.online() → ' + r)
+      } else {
+        w('[qq] SSO 鉴权失败 ' + off + 's（近 10 分钟 ' + (S.ssoErrs || []).length + ' 次），online() 救不了，等退进程重启')
+      }
+    }
+    if (off >= MSF_KILL) {
+      w('[qq] ⚠ ' + (bad === 'sso' ? 'SSO 鉴权失败' : 'msf 掉线') + ' ' + off + 's 已超 ' + MSF_KILL + 's，退出进程等哨兵重启壳')
+      try { fs.writeFileSync(RES, J({ seq: Date.now(), ok: false, err: 'stuck-' + bad + '-exit' }) + '\n') } catch (e) { }
+      setTimeout(function () { p.exit(42) }, 300)
+    }
+  }, 15000)
+
   // 服务器只创建一次；handler 每次热重载替换（避免端口被旧实例占着）
   if (S.httpPort !== PORT) {
     try { if (S.httpSrv) { S.httpSrv.close(); S.httpSrv = null } } catch (e) { }
@@ -798,11 +901,29 @@
           return q
         }
 
+        if (url.indexOf('/heal') === 0) {
+          var before5 = msfNow(), r5 = '-'
+          try {
+            var msf0 = S.session && S.session.getMSFService ? S.session.getMSFService() : null
+            r5 = String(msf0 && msf0.online ? msf0.online() : 'no msf')
+          } catch (e) { r5 = 'err ' + e.message }
+          w('[qq] /heal 手动重连：before=' + before5 + ' online→' + r5)
+          return setTimeout(function () { reply(200, { ok: true, before: before5, online: r5, after: msfNow() }) }, 1500)
+        }
         if (url.indexOf('/status') === 0) {
-          return reply(200, { ok: true, stage: S.stage, uin: S.uin || null, session: !!S.session, ms: !!msgService(), inbox: S.inbox.length, qr: !!S.qrUrl, qrAge: S.qrAt ? Math.round((Date.now() - S.qrAt) / 1000) : null })
+          // 注意：这里只读状态，别调 noteMsf 之类的「会清掉掉线计时」的函数
+          return reply(200, { ok: true, stage: S.stage, uin: S.uin || null, session: !!S.session, ms: !!msgService(), msf: msfNow(), msfOffSec: S.msfOffSince ? Math.round((Date.now() - S.msfOffSince) / 1000) : 0, stuck: S.msfBadKind || null, sso10m: (S.ssoErrs || []).length, inbox: S.inbox.length, qr: !!S.qrUrl, qrAge: S.qrAt ? Math.round((Date.now() - S.qrAt) / 1000) : null,
+            // 2026-11-01：这几个字段是给「检测」用的 —— 以前只看 stage/ms，监听器丢了照样说 ready
+            listen: !!S.listenerVer, listenVer: S.listenerVer || null,
+            recvAgeSec: S.lastRecvAt ? Math.round((Date.now() - S.lastRecvAt) / 1000) : null,
+            pollAgeSec: S.evAt ? Math.round((Date.now() - S.evAt) / 1000) : null, pollCount: S.evServed || 0,
+            sendAgeSec: S.lastAliveAt ? Math.round((Date.now() - S.lastAliveAt) / 1000) : null })
         }
         if (url.indexOf('/events') === 0) {
           var since = parseInt(qs().since || '0', 10) || 0
+          // 2026-11-01：给 /status 留个「插件还在轮询吗」的计数器（排查「掉了但检测说好」用）
+          S.evServed = (S.evServed || 0) + 1
+          S.evAt = Date.now()
           return reply(200, { ok: true, next: S.inbox.length, events: S.inbox.slice(since) })
         }
         if (url.indexOf('/qr') === 0) {

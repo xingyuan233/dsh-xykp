@@ -10,6 +10,9 @@
     # 客户端门面（client.js 的加载触发点）
     - id: xykp
       name: 'dsh-xykp'
+    # 设置 → 插件配置（Web 端读写本包各行的 config）
+    - id: xykp-console
+      name: 'dsh-xykp/ui/console'
 
     # ── storage
     - id: log-cleaner
@@ -24,6 +27,8 @@
     # ── chat
     - id: preset-binder
       name: 'dsh-xykp/chat/preset-binder'
+    - id: memory-layer
+      name: 'dsh-xykp/chat/memory-layer'
     - id: memory-refine
       name: 'dsh-xykp/chat/memory-refine'
     - id: toolret-steward
@@ -47,6 +52,8 @@
       name: 'dsh-xykp/comms/bili-reply'
     - id: bili-rove
       name: 'dsh-xykp/comms/bili-rove'
+    - id: bili-audio-live
+      name: 'dsh-xykp/comms/bili-audio-live'
     - id: qq-adapter
       name: 'dsh-xykp/comms/qq-adapter'
     - id: ntfy

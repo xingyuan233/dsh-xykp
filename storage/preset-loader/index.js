@@ -1,3 +1,4 @@
+import { configFor } from '../../ui/store.js'
 // dsh-xykp · storage/preset-loader
 //
 // 从「一个预设一个文件夹」的目录加载人格预设：
@@ -41,6 +42,7 @@ const log = (...args) => console.log(PREFIX, ...args)
 const warn = (...args) => console.warn(PREFIX, ...args)
 
 export function apply(ctx, config = {}) {
+  config = configFor('preset-loader', config)
   void boot(ctx, config).catch((err) => warn('启动失败（已忽略）：', err?.stack || err))
 }
 
@@ -179,15 +181,30 @@ async function boot(ctx, config) {
 
     const existing = await registeredIds()
     const diffs = [] // { id, text }
+    const rejected = new Map() // id -> sha：装不上、已回滚的版本
     for (const entry of good) {
       const mine = owned.get(entry.id)
       if (!mine) {
         if (existing.has(entry.id)) {
           log(`跳过 ${entry.id}：profile 里已经声明过（只记指纹）`)
+          // 不注册也得留快照，不然以后接手时没有「上次读到什么」可比
+          const declared = readSnapshot(dir, entry.id)
+          if (!declared || declared.sha256 !== entry.sha256) {
+            writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
+          }
           continue
         }
+        // 重启后 owned 是空的：先拿旧快照算 diff，别直接覆盖掉
+        const stale = readSnapshot(dir, entry.id)
+        const pending = stale && stale.sha256 !== entry.sha256 ? diffLines(stale.content, entry.content) : ''
         if (await register(entry)) {
+          if (pending) {
+            diffs.push({ id: entry.id, text: pending })
+            log(`${entry.id} 的改动（重启后首次装载）：\n${pending}`)
+          }
           writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
+        } else {
+          rejected.set(entry.id, entry.sha256)
         }
         continue
       }
@@ -205,27 +222,29 @@ async function boot(ctx, config) {
         log(`跳过 ${entry.id}：这份改动上次装载失败过，等文件再变`)
         continue
       }
+
+      // 新版本来了：清掉上一次的失败标记
       badSha.delete(entry.id)
 
-      // 拿上次的快照出 diff，再重注册
+      // 有快照就先算好 diff，等装载成功再记 —— 回滚掉的版本不进留痕
       const snap = readSnapshot(dir, entry.id)
-      if (!snap) {
-        warn(`${entry.id} 改了，但没有上次快照（只记指纹，不出 diff）`)
-      } else if (snap.sha256 !== entry.sha256) {
-        const text = diffLines(snap.content, entry.content)
-        if (text) {
-          diffs.push({ id: entry.id, text })
-          log(`${entry.id} 的改动：\n` + text)
-        }
-      }
+      if (!snap) warn(`${entry.id} 改了，但没有上次快照（只记指纹，不出 diff）`)
+      const pending = snap && snap.sha256 !== entry.sha256 ? diffLines(snap.content, entry.content) : ''
 
-      const ok = await reload(entry, mine)
-      if (!ok) badSha.set(entry.id, entry.sha256)
-      if (owned.get(entry.id)?.sha256 === entry.sha256) {
-        writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
+      const previous = mine
+      if (!(await reload(entry, previous))) {
+        badSha.set(entry.id, entry.sha256)
+        rejected.set(entry.id, entry.sha256)
+        continue
       }
+      if (pending) {
+        diffs.push({ id: entry.id, text: pending })
+        log(`${entry.id} 的改动：\n${pending}`)
+      }
+      writeSnapshot(dir, entry.id, { mtime: entry.mtime, sha256: entry.sha256, content: entry.content })
     }
 
+    // 目录里没了的预设：把注册撤掉
     for (const [id, mine] of [...owned]) {
       if (id in next) continue
       try {
@@ -241,21 +260,30 @@ async function boot(ctx, config) {
     if (diff.added.length || diff.changed.length || diff.removed.length) {
       writeLock(lockPath, { version: 1, updatedAt: new Date().toISOString(), presets: next })
       const stamp = localStamp()
-      const lines = changelogLines(diff, next)
+      // 装不上、已回滚的版本：留痕写 rejected，不写 changed / diff，也不往活会话重推
+      const applied = {
+        added: diff.added,
+        changed: diff.changed.filter((c) => !rejected.has(c.id)),
+        removed: diff.removed,
+      }
+      const lines = changelogLines(applied, next)
+      for (const [id, sha] of rejected) {
+        lines.push(`${stamp}  ${id}  rejected  ${sha}（装载失败，已回滚）`)
+      }
       for (const item of diffs) {
         lines.push('', `${stamp}  ${item.id} diff：`, item.text)
       }
       appendChangelog(changelogPath, lines)
       // 每份留痕也写进预设自己的文件夹（.changelog.log），总索引那份当目录用
       try {
-        appendPerPresetChangelog(dir, diff, diffs, next)
+        appendPerPresetChangelog(dir, applied, diffs, next)
       } catch (err) {
         warn('写各预设留痕失败：', err?.message || err)
       }
-      // 预设重推：改完之后把新版本推给「还活着、正用着这个预设」的会话
-      if (diff.changed.length) {
+      // 预设重推：只推真正换上去了的
+      if (applied.changed.length) {
         try {
-          await pushToLiveSessions(diff.changed.map((c) => c.id))
+          await pushToLiveSessions(applied.changed.map((c) => c.id))
         } catch (err) {
           warn('预设重推失败：', err?.stack || err)
         }

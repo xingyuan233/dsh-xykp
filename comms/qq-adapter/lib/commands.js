@@ -34,8 +34,8 @@ export const COMMANDS = [
   { name: 'preset', needsOwner: true, usage: '/preset [id|序号] [-d]', group: '配置', help: '查看/切换 agent 预设；-d 同时改默认' },
   { name: 'permission', needsOwner: true, usage: '/permission [c|w|f|序号|名字] [-d]', group: '配置', help: 'c=只读 / w=工作区内 / f=完全；不带参数看列表；-d 改部署默认（重启后生效）' },
 
-  // ── 适配层（qq-adapter 自己的配置）──
-  { name: 'cfg-default', needsOwner: true, usage: '/cfg-default [p-预设|s-会话|QQ号]', group: '适配层', help: '查看/设置这个聊天的默认目标' },
+  // ── 适配层（qq-adapter 自己的配置，写的就是 Web 那份 config.yml）──
+  { name: 'cfg-default', needsOwner: true, usage: '/cfg-default [p-预设|s-会话|QQ号]', group: '适配层', help: '查看/设置默认目标' },
   { name: 'cfg-mode', needsOwner: true, usage: '/cfg-mode [blacklist|whitelist]', group: '适配层', help: '查看/切换名单模式' },
   { name: 'cfg-list', needsOwner: true, usage: '/cfg-list [-add u-xxx|g-xxx] [-del 序号|键] [blocked|allowed|fast]', group: '适配层', help: '查看/增删名单（blocked=禁用、allowed=白名单、fast=免合并）' },
   { name: 'cfg-table', needsOwner: true, usage: '/cfg-table [-set <chat> <target> | -add <chat>:<target>] [-del <chat>]', group: '适配层', help: '查看/设置映射表（一个聊天 → 一个目标；-set 空格写、-add 冒号写都行）' },
@@ -120,7 +120,7 @@ export function isOwner(senderUid, cfg) {
   if (!uid) return false
   if (cfg.selfUid && uid === cfg.selfUid) return true
   const norm = (s) => String(s || '').trim().replace(/^u-/, '')
-  const list = Array.isArray(cfg.ownerUids) ? cfg.ownerUids : []
+  const list = Array.isArray(cfg.adminUids) ? cfg.adminUids : Array.isArray(cfg.ownerUids) ? cfg.ownerUids : []
   return list.some((x) => norm(x) === norm(uid))
 }
 

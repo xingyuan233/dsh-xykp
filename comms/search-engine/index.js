@@ -1,3 +1,4 @@
+import { configFor } from '../../ui/store.js'
 // dsh-xykp · comms/search-engine
 //
 // 同时注册两个 dsh-web provider（`web_search` / `web_fetch` 工具本身不用改）：
@@ -277,6 +278,7 @@ export function createSearchProvider(rawConfig = {}) {
 }
 
 export function apply(ctx, config = {}) {
+  config = configFor('search-engine', config)
   const cfg = normalizeConfig(config)
   if (!cfg.enabled) {
     log(cfg, 'disabled，不注册 provider')

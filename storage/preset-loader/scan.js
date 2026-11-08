@@ -257,6 +257,36 @@ export function diffLines(oldText, newText, context = 3) {
   while (i < n) ops.push({ t: '-', s: a[i], a: ++i, b: null })
   while (j < m) ops.push({ t: '+', s: b[j], a: null, b: ++j })
 
+  // git 式对齐：新增行如果和紧挨着的「相同未改行」并排，把它挪到那行前面。
+  // 不然改一行会显示成「下面几行变成新增」——例如 a/x/y/c -> a/x/c/c，
+  // 未处理时会出成「-y   c   +c」，看起来像是多加了下面那行。
+  for (let pass = 0, moved = true; moved && pass < 1000; pass++) {
+    moved = false
+    for (let k = 1; k < ops.length; k++) {
+      if (ops[k].t === '+' && ops[k - 1].t === ' ' && ops[k].s === ops[k - 1].s) {
+        const prev = ops[k - 1]
+        ops[k - 1] = ops[k]
+        ops[k] = prev
+        moved = true
+      }
+    }
+  }
+  // 挪过之后行号对不上，重排一遍
+  let aNo = 0
+  let bNo = 0
+  for (const op of ops) {
+    if (op.t === ' ') {
+      op.a = ++aNo
+      op.b = ++bNo
+    } else if (op.t === '-') {
+      op.a = ++aNo
+      op.b = null
+    } else {
+      op.a = null
+      op.b = ++bNo
+    }
+  }
+
   const changedIdx = []
   ops.forEach((op, idx) => {
     if (op.t !== ' ') changedIdx.push(idx)

@@ -16,6 +16,10 @@ export function createPostWatcher({
   timeoutMs = 60_000,
   isLoggedIn = () => false,
   pushQr = async () => {},
+  // 2026-11-01：收到命令先做一次「状态检查」，返回 true = 已经处理完（不用再推码）
+  onCommand = null,
+  // 2026-11-01：登录之后也继续监听，这样主人随时 /post 都能让插件查一次到底在不在线
+  keepAlive = false,
   log = () => {},
   warn = () => {},
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -46,7 +50,7 @@ export function createPostWatcher({
 
     const me = { stopped: false }
     state = me
-    log(`推码次数用完，开始等 ${command}（topic=${topicName}）`)
+    log(`开始监听 ${command}（topic=${topicName}）`)
 
     void (async () => {
       let since = Math.floor(Date.now() / 1000)
@@ -63,23 +67,33 @@ export function createPostWatcher({
 
         if (r && r.ok && r.message) {
           if (typeof r.message.time === 'number') since = r.message.time + 1
-          log(`收到 ${command}，补推一张二维码`)
+          let handled = false
           try {
-            await pushQr()
+            handled = typeof onCommand === 'function' ? (await onCommand(r.message)) === true : false
           } catch (err) {
-            warn('补推二维码失败：', err?.message || err)
+            warn('处理命令出错：', err?.message || err)
+          }
+          if (!handled) {
+            log(`收到 ${command}，补推一张二维码`)
+            try {
+              await pushQr()
+            } catch (err) {
+              warn('补推二维码失败：', err?.message || err)
+            }
           }
           continue
         }
 
-        // 超时：从下一轮重新等，顺手看看是不是已经登录了
+        // 超时：从下一轮重新等，顺手看看是不是已经登录了（keepAlive 时永远不停）
         since = Math.floor(Date.now() / 1000)
-        try {
-          if (await isLoggedIn()) {
-            stop('已登录')
-            break
-          }
-        } catch {}
+        if (!keepAlive) {
+          try {
+            if (await isLoggedIn()) {
+              stop('已登录')
+              break
+            }
+          } catch {}
+        }
         await sleep(300)
       }
       if (state === me) state = null

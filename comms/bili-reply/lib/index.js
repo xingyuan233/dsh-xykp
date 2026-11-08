@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // bili-reply · 宿主半边
 //
 // 需求（任务-2026-10-27.md 第四节）：
@@ -231,9 +232,12 @@ async function deliverDefault(ctx, sessionId, text) {
 }
 
 async function tick(ctx, cfg, deps) {
+  if (deps.gen && globalThis.__biliReplyGen !== deps.gen) return { skipped: true, reason: 'stale-instance' }
   const binder = await deps.loadBinder()
   const exists = typeof deps.sessionExists === 'function' ? deps.sessionExists : makeSessionExists(ctx)
-  const target = await resolveExistingTarget(cfg, binder, exists)
+  // 绑定每次投递都现读 config.yml：这样即使有残留的旧实例，也不会把消息推回旧对话。
+  const liveCfg = configFor('bili-reply', cfg)
+  const target = await resolveExistingTarget(liveCfg, binder, exists)
   if (!target.sessionId) {
     return { skipped: true, reason: target.reason || '没有绑定目标' }
   }
@@ -294,7 +298,11 @@ async function tick(ctx, cfg, deps) {
 }
 
 export function apply(ctx, config = {}) {
+  config = configFor('bili-reply', config)
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
+  // 热重载后如果旧实例没被回收，它的定时器还会按旧配置投递；用代号让它自己失效。
+  const gen = (globalThis.__biliReplyGen = (globalThis.__biliReplyGen || 0) + 1)
+  log(`启动（gen ${gen}）绑定：preset=${cfg.preset || '-'} session=${cfg.session || '-'}`)
   const fetcher = createFetcher(cfg)
 
   // ── 昵称缓存的后台重读（2026-10-27 改）──
@@ -369,6 +377,7 @@ export function apply(ctx, config = {}) {
   }
 
   const deps = {
+    gen,
     loadBinder,
     loadQueue,
     saveQueue,

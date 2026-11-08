@@ -611,6 +611,12 @@ function 读对话正文日志(sessionId) {
       .join('\n')
       .trim()
     if (!文) continue
+    // ⚠ 2026-11-05 修：这里以前直接用 `净`，但 `净` 只是隔壁「读 surface」函数里的局部变量，
+    //   每走一次都抛 ReferenceError，被 生成交接概括 的 try/catch 吞掉 → 日志这条路永远是空的，
+    //   「surface 被裁就用磁盘日志补齐」实际失效。照 surface 那边的写法先过滤掉工具调用行。
+    const 像调用 = /<\uff5c\uff5c|DSML|tool_call|invoke name=|parameter name=|<\/?function_calls>/i
+    const 净 = String(文 || '').split('\n').filter((l) => !像调用.test(l)).join('\n').trim()
+    if (!净) continue
     对话 += (msg.role === 'assistant' || 类型 === 'assistant/message' ? '我：' : 'ta：') + 净 + '\n'
   }
   return 对话
@@ -622,6 +628,7 @@ const 交接系统提示 =
   '这些输出将会作为你的记忆保留，不要以长短来评判详细与简略的标准，' +
   '有些长的事情比较机械不重要则一句话概括即可，如果重要可以记录过程与自己的感受。' +
   '而有些短的话如果无关紧要可以直接略过，重要的话可以保留并记录自己的感受。' +
+  '代码相关的任务不要详细描述，只需要概括，这种一次性任务详细内容应该通过日志转达。' +
   // ⚠ 2026-10-28：对话正文里混着模型自己的工具调用标记，摘要模型会照着学
   //   （实测：概括原文就是一段 <｜｜DSML｜｜…> 调用，93 字，被当成"太短"拒绝）
   '只输出摘要正文（Markdown）。不要调用任何工具，不要输出 <｜｜DSML｜｜…>、<｜｜DSH｜｜tool_call>、invoke/parameter 之类的标记，也不要输出 XML/JSON 代码块。'

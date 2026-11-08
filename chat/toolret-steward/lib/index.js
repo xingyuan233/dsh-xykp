@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // 工具结果的去留管家（toolret-steward）
 //
 // 目标：每步的工具结果，模型当步已经看过了；下一步要不要留着由它自己说。
@@ -230,6 +231,7 @@ function decisionsOf(message) {
 }
 
 export function apply(ctx, config = {}) {
+  config = configFor('toolret-steward', config)
   // mode/presets 管「哪些预设生效」；tools 永远是「不碰的名单」（只留头尾）
   const blacklist = String(config.mode ?? 'blacklist').toLowerCase() !== 'whitelist'
   const presets = new Set(Array.isArray(config.presets) ? config.presets : [])

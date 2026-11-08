@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 /**
  * dsh-session-delete — Host half.
  *
@@ -256,7 +257,8 @@ async function flushPending(ctx, options) {
  * @param ctx - 宿主 Context。
  * @param config - 可选路径覆盖。
  */
-export async function apply(ctx, config) {
+export async function apply(ctx, config = {}) {
+  config = configFor('dsh-session-delete', config)
   const protocol = await loadProtocol()
   const options = resolveOptions(ctx, config)
   const { TypertRemoteService, RemoteError } = protocol

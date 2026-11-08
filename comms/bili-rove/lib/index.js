@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // bili-rove · 宿主半边（主动用的那半边）
 //
 // 一个插件两把工具：
@@ -194,6 +195,7 @@ function pickCommentPictures(data, max) {
 }
 
 export function apply(ctx, config = {}) {
+  config = configFor('bili-rove', config)
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
   // ntfy 推送统一走 comms/ntfy 组件（拿不到时 ntfy.js 里还有自带实现兜底）
   setNtfyService(() => (typeof ctx.get === 'function' ? ctx.get('ntfy') : null))
@@ -249,14 +251,14 @@ export function apply(ctx, config = {}) {
     description: [
       'B站操作（带 cookie）。action 决定做什么，括号里是它要带的参数：',
       '读 —— search(keyword,page,pageSize,order) / video、subtitles、danmaku(bvid) / comments(bvid；带图的楼层会附前 3 张图) / frames(bvid,count,mode) / user、user_videos(uid) / favorites(uid,mediaId) / hot / rank(rid) / received_at / received_replies / crawl(keyword,maxVideos,commentsPerVideo,getSubtitles)',
-      '写 —— reply(bvid,rpid,root,text) / dm(uid,text；不带 text 读) / dm_sessions(size) / dm_recent(size,pages) / triple(bvid,mode,coinNum) / dynamic(text)',
+      '写 —— reply(bvid,rpid,root,text,images) / del(bvid,rpid) / dm(uid,text；不带 text 读) / dm_sessions(size) / dm_recent(size,pages) / triple(bvid,mode,coinNum) / dynamic(text)',
       'frames 返回真帧图片，meta.source 是 preview/videoshot 才是真帧（cover 只是封面）。',
     ].join('\n'),
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: [...READ_ACTIONS, 'reply', 'dm', 'triple', 'dynamic'],
+        enum: [...READ_ACTIONS, 'reply', 'del', 'dm', 'triple', 'dynamic'],
         description: '要做什么',
       },
       keyword: { type: 'string', description: 'search / crawl' },
@@ -266,6 +268,7 @@ export function apply(ctx, config = {}) {
       rpid: { type: 'string', description: 'reply 要回的评论' },
       root: { type: 'string', description: 'reply 楼层根（一般不用填）' },
       text: { type: 'string', description: 'reply / dm / dynamic 内容' },
+      images: { type: 'array', items: { type: 'string' }, description: 'reply 要带的本地图片路径（最多 9 张，会先传 BFS）' },
       mode: { type: 'string', description: 'frames: auto/extract；triple: like/coin/fav/like_fav/triple' },
       count: { type: 'number', description: 'frames 1-12（默认 8）' },
       num: { type: 'number', description: 'comments / danmaku 条数' },

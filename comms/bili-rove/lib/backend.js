@@ -16,7 +16,7 @@ const UA = BILIBILI_DEFAULT_USER_AGENT
 const REFERER = 'https://www.bilibili.com/'
 
 /** 是不是写操作（失败绝不能盲目重试） */
-export const WRITE_ACTIONS = new Set(['reply', 'dm', 'triple', 'dynamic'])
+export const WRITE_ACTIONS = new Set(['reply', 'del', 'dm', 'triple', 'dynamic'])
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -127,6 +127,50 @@ export function createBackend(cfg = {}, factory) {
     }
     if (j && j.code !== 0) throw new Error((j.message || 'B站接口报错') + '（code=' + j.code + '）')
     return j ? j.data : undefined
+  }
+
+  /**
+   * 评论/动态图片：先走 BFS 上传，拿 img_src / 宽高（评论 add 的 pictures 参数要这三个）。
+   * 失败直接报错，不悄悄退化成纯文本。
+   */
+  async function uploadImage(filePath, cookie, csrf) {
+    const { readFile } = await import('node:fs/promises')
+    const buf = await readFile(String(filePath))
+    if (!buf.length) throw new Error('图片文件是空的：' + filePath)
+    const name = String(filePath).split(/[\\/]/).pop() || 'image.png'
+    const fd = new FormData()
+    fd.append('file_up', new Blob([buf], { type: name.toLowerCase().endsWith('.jpg') || name.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : name.toLowerCase().endsWith('.gif') ? 'image/gif' : 'image/png' }), name)
+    fd.append('biz', 'draw')
+    fd.append('category', 'daily')
+    fd.append('csrf', csrf || '')
+    const r = await fetch('https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'user-agent': UA,
+        referer: REFERER,
+        origin: 'https://www.bilibili.com',
+        ...(cookie ? { cookie } : {}),
+        ...(csrf ? { 'x-csrf-token': csrf } : {}),
+      },
+      body: fd,
+    })
+    const text = await r.text()
+    let j
+    try {
+      j = JSON.parse(text)
+    } catch {
+      throw new Error('上传图片返回的不是 JSON（HTTP ' + r.status + '）：' + text.slice(0, 120))
+    }
+    if (j && j.code !== 0) throw new Error('上传图片失败：' + (j.message || '') + '（code=' + j.code + '）')
+    const d = (j && j.data) || {}
+    const src = d.image_url || d.img_src || d.url
+    if (!src) throw new Error('上传图片成功但没拿到地址：' + JSON.stringify(d).slice(0, 200))
+    return {
+      img_src: String(src).replace(/^http:/, 'https:'),
+      img_width: d.image_width || d.img_width || 0,
+      img_height: d.image_height || d.img_height || 0,
+    }
   }
 
   function needCred(cookie) {
@@ -480,7 +524,17 @@ export function createBackend(cfg = {}, factory) {
           const cred = needCred(cookie)
           const detail = await detailOf(p, bvid)
           const text = String(a.text || '').trim()
-          if (!text) throw new Error('BILI_ROVE_BAD_ARGS：reply 需要 text')
+          const images = []
+          const rawImages = a.images !== undefined ? a.images : a.image
+          if (rawImages) {
+            if (Array.isArray(rawImages)) for (const x of rawImages) if (x) images.push(String(x))
+            else images.push(String(rawImages))
+          }
+          if (!text && images.length === 0) throw new Error('BILI_ROVE_BAD_ARGS：reply 需要 text 或 images')
+          if (a.root && a.root !== '0') {
+            // 指定了楼层就必须有父评论 id
+            if (!a.rpid) throw new Error('BILI_ROVE_BAD_ARGS：带 root 时要给 rpid')
+          }
           const body = {
             type: 1,
             oid: detail.aid,
@@ -490,8 +544,23 @@ export function createBackend(cfg = {}, factory) {
             plat: 1,
             csrf: cred.bili_jct,
           }
+          if (images.length) {
+            if (images.length > 9) throw new Error('BILI_ROVE_BAD_ARGS：一条评论最多 9 张图')
+            const pics = []
+            for (const img of images) pics.push(await uploadImage(img, cookie, cred.bili_jct))
+            body.pictures = JSON.stringify(pics)
+          }
           const data = await postForm('https://api.bilibili.com/x/v2/reply/add', body, cookie)
-          return { ok: true, bvid: String(bvid).trim(), aid: detail.aid, rpid: data?.rpid, rpid_str: data?.rpid_str, root: body.root, parent: body.parent, title: detail.title }
+          return { ok: true, bvid: String(bvid).trim(), aid: detail.aid, rpid: data?.rpid, rpid_str: data?.rpid_str, root: body.root, parent: body.parent, title: detail.title, images: images.length }
+        }
+
+        case 'del': {
+          const cred = needCred(cookie)
+          const detail = await detailOf(p, bvid)
+          const rpid = Number(a.rpid || a.rpid_str)
+          if (!rpid) throw new Error('BILI_ROVE_BAD_ARGS：del 需要 rpid')
+          await postForm('https://api.bilibili.com/x/v2/reply/del', { type: 1, oid: detail.aid, rpid, csrf: cred.bili_jct }, cookie)
+          return { ok: true, bvid: String(bvid).trim(), aid: detail.aid, rpid, deleted: true }
         }
 
         case 'triple': {

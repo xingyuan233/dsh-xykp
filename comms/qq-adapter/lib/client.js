@@ -39,7 +39,7 @@ window.__ModuleLoader__.load({
     ]
 
     const ARRAYS = [
-      ['ownerUids', '能发管理指令的人（每行一个 u-…）'],
+      ['adminUids', '管理员（能发管理指令的人，每行一个 u-…）'],
       ['blocked', '禁用的私聊/群聊（每行一个 u-… / g-…）'],
       ['allowed', '启用的私聊/群聊（白名单模式用）'],
       ['mappings', '自定义映射（每行：u-uid → p-预设 或 s-会话id）'],

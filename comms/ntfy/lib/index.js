@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // dsh-ntfy · 宿主半边
 //
 // 实现在 lib/client.js（纯 node，不依赖宿主，独立进程也能 import）。
@@ -38,6 +39,7 @@ const jsonOutput = (description) => ({
 })
 
 export function apply(ctx, config = {}) {
+  config = configFor('ntfy', config)
   const cfg = { ...DEFAULTS, ...Config(config) }
   const service = createService(cfg)
 

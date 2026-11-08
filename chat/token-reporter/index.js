@@ -1,3 +1,4 @@
+import { configFor } from '../../ui/store.js'
 // dsh-xykp · chat/token-reporter
 //
 // 给每个会话附带 token 用量信息，并提供一个查询工具：
@@ -398,6 +399,7 @@ function toolDefinition(ctx, config) {
 }
 
 export function apply(ctx, rawConfig = {}) {
+  rawConfig = configFor('token-reporter', rawConfig)
   const config = pickConfig(rawConfig)
   const presets = new Set(config.presets || [])
 

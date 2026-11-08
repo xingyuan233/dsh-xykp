@@ -1,3 +1,4 @@
+import { configFor, readAll, writeAll } from '../../../ui/store.js'
 // qq-adapter · 宿主半边
 //
 // 干的事：
@@ -21,9 +22,8 @@ import { chatKeyOf, resolveRoute, parseTargetRef, formatIncoming, DEFAULTS as RO
 import { createPostWatcher } from './post-watch.js'
 import { createBridge } from './bridge.js'
 import { toSilk, cleanupSilk } from './silk.js'
-import { readOverride, pickRouting, overridePath } from './overrides.js'
 import { COMMANDS, COMMAND_INDEX, helpText, parseCommand, parseSessionArgs, isOwner } from './commands.js'
-import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, ago, listWorkspaces, presetPools } from './session-store.js'
+import { readChats, writeChats, newSessionId, listSessions, deleteSessionDir, readSessionTitle, ago, listWorkspaces, presetPools } from './session-store.js'
 
 export const name = 'qq-adapter'
 
@@ -37,6 +37,22 @@ export const SOURCE_KIND = 'plugin:qq-adapter'
 const PKG_VERSION = '0.2.0'
 
 const log = (...a) => console.log('[qq-adapter]', ...a)
+/**
+ * 2026-11-01：桥会「假在线」——stage/ms 说就绪，但内部早就哑了。
+ *   ① listen === false：内核消息监听器没挂上（热重载 / msf 重连后会被丢掉）→ 入站一条都收不到；
+ *   ② sso10m ≥ 5：MSF 通了但 SSO 一直报错（登录态死了），同时很久没收到消息。
+ * 以前这两处只看 stage/ms，所以「掉了但检测说好」。返回 { ok, why }，why 空串 = 健康。
+ * 只读桥自己报的字段，不主动探测；老桥没有这些字段时按健康算（向后兼容）。
+ */
+function 桥健康(s) {
+  if (!s || s.ok !== true) return { ok: false, why: '桥没响应' }
+  if (s.stage !== 'ready' || s.ms !== true) return { ok: false, why: '没登录（stage=' + (s.stage || '?') + '）' }
+  if (s.listen === false) return { ok: false, why: '消息监听器没挂上' }
+  const sso = Number(s.sso10m) || 0
+  const 很久没收到 = s.recvAgeSec === null || s.recvAgeSec === undefined || Number(s.recvAgeSec) > 1800
+  if (sso >= 5 && 很久没收到) return { ok: false, why: 'SSO 报错 ' + sso + ' 次/10min，且 30min 没收到消息' }
+  return { ok: true, why: '' }
+}
 const warn = (...a) => console.warn('[qq-adapter]', ...a)
 
 export const Config = Schema.object({
@@ -58,7 +74,7 @@ export const Config = Schema.object({
   maxPerTick: Schema.number().default(10).description('一次最多转发几条'),
   coalesceSeconds: Schema.number().default(10).description('合并窗口（秒）：同一个聊天里的消息攒到「静默这么久」再一次性发；0 = 不合并，来一条转一条'),
   fastUids: Schema.array(Schema.string()).default([]).description('不受限的聊天（u-<uid> / g-<群号>），这些来一条转一条'),
-  ownerUids: Schema.array(Schema.string()).default([]).description('能发管理类指令的人（写 uid 或 u-<uid> 都行）；私聊切换不需要，群聊/预设相关才要'),
+  adminUids: Schema.array(Schema.string()).default([]).description('能发管理类指令的管理员（写 uid 或 u-<uid> 都行）；私聊切换不需要，群聊/预设相关才要'),
   workspaceRoot: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\workspaces\\\\alive-workspace').description('新会话默认挂哪个工作区'),
   commandsEnabled: Schema.boolean().default(true).description('QQ 侧指令开关（关掉就全当普通消息）'),
   groupWake: Schema.union([Schema.const('mention'), Schema.const('all')]).default('mention')
@@ -78,6 +94,8 @@ export const Config = Schema.object({
   autoStartShell: Schema.boolean().default(true).description('桥没在跑时自动拉起 QQ shell'),
   shellBootPath: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell\\\\NapCatWinBootMain.exe').description('shell 启动器路径'),
   shellDir: Schema.string().default('D:\\\\Program-Files\\\\QQ-shell').description('shell 工作目录'),
+  stuckShellSec: Schema.number().default(180)
+    .description('壳的 QQ 进程还在、但桥连续这么多秒连不上，就杀掉它重拉（0 = 不杀，只等）'),
   ffmpegPath: Schema.string().default('ffmpeg').description('发语音时转 PCM 用的 ffmpeg（PATH 里没有就给绝对路径）'),
   silkEncoderPath: Schema.string().default('D:\\\\AI\\\\DeepseekHarness\\\\tools\\\\silk\\\\silk_encode.exe').description('silk 编码器路径（自编的 silk_encode.exe）'),
   permissionNote: Schema.boolean().default(true).description('往系统提示词里塞「QQ 通道权限不够怎么办」那段'),
@@ -211,6 +229,7 @@ async function deliver(agentsSvc, sessionId, text, mode = 'steer', ctx = null) {
 }
 
 export async function apply(ctx, config = {}) {
+  config = configFor('qq-adapter', config)
   const cfg = { ...ROUTER_DEFAULTS, ...Config(config) }
   // 数据目录（日志/二维码/命令文件）确保存在；桥代码只在插件包里
   await ensureDataDir(cfg.qrFile)
@@ -274,26 +293,52 @@ export async function apply(ctx, config = {}) {
 
   /** 桥没在跑就把 QQ shell 拉起来（DSH 重启后 shell 会跟着死，这条兜住） */
   let lastSpawnAt = 0
+  /** 壳活着但桥一直连不上的起点；超过 stuckShellSec 就把卡死的壳杀掉重拉（2026-10-31 加） */
+  let stuckSince = 0
+  const stuckSec = () => Number(cfg.stuckShellSec) || 180
   async function ensureShell() {
     // 先看桥：活着就看登录态，挂了才去拉
     let st = null
     try { st = await bridge.status() } catch { st = null }
     if (st && st.ok) {
       const ready = st.stage === 'ready' && st.ms === true
+      // 2026-11-01：就绪也可能是「假在线」（监听器没挂上 / SSO 一直报错）。
+      //   这种时候不推码（登录态还在），按卡死处理：超过 stuckShellSec 还是这样就把壳杀掉重拉。
+      const health = 桥健康(st)
+      if (ready && !health.ok) {
+        wasReady = false
+        if (!stuckSince) {
+          stuckSince = Date.now()
+          warn('桥说 ready 但' + health.why + '，' + stuckSec() + 's 后杀壳重拉')
+          return
+        }
+        const 哑了秒 = Math.round((Date.now() - stuckSince) / 1000)
+        if (哑了秒 < stuckSec()) { warn('桥假在线 ' + 哑了秒 + 's（' + health.why + '），再等等'); return }
+        warn('桥假在线 ' + 哑了秒 + 's（' + health.why + '），杀掉 QQ 壳重拉')
+        await killQQShell('假在线')
+        stuckSince = 0
+        lastSpawnAt = 0
+        notifyCount = 0
+        return
+      }
       if (ready) {
         if (!wasReady) { log('桥已就绪（uin=' + st.uin + '）') ; wasReady = true }
+        stuckSince = 0
         notifyCount = 0
-        postWatcher.stop('已登录')
+        // 2026-11-01：登录后也一直挂着 /post 监听（keepAlive），主人随时能让插件查状态
+        if (!postWatcher.running) postWatcher.start()
         reapLaunchers()
         return
       }
       wasReady = false
+      stuckSince = 0
       await pushQrToNtfy(st)
       // 自动推够次数了（notifyMax），就转为等 /post
       if (notifyCount >= (Number(cfg.notifyMax) || 3)) postWatcher.start()
       return
     }
-    postWatcher.stop('桥不可用')
+    // 桥不可用时也保持 /post 监听（keepAlive），主人随时能查状态/补码
+    if (!postWatcher.running) postWatcher.start()
     if (cfg.autoStartShell === false) return
     // ⚠ 2026-10-29：桥连不上的时候（壳还没起来/刚掉线）以前一张码都不推，
     //   主人只能守在电脑前。现在用上一次落盘的二维码也推一下，间隔/次数照旧受 notifyEveryMinutes / notifyMax 管 ✓
@@ -302,12 +347,23 @@ export async function apply(ctx, config = {}) {
     if (Date.now() - lastSpawnAt < 120000) return
     // 同一套安装目录里只要有 QQ.exe 在跑，就绝不能再拉一个：
     // QQ.exe 是单实例的，后来的那个会把先跑的顶掉（2026-10-27 半夜就这么把樱和鲸鱼娘各顶掉一次）
+    // ⚠ 2026-10-31：壳活着但桥一直连不上（JS 卡死 / HTTP 挂了 / 假在线）时，以前只会「不重复拉」→ 永远不自愈。
+    //   现在超过 stuckShellSec（默认 180s）还连不上，就把这套目录里的 QQ 杀掉重拉。
     try {
       const { execFileSync } = await import('node:child_process')
       const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
       const psCmd = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Select-Object -First 1 -ExpandProperty Id"
       const alive = String(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { encoding: 'utf8', windowsHide: true }) || '').trim()
-      if (alive) { log('壳的 QQ 进程还在（pid=' + alive + '），不重复拉'); return }
+      if (alive) {
+        if (!stuckSince) { stuckSince = Date.now(); log('壳的 QQ 进程还在（pid=' + alive + '），先等它把桥起起来') ; return }
+        const downSec = Math.round((Date.now() - stuckSince) / 1000)
+        if (downSec < stuckSec()) { log('壳的 QQ 进程还在（pid=' + alive + '），桥 ' + downSec + 's 没响应，再等等') ; return }
+        warn('桥 ' + downSec + 's 都没起来，杀掉卡死的 QQ 壳（pid=' + alive + '）重拉')
+        const killCmd = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Stop-Process -Force"
+        try { execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', killCmd], { windowsHide: true }) } catch (e) { warn('杀壳失败：' + (e?.message || e)) }
+        stuckSince = 0
+        lastSpawnAt = 0
+      } else stuckSince = 0
     } catch { /* 查不到就按原来的走 */ }
     lastSpawnAt = Date.now()
     try {
@@ -378,6 +434,11 @@ export async function apply(ctx, config = {}) {
     const { stat } = await import('node:fs/promises')
     const file = cfg.qrFile || ''
     const before = await stat(file).then((s) => s.mtimeMs).catch(() => 0)
+    // 2026-11-01：GET /qr 会走 login.connect()，把「正在扫的那张码」作废。
+    //   90 秒内的码直接复用 —— 推图不该打断主人的扫码。
+    if (before && Date.now() - before < 90_000) {
+      try { return await readQrFile() } catch { /* 读不出来就照旧要新码 */ }
+    }
     try {
       await bridge.qr()
     } catch (err) {
@@ -493,12 +554,83 @@ export async function apply(ctx, config = {}) {
     }
   }
 
-  // 自动推码（2 分钟 × N 次）用完后，等 /post；收到就补一张，登录成功就停
+  /** 推一条纯文本到 ntfy（/post 的状态回报用） */
+  async function pushNtfyText(text, title) {
+    if (!cfg.notifyTopic) return
+    const ntfy = ntfyOf()
+    if (ntfy && typeof ntfy.push === 'function') {
+      try {
+        await ntfy.push({ topic: cfg.notifyTopic, message: text, title, priority: 4, tags: 'white_check_mark' })
+        return
+      } catch (err) { warn('ntfy 文本推送失败：', err?.message || err) }
+    }
+    try {
+      const latin = (s) => Buffer.from(String(s), 'utf8').toString('latin1')
+      const res = await fetch('https://ntfy.sh/' + encodeURIComponent(cfg.notifyTopic), {
+        method: 'POST',
+        headers: { Title: latin(title || ''), Tags: 'white_check_mark', Priority: '4' },
+        body: text,
+      })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+    } catch (err) { warn('ntfy 文本推送失败（fallback）：', err?.message || err) }
+  }
+
+  /** 把这套目录里的 QQ 壳杀掉（下一次 ensureShell 会重拉） */
+  async function killQQShell(why) {
+    try {
+      const { execFileSync } = await import('node:child_process')
+      const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
+      const cmd = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Stop-Process -Force"
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd], { windowsHide: true })
+      warn('已杀掉 QQ 壳（' + why + '），等 ensureShell 重拉')
+      return true
+    } catch (err) {
+      warn('杀壳失败：' + (err?.message || err))
+      return false
+    }
+  }
+
+  /**
+   * 2026-11-01：主人随时可以 /post，让插件立刻查一次「到底在不在线」。
+   *   - 健康：回一条状态到 ntfy（uin / stage / 监听器 / 多久没收到消息）
+   *   - 说 ready 但哑了：直接杀壳重拉（重拉后 ensureShell 推码）
+   *   - 没登录：补推一张码
+   * 返回 true = 已处理，不再走默认的「补推一张码」。
+   */
+  async function handlePostCommand() {
+    let st = null
+    try { st = await bridge.status() } catch { st = null }
+    const health = 桥健康(st)
+    if (health.ok) {
+      const recv = st.recvAgeSec == null ? '还没收到过消息' : ('最近一次收消息 ' + Math.round(st.recvAgeSec / 60) + ' 分钟前')
+      await pushNtfyText(
+        '✅ QQ 在线\nuin=' + (st.uin || '?') + '\nstage=' + st.stage + ' / listen=' + st.listen + '\n' + recv + '\n插件轮询：' + (st.pollAgeSec ?? '?') + 's 前',
+        'QQ 状态：在线'
+      )
+      log('/post → 桥在线（uin=' + (st.uin || '?') + '，' + recv + '）')
+      return true
+    }
+    if (st && st.ok && st.stage === 'ready') {
+      warn('/post → 桥说 ready 但' + health.why + '，杀掉 QQ 壳重拉')
+      await killQQShell('/post 检测到假在线')
+      stuckSince = 0
+      lastSpawnAt = 0
+      return true
+    }
+    log('/post → 当前' + health.why + '，补推一张码')
+    await pushFreshQr()
+    return true
+  }
+
+
+  //   收到命令先走 onCommand（查在线/杀假在线/补码），返回 false 才退回「补推一张码」。
   const postWatcher = createPostWatcher({
     getNtfy: ntfyOf,
     command: String(cfg.postCommand || '').trim(),
     topic: cfg.notifyTopic,
     timeoutMs: 60_000,
+    keepAlive: true,
+    onCommand: handlePostCommand,
     isLoggedIn: async () => {
       try {
         const st = await bridge.status()
@@ -538,6 +670,36 @@ export async function apply(ctx, config = {}) {
     const u = /^u-(.+)$/.exec(String(key || ''))
     if (u) return { chatType: 1, peerUid: u[1] }
     return null
+  }
+
+  // 会话的「名字」：Web 端对话列表上显示什么，QQ 这边就显示什么（主人 2026-11-06：别再甩一串 session-xxx）
+  //   活的会话直接问宿主的 sessionTitle 服务；不在内存里的读投影缓存；都没有就退回短 id
+  const 会话标题缓存 = new Map() // sessionId -> { at, title }
+  async function 会话标题(sessionId) {
+    const sid = String(sessionId || '')
+    if (!sid) return ''
+    const 缓 = 会话标题缓存.get(sid)
+    if (缓 && Date.now() - 缓.at < 15 * 1000) return 缓.title
+    let title = ''
+    try {
+      const ag = findAgent(agentsSvc, sid)
+      const svc = ag && typeof ctx.get === 'function' ? ctx.get('sessionTitle') : null
+      const snap = svc && ag.session && typeof svc.get === 'function' ? svc.get(ag.session) : null
+      if (snap && typeof snap.title === 'string') title = snap.title.trim()
+    } catch { /* 拿不到就当没有 */ }
+    if (!title) {
+      try { title = await readSessionTitle(sid) } catch { /* 同上 */ }
+    }
+    会话标题缓存.set(sid, { at: Date.now(), title })
+    return title
+  }
+  // 列表里的一行名字：有标题用标题（太长截断），没有就用短 id，别显示成一串 session-xxx
+  function 会话短名(title, id) {
+    const t = String(title || '').trim()
+    if (t) return t.length > 28 ? t.slice(0, 28) + '…' : t
+    const bare = String(id || '').replace(/^session-/, '')
+    if (!bare) return '（未命名）'
+    return '（未命名·' + (bare.length > 14 ? bare.slice(0, 14) + '…' : bare) + '）'
   }
 
   // 最近发出去的文本（key → { text, at }）：自动回发前拿来比对，同一句话不重复发
@@ -866,7 +1028,8 @@ export async function apply(ctx, config = {}) {
         const ids = pools.get(presetName)
         mine = ids && ids.size ? all.filter((s) => ids.has(s.id)) : []
       }
-      const 绑头 = '当前绑定：' + (presetName ? '预设 ' + presetName : '会话 ' + (current || '（没有）')) + ' · ' + howBound
+      const 当前名 = current ? 会话短名(await 会话标题(current), current) : ''
+      const 绑头 = '当前绑定：' + (presetName ? '预设 ' + presetName : '会话 ' + (当前名 || '（没有）')) + ' · ' + howBound
       if (presetName && !mine.length) {
         await replyTo(key, 绑头 + '\n这个预设下面还没有会话（发 /new 在这个预设里开一个）')
         return
@@ -878,28 +1041,36 @@ export async function apply(ctx, config = {}) {
         if (!picked) { await replyTo(key, '序号越界：现在只显示 ' + rows.length + ' 条'); return }
         if (args.del) {
           if (picked.id === current) { await replyTo(key, '不能删正在用的这条，先 /new 或切走'); return }
+          const 删名 = 会话短名(await 会话标题(picked.id), picked.id)
           await deleteSessionDir(picked.workspace, picked.id)
           const chats = await chatsNow(true)
           for (const k of Object.keys(chats)) if (chats[k] && chats[k].sessionId === picked.id) delete chats[k]
           await writeChats(chats)
           chatCache.data = chats
-          await replyTo(key, '删了：' + picked.id)
+          await replyTo(key, '删了：' + 删名)
           return
         }
-        if (!findAgent(agentsSvc, picked.id)) { await replyTo(key, picked.id + ' 现在没有活着的 agent（下次发消息会自动起）') }
+        const 切名 = 会话短名(await 会话标题(picked.id), picked.id)
+        if (!findAgent(agentsSvc, picked.id)) { await replyTo(key, 切名 + ' 现在没有活着的 agent（下次发消息会自动起）') }
         // ⚠ 2026-10-29 主人：「/session 如果绑定的预设，那切的也是**全局预设池的绑定**，不是改成绑会话」
         if (presetName) {
           await 记预设活跃(presetName, picked.id)
           await setChatSession(key, picked.id, { preset: presetName, boundBy: 'preset' })
-          await replyTo(key, '切到（预设 ' + presetName + ' 的活跃会话）：' + picked.id)
+          await replyTo(key, '切到（预设 ' + presetName + ' 的活跃会话）：' + 切名)
           return
         }
         await setChatSession(key, picked.id, { boundBy: 'session' })
-        await replyTo(key, '切到：' + picked.id)
+        await replyTo(key, '切到：' + 切名)
         return
       }
       const rows = mine.slice(args.offset, args.offset + args.count)
-      const lines = rows.map((s, i) => (i + 1) + '. ' + s.id + (s.id === current ? '  ← 当前' : '') + '  ' + ago(s.updatedAt))
+      const 名 = await Promise.all(rows.map((s) => 会话标题(s.id)))
+      const lines = rows.map((s, i) => {
+        const 短 = 会话短名(名[i], s.id)
+        const 有标题 = !!String(名[i] || '').trim()
+        const 尾 = 有标题 ? '（' + (String(s.id).startsWith('session-') ? String(s.id).slice('session-'.length).slice(0, 8) : s.id) + '）' : ''
+        return (i + 1) + '. ' + 短 + 尾 + (s.id === current ? '  ← 当前' : '') + '  ' + ago(s.updatedAt)
+      })
       await replyTo(key, 绑头 + '\n会话（共 ' + mine.length + '，从第 ' + (args.offset + 1) + ' 条起 ' + rows.length + ' 条）\n' +
         lines.join('\n') + '\n\n/session <序号> 切换 · /session <序号> -del 删除')
       return
@@ -934,89 +1105,99 @@ export async function apply(ctx, config = {}) {
       return
     }
 
-    // ── 适配层配置类：改的是 ui-config.json（运行时覆盖）──
+
+    // ── 适配层配置类：改的就是 Web 那份配置（home\xykp\config.yml 的 qq-adapter 行）──
+    // 2026-11-08 主人：只留一个配置入口。命令还能用，但写的是同一个文件，不再有 ui-config.json。
     if (spec.name.startsWith('cfg-')) {
-      const cur = (await bridge.getConfig()) || {}
-      const mineCfg = cur[INST] || {}
+      const 存 = async (patch) => {
+        const all = readAll()
+        const row = all['qq-adapter'] && typeof all['qq-adapter'] === 'object' ? all['qq-adapter'] : {}
+        all['qq-adapter'] = { ...row, ...patch }
+        writeAll(all)
+        Object.assign(cfg, patch) // 本轮立刻按新值走，不用等重载
+      }
       const tokens = String(parsed.arg || '').split(/\s+/).filter(Boolean)
       if (spec.name === 'cfg-default') {
-        if (!tokens.length) { await replyTo(key, '当前默认目标：' + (mineCfg.defaultTarget || cfg.defaultTarget)); return }
+        if (!tokens.length) { await replyTo(key, '当前默认目标：' + (cfg.defaultTarget || '（没配）') + '\n改：/cfg-default p-<预设> 或 s-<会话id>'); return }
         const v = tokens[0]
-        await bridge.saveConfig(INST, { defaultTarget: v })
-        await replyTo(key, '默认目标改成 ' + v + '（下一轮生效）')
+        await 存({ defaultTarget: v })
+        await replyTo(key, '默认目标改成 ' + v + '（已写进 Web 配置）')
         return
       }
       if (spec.name === 'cfg-mode') {
-        if (!tokens.length) { await replyTo(key, '当前模式：' + (mineCfg.mode || cfg.mode)); return }
-        if (!['blacklist', 'whitelist'].includes(tokens[0])) { await replyTo(key, '只有 blacklist / whitelist'); return }
-        await bridge.saveConfig(INST, { mode: tokens[0] })
-        await replyTo(key, '名单模式改成 ' + tokens[0])
+        if (!tokens.length) { await replyTo(key, '当前模式：' + (cfg.mode || 'blacklist') + '（blacklist=名单里的不转 / whitelist=只转名单里的）'); return }
+        const v = tokens[0] === 'whitelist' ? 'whitelist' : 'blacklist'
+        await 存({ mode: v })
+        await replyTo(key, '模式改成 ' + v)
         return
       }
       if (spec.name === 'cfg-list') {
-        const listName = { blocked: 'blocked', allowed: 'allowed', fast: 'fastUids', fastUids: 'fastUids' }
-        const which = tokens.find((t) => listName[t]) || 'blocked'
-        const field = listName[which]
-        const arr = Array.isArray(mineCfg[field]) ? mineCfg[field].slice() : []
-        const add = tokens.indexOf('-add')
-        const del = tokens.indexOf('-del')
-        if (add >= 0 && tokens[add + 1]) {
-          if (!arr.includes(tokens[add + 1])) arr.push(tokens[add + 1])
-          await bridge.saveConfig(INST, { [field]: arr })
-          await replyTo(key, which + ' 加了 ' + tokens[add + 1])
+        const which = tokens.find((t) => ['blocked', 'allowed', 'fast'].includes(t)) || 'blocked'
+        const field = which === 'fast' ? 'fastUids' : which
+        const list = Array.isArray(cfg[field]) ? [...cfg[field]] : []
+        const addIdx = tokens.indexOf('-add')
+        const delIdx = tokens.indexOf('-del')
+        if (addIdx >= 0 && tokens[addIdx + 1]) {
+          const v = tokens[addIdx + 1]
+          if (!list.includes(v)) list.push(v)
+          await 存({ [field]: list })
+          await replyTo(key, field + ' 里加了 ' + v + '（现在 ' + list.length + ' 条）')
           return
         }
-        if (del >= 0 && tokens[del + 1]) {
-          const t = tokens[del + 1]
-          const idx = arr.indexOf(t)
+        if (delIdx >= 0 && tokens[delIdx + 1]) {
+          const v = tokens[delIdx + 1]
+          const n = Number(v)
           let removed = ''
-          if (idx >= 0) removed = arr.splice(idx, 1)[0]
-          else if (/^\d+$/.test(t)) removed = arr.splice(Number(t) - 1, 1)[0] || ''
-          await bridge.saveConfig(INST, { [field]: arr })
-          await replyTo(key, removed ? which + ' 删了 ' + removed : '没找到要删的')
+          if (Number.isInteger(n) && n >= 1 && n <= list.length) removed = String(list.splice(n - 1, 1)[0] ?? '')
+          else { const i = list.indexOf(v); if (i >= 0) removed = String(list.splice(i, 1)[0] ?? '') }
+          if (!removed) { await replyTo(key, field + ' 里没找到 ' + v); return }
+          await 存({ [field]: list })
+          await replyTo(key, field + ' 里删了 ' + removed)
           return
         }
-        await replyTo(key, which + '（' + arr.length + '）\n' + (arr.length ? arr.map((x, i) => (i + 1) + '. ' + x).join('\n') : '（空）'))
+        const 表 = (arr) => (Array.isArray(arr) && arr.length ? arr.map((x, i) => (i + 1) + '. ' + x).join('\n') : '（空）')
+        await replyTo(key, 'blocked:\n' + 表(cfg.blocked) + '\nallowed:\n' + 表(cfg.allowed) + '\nfast:\n' + 表(cfg.fastUids) +
+          '\n\n/cfg-list -add u-xxx|g-xxx [blocked|allowed|fast] · -del 序号|键')
         return
       }
       if (spec.name === 'cfg-table') {
-        const maps = Array.isArray(mineCfg.mappings) ? mineCfg.mappings.slice() : []
-        const setAt = tokens.indexOf('-set')
-        const addAt = tokens.indexOf('-add')
-        const delAt = tokens.indexOf('-del')
-        // 2026-10-28：两种写法都认 ——
-        //   `/cfg-table -set <chat> <target>`（空格分隔）
-        //   `/cfg-table -add <chat>:<target>`（冒号分隔，主人写的就是这个）
-        const 写字 = setAt >= 0 ? setAt : addAt
-        if (写字 >= 0) {
-          let chat = ''
-          let target = ''
-          if (tokens[写字 + 1] && tokens[写字 + 2]) { chat = tokens[写字 + 1]; target = tokens[写字 + 2] }
-          else if (tokens[写字 + 1] && tokens[写字 + 1].includes(':')) {
-            const idx = tokens[写字 + 1].indexOf(':')
-            chat = tokens[写字 + 1].slice(0, idx).trim()
-            target = tokens[写字 + 1].slice(idx + 1).trim()
-          }
-          if (!chat || !target) {
-            await replyTo(key, '写法：/cfg-table -set <u-xxx|g-xxx> <p-预设|s-会话>\n或者 /cfg-table -add <chat>:<target>')
-            return
-          }
-          const i = maps.findIndex((m) => m.chat === chat)
-          if (i >= 0) maps[i] = { chat, target }
+        const maps = Array.isArray(cfg.mappings) ? cfg.mappings.map((m) => ({ ...m })) : []
+        const setIdx = tokens.indexOf('-set')
+        const addIdx = tokens.indexOf('-add')
+        const delIdx = tokens.indexOf('-del')
+        if (setIdx >= 0 && tokens[setIdx + 1] && tokens[setIdx + 2]) {
+          const chat = normalizeKey(tokens[setIdx + 1])
+          const target = tokens[setIdx + 2]
+          const i = maps.findIndex((m) => normalizeKey(m.chat) === chat)
+          if (i >= 0) maps[i] = { ...maps[i], chat, target }
           else maps.push({ chat, target })
-          await bridge.saveConfig(INST, { mappings: maps })
+          await 存({ mappings: maps })
           await replyTo(key, '映射：' + chat + ' → ' + target)
           return
         }
-        if (delAt >= 0 && tokens[delAt + 1]) {
-          const t = tokens[delAt + 1]
-          const i = maps.findIndex((m) => m.chat === t)
-          const removed = i >= 0 ? maps.splice(i, 1)[0] : null
-          await bridge.saveConfig(INST, { mappings: maps })
-          await replyTo(key, removed ? '删了映射 ' + removed.chat : '没找到这条映射')
+        if (addIdx >= 0 && tokens[addIdx + 1] && tokens[addIdx + 1].includes(':')) {
+          const idx = tokens[addIdx + 1].indexOf(':')
+          const chat = normalizeKey(tokens[addIdx + 1].slice(0, idx))
+          const target = tokens[addIdx + 1].slice(idx + 1).trim()
+          if (chat && target) {
+            const i = maps.findIndex((m) => normalizeKey(m.chat) === chat)
+            if (i >= 0) maps[i] = { ...maps[i], chat, target }
+            else maps.push({ chat, target })
+            await 存({ mappings: maps })
+            await replyTo(key, '映射：' + chat + ' → ' + target)
+            return
+          }
+        }
+        if (delIdx >= 0 && tokens[delIdx + 1]) {
+          const chat = normalizeKey(tokens[delIdx + 1])
+          const next = maps.filter((m) => normalizeKey(m.chat) !== chat)
+          if (next.length === maps.length) { await replyTo(key, '映射里没有 ' + chat); return }
+          await 存({ mappings: next })
+          await replyTo(key, '删了映射：' + chat)
           return
         }
-        await replyTo(key, '映射（' + maps.length + '）\n' + (maps.length ? maps.map((m) => m.chat + ' → ' + m.target).join('\n') : '（空）') + '\n\n/cfg-table -set u-xxx p-alive · /cfg-table -add g-123:s-会话 · /cfg-table -del u-xxx')
+        const 表 = maps.length ? maps.map((m, i) => (i + 1) + '. ' + m.chat + ' → ' + m.target).join('\n') : '（空）'
+        await replyTo(key, '当前映射：\n' + 表 + '\n\n/cfg-table -set <chat> <target> · -add <chat>:<target> · -del <chat>')
         return
       }
     }
@@ -1296,9 +1477,11 @@ export async function apply(ctx, config = {}) {
   const pendingBatch = new Map() // key -> { parts: [{sender,text}], timer, firstAt }
   const lastDeliveredAt = new Map() // key -> ms
 
-  // ── 自动回发：QQ 进来一条 → 记下来源 → 这一轮跑完把最终回复发回那个聊天 ──
+  // ── 自动回发：QQ 进来一条 → 记下来源 → 把这一轮里**每一段** assistant 文字发回那个聊天 ──
   // 主人 2026-10-28：群里跟机器人说话，机器人得在群里回话（以前只有指令会回，普通聊天永远没动静）
-  const 待回发 = new Map() // sessionId -> { key, at }
+  // 主人 2026-11-06：以前只发「最后一段」，中间模型说的话（工具调用之间的那些）全看不到。
+  //   现在挂在宿主 `session/event` 上，assistant 每产出一次文字就立刻回一条，一段都不落地漏。
+  const 待回发 = new Map() // sessionId -> { key, at, armed, sawOutput }
   function 提取回复文本(msg) {
     if (!msg) return ''
     if (typeof msg === 'string') return msg.trim()
@@ -1309,34 +1492,113 @@ export async function apply(ctx, config = {}) {
       .join('\n')
       .trim()
   }
+
+  // 会话 id 有两种写法（带/不带 `session-` 前缀），比较时归一化
+  function 会话同号(a, b) {
+    const n = (s) => String(s || '').replace(/^session-/, '')
+    const x = n(a)
+    return !!x && x === n(b)
+  }
+  function 找待回发(sessionId) {
+    for (const [sid, info] of 待回发) if (会话同号(sid, sessionId)) return [sid, info]
+    return null
+  }
+  function 记待回发(sessionId, key) {
+    const info = { key, at: Date.now(), armed: false, sawOutput: false }
+    待回发.set(sessionId, info)
+    return info
+  }
+
+  // 同一个会话的多段文字必须按顺序发，别让网络抖动把顺序搅乱
+  const 回发队列 = new Map() // sessionId -> Promise
+  function 排队回发(sessionId, info, 文) {
+    const 前 = 回发队列.get(sessionId) || Promise.resolve()
+    const 本 = 前
+      .catch(() => { /* 上一段失败不影响下一段 */ })
+      .then(() => 发一段回QQ(info, 文))
+      .catch((err) => warn('自动回发失败：', err?.message || err))
+    回发队列.set(sessionId, 本)
+    void 本.then(() => { if (回发队列.get(sessionId) === 本) 回发队列.delete(sessionId) })
+    return 本
+  }
+  async function 发一段回QQ(info, 文) {
+    const p = splitKey(info.key)
+    if (!p) return
+    const 近 = 近发文本.get(info.key)
+    if (近 && 近.text === 文 && Date.now() - 近.at < 60 * 1000) { log('这一段已经用工具发过同样的话，跳过自动回发'); return }
+    await bridge.send(p.chatType, p.peerUid, 文)
+    近发文本.set(info.key, { text: 文, at: Date.now() })
+    log('自动回发 → ' + info.key + '（' + 文.length + ' 字）')
+  }
+
+  // 监听宿主事件流：assistant 每段文字一落地就发出去（不再等整轮结束只挑最后一段）
+  // 包一层 try：事件回调里抛错会打断宿主这一轮，宁可这轮不发也不能炸会话
+  const 会话事件监听 = (session, event) => {
+    try { 处理会话事件(session, event) } catch (err) { warn('会话事件处理失败：', err?.message || err) }
+  }
+  function 处理会话事件(session, event) {
+    if (cfg.autoReply === false) return
+    if (!待回发.size || !event || !event.type) return
+    const 中 = 找待回发(session && session.id)
+    if (!中) return
+    const [sid, info] = 中
+    const d = event.data || {}
+    if (event.type === 'user/message') {
+      // 只有我们自己投进去的那条才算「这一轮的开始」，别人（Web 端等）发的消息不勾
+      if (d.source && d.source.kind === SOURCE_KIND) { info.armed = true; info.sawOutput = false }
+      return
+    }
+    if (event.type === 'assistant/message') {
+      if (!info.armed) return
+      info.sawOutput = true
+      const 文 = 提取回复文本(d.message)
+      if (!文) return
+      if (/^\[\[SILENT\]\]$/i.test(文)) { log('这一轮有一段回的是 [[SILENT]]，不发'); return }
+      排队回发(sid, info, 文)
+      return
+    }
+    if (event.type === 'turn/end' && info.armed && info.sawOutput) {
+      // 这一轮结束、该发的都发出去了 → 解绑，免得下一轮（定时任务等）的文字也漏到 QQ
+      待回发.delete(sid)
+    }
+  }
+
   async function 检查回发() {
     if (cfg.autoReply === false) return
     if (!待回发.size) return
     for (const [sid, info] of [...待回发]) {
       if (Date.now() - info.at > 5 * 60 * 1000) { 待回发.delete(sid); continue }
+      // 正常路径：已经接上事件流，逐段回发由监听负责，这里只做兜底清理
+      if (info.armed) continue
       const ag = findAgent(agentsSvc, sid)
       if (!ag) { 待回发.delete(sid); continue }
       if (ag.status === 'running') continue // 还在跑，等下一轮 tick
+      // 刚投进去、agent 可能正要起跑：给它几秒去 arm，别急着走兜底
+      if (Date.now() - info.at < 8000) continue
       let 文 = ''
+      let 起 = -1
       try {
         const ev = (ag.session && ag.session.snapshotEvents ? ag.session.snapshotEvents() : []) || []
+        // 找最近一条「我们投进去的」user/message，只把它之后的 assistant 文字当这一轮
         for (let i = ev.length - 1; i >= 0; i--) {
           const e = ev[i]
-          if (e && e.type === 'assistant/message') { 文 = 提取回复文本(e.data && e.data.message); break }
+          if (e && e.type === 'user/message' && e.data && e.data.source && e.data.source.kind === SOURCE_KIND) { 起 = i; break }
+        }
+        if (起 >= 0) {
+          for (let i = 起 + 1; i < ev.length; i++) {
+            const e = ev[i]
+            if (e && e.type === 'assistant/message') {
+              const t = 提取回复文本(e.data && e.data.message)
+              if (t) 文 = t
+            }
+          }
         }
       } catch { /* 拿不到就不发 */ }
       待回发.delete(sid)
+      if (起 < 0) continue // 还没真正进会话（排着队），别发旧消息
       if (!文) continue
       if (/^\[\[SILENT\]\]$/i.test(文)) { log('这一轮回的是 [[SILENT]]，不回发'); continue }
-      const 近 = 近发文本.get(info.key)
-      if (近 && 近.text === 文 && Date.now() - 近.at < 60 * 1000) { log('这一轮已经用工具发过同样的话，跳过自动回发'); continue }
-      const p = splitKey(info.key)
-      if (!p) continue
-      try {
-        await bridge.send(p.chatType, p.peerUid, 文)
-        近发文本.set(info.key, { text: 文, at: Date.now() })
-        log('自动回发 → ' + info.key + '（' + 文.length + ' 字）')
-      } catch (err) { warn('自动回发失败：', err?.message || err) }
+      排队回发(sid, info, 文)
     }
   }
 
@@ -1379,12 +1641,14 @@ export async function apply(ctx, config = {}) {
     const text = parts.length === 1
       ? parts[0].text
       : `（${parts.length} 条连着来的，合并成一条）\n` + parts.map((p) => (p.sender ? `[${p.sender}] ` : '') + p.text).join('\n')
+    // 先登记再投递：投递会立刻产生 user/message 事件，晚一步登记就接不上「这一轮」了
+    const 本次回发 = 记待回发(target.sessionId, key)
     try {
       await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode, ctx)
-      待回发.set(target.sessionId, { key, at: Date.now() })
       lastDeliveredAt.set(key, Date.now())
       log(`转发${parts.length > 1 ? `(${parts.length} 条合并)` : ''} ${key} → ${target.sessionId}`)
     } catch (err) {
+      if (待回发.get(target.sessionId) === 本次回发) 待回发.delete(target.sessionId)
       warn('合并转发失败（下轮再说）：', err?.message || err)
     }
   }
@@ -1507,8 +1771,6 @@ export async function apply(ctx, config = {}) {
   async function tick(reason) {
     if (!cfg.enabled || running) return
     if (!是桥主()) return // 同一个桥已经有别的实例在轮询了（重复挂载时只让一份干活）
-    // 运行时覆盖：设置页写到 home\qq-adapter\ui-config.json 的分流配置，每轮读一次（很便宜）
-    try { Object.assign(cfg, pickRouting((await readOverride())[INST] || {})) } catch { /* 读不到就用原配置 */ }
     // 名单/映射/白名单里允许写 QQ 号，统一换成 uid 再比（幂等，转换结果会缓存）
     try {
       cfg.blocked = await Promise.all((cfg.blocked || []).map(normChatKey))
@@ -1610,14 +1872,15 @@ export async function apply(ctx, config = {}) {
           log(`暂存 ${key}（静默 ${cfg.coalesceSeconds}s 后合并发）`)
           continue
         }
+        const 本次回发 = 记待回发(target.sessionId, key)
         try {
           await deliver(agentsSvc, target.sessionId, text, cfg.deliverMode, ctx)
-          待回发.set(target.sessionId, { key, at: Date.now() })
           seenSet.add(msgId)
           handled++
           lastDeliveredAt.set(key, Date.now())
           log(`转发 ${key} → ${target.sessionId}（${target.via}${target.via === 'chats.json' ? ' 绑定' : ''}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
         } catch (err) {
+          if (待回发.get(target.sessionId) === 本次回发) 待回发.delete(target.sessionId)
           warn('转发 ' + key + ' 失败（下轮再试）：', err?.message || err)
         }
       }
@@ -1648,10 +1911,15 @@ export async function apply(ctx, config = {}) {
   void ensureShell()
   void tick('启动')
 
+  // 挂上宿主事件流：assistant 每段文字一落地就发出去（主人 2026-11-06：中间输出也要发，别只剩最后一段）
+  let 摘会话监听 = null
+  try { 摘会话监听 = ctx.on('session/event', 会话事件监听) } catch (err) { warn('挂会话事件失败：', err?.message || err) }
+
   try {
     const cleanup = () => {
       clearInterval(timer)
       clearInterval(shellTimer)
+      try { if (typeof 摘会话监听 === 'function') 摘会话监听() } catch { /* 清理失败无所谓 */ }
       postWatcher.stop('宿主收摊')
       for (const st of pendingBatch.values()) { try { if (st.timer) clearTimeout(st.timer) } catch { } }
       pendingBatch.clear()
@@ -1877,7 +2145,8 @@ export async function apply(ctx, config = {}) {
       },
       async execute() {
         const s = await bridge.status()
-        return { ok: s?.ok === true, status: s }
+        const h = 桥健康(s)
+        return { ok: h.ok, health: h.ok ? 'ok' : h.why, status: s }
       },
     }))
     }  // ← if (false)：旧的 9 个工具到此为止
@@ -1944,7 +2213,8 @@ export async function apply(ctx, config = {}) {
         const kind = String(args.kind || 'history').toLowerCase()
         if (kind === 'status') {
           const s = await bridge.status()
-          return { ok: s?.ok === true, status: s }
+          const h = 桥健康(s)
+          return { ok: h.ok, health: h.ok ? 'ok' : h.why, status: s }
         }
         const key = String(args.chat || '').trim()
         const chatType = /^[gG]-/.test(key) ? 2 : 1
@@ -1957,48 +2227,8 @@ export async function apply(ctx, config = {}) {
   }
   } catch (err) { warn('注册工具失败（不影响分流）：', err?.message || err) }
 
-  // ── 设置页用：读写运行时覆盖（home\xykp\qq-adapter\ui-config.json）──
-  // 2026-10-29：把原来 39273/adapter-ui 那个独立页面搬进 DSH 设置页
-  try {
-    // ⚠ inject 里没有 webServer → 直接读 ctx.webServer 会抛，用 ctx.get
-    const webServer = (() => { try { return ctx.get('webServer') } catch { return null } })()
-    if (webServer && typeof webServer.register === 'function') {
-      const route = (path, handler) =>
-        ctx.effect(() => webServer.register({ kind: 'exact', path, handler }))
-      route('/dsh-qq-adapter/overrides', async (req, res) => {
-        const send = (code, body) => {
-          try {
-            res.writeHead(code, { 'content-type': 'application/json' })
-            res.end(JSON.stringify(body))
-          } catch (e) { /* 连接没了就算了 */ }
-        }
-        try {
-          const file = overridePath()
-          if (req.method === 'GET') {
-            const all = await readOverride()
-            return send(200, { ok: true, instance: INST, overrides: all[INST] || all.default || {} })
-          }
-          if (req.method !== 'POST') return send(405, { ok: false, error: '只能 GET / POST' })
-          let body = ''
-          for await (const chunk of req) body += chunk
-          const patch = JSON.parse(body || '{}')
-          const all = await readOverride()
-          all[INST] = { ...(all[INST] || all.default || {}), ...patch }
-          await mkdir(dirname(file), { recursive: true })
-          await writeFile(file, JSON.stringify(all, null, 2), 'utf8')
-          return send(200, { ok: true, instance: INST, overrides: all[INST] })
-        } catch (err) {
-          return send(500, { ok: false, error: String(err?.message || err) })
-        }
-      })
-      log('设置页端点已挂：/dsh-qq-adapter/overrides')
-    } else {
-      warn('宿主没有 webServer，设置页改动端没挂上（不影响分流）')
-    }
-  } catch (err) { warn('挂设置页端点失败（不影响分流）：', err?.message || err) }
 }
 
 export const _internal = { resolveTarget, deliver, SOURCE_KIND }
-
 
 

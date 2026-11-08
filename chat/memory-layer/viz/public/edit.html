@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>记忆编辑台</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;background:#070a12;color:#cdd6f4;font:13px/1.7 system-ui,-apple-system,"Microsoft YaHei",sans-serif}
+  .wrap{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:24px;height:100vh;box-sizing:border-box}
+  h2{font-size:14px;color:#67b8ff;font-weight:600;margin:0 0 10px}
+  label{display:block;margin-bottom:10px;color:#8b9bc4;font-size:12px}
+  input,textarea{width:100%;box-sizing:border-box;background:#0b1220;color:#cdd6f4;border:1px solid #22304d;
+    border-radius:8px;padding:8px 10px;font:inherit;margin-top:4px}
+  textarea{resize:vertical}
+  button{background:#1b2b47;color:#cfe2ff;border:1px solid #2c4166;border-radius:8px;padding:7px 14px;cursor:pointer;font:inherit}
+  button:hover{background:#24395c}
+  button.ghost{background:transparent;padding:3px 8px;font-size:12px}
+  pre{background:#0b1220;border:1px solid #1a2740;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto}
+  .ev{border-bottom:1px solid #141d2e;padding:7px 0;display:flex;gap:8px;align-items:flex-start}
+  .ev .b{flex:1}
+  .ev .k{color:#6b7a99;font-size:11px}
+  .ev.dim{opacity:.45}
+  #list{overflow:auto;max-height:calc(100vh - 260px)}
+  .row{display:flex;gap:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section>
+    <h2>跑一轮</h2>
+    <label>用户说<input id="u" placeholder="今天买了草莓"></label>
+    <label>我回（用来判定命中：里面出现这条事件的关键词就算命中）<input id="r" placeholder="草莓好吃吗"></label>
+    <label>这一轮写入 — 每行一条：<code>概括 | 概念:0.8, 概念:0.5</code>
+      <textarea id="w" rows="3" placeholder="买草莓给妹妹 | 草莓:0.9, 妹妹:0.5"></textarea>
+    </label>
+    <div class="row">
+      <button id="go">跑一轮</button>
+      <button id="next" class="ghost">只推进回合</button>
+    </div>
+    <h2 style="margin-top:18px">本轮结果</h2>
+    <pre id="out">—</pre>
+  </section>
+
+  <section>
+    <h2>事件 <span id="cnt" style="color:#6b7a99;font-weight:400"></span></h2>
+    <div id="list"></div>
+    <h2 style="margin-top:16px">手动加一条</h2>
+    <label>概括<input id="nb" placeholder="今天下雨了"></label>
+    <label>概念<input id="nc" placeholder="下雨:0.8, 天气:0.5"></label>
+    <button id="add">加进去</button>
+  </section>
+</div>
+<script type="module">
+const preset = new URLSearchParams(location.search).get('preset') || 'test'
+const $ = (id) => document.getElementById(id)
+
+const parseConcepts = (s) =>
+  (s || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean).map((x) => {
+    const [k, m] = x.split(':')
+    return [k.trim(), m ? Math.min(1, Math.max(0, Number(m))) : 0.7]
+  })
+
+const parseWrite = (s) =>
+  (s || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [brief, cs] = l.split('|')
+    return { brief: (brief || '').trim(), concepts: parseConcepts(cs) }
+  })
+
+async function api(p, body) {
+  const r = await fetch(p, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined)
+  return r.json()
+}
+
+$('go').onclick = async () => {
+  const d = await api('/api/turn', { preset, u: $('u').value, r: $('r').value, write: parseWrite($('w').value) })
+  $('out').textContent = '推出 ' + d.pushed.length + ' 条\n' +
+    d.pushed.map((x) => `  ${x.score.toFixed(3)}  [${x.via}]  ${x.brief}`).join('\n') +
+    `\n反馈  命中 ${d.hit} / 未中 ${d.miss}`
+  $('w').value = ''
+  refresh()
+}
+$('next').onclick = async () => { await api('/api/next', { preset }); refresh() }
+$('add').onclick = async () => {
+  await api('/api/event', { preset, brief: $('nb').value, concepts: parseConcepts($('nc').value) })
+  $('nb').value = ''; $('nc').value = ''
+  refresh()
+}
+
+async function refresh() {
+  const d = await api('/api/state?preset=' + encodeURIComponent(preset))
+  const last = d.frames[d.frames.length - 1]
+  const keyOf = new Map(last.concepts.map((c) => [c.id, c.key]))
+  $('cnt').textContent = `${last.events.length} 条 · ${last.concepts.length} 个概念 · 第 ${last.turn} 轮`
+  $('list').innerHTML = last.events.slice().reverse().map((e) => {
+    const ks = e.cids.map((id) => keyOf.get(id)).filter(Boolean).join(' · ')
+    return `<div class="ev ${e.forgotten ? 'dim' : ''}">
+      <div class="b">#${e.id} ${e.brief}<div class="k">${ks}</div></div>
+      <button class="ghost" data-f="${e.id}">忘</button>
+      <button class="ghost" data-d="${e.id}">删</button>
+    </div>`
+  }).join('')
+  for (const b of $('list').querySelectorAll('[data-f]')) b.onclick = async () => { await api('/api/forget', { preset, id: +b.dataset.f }); refresh() }
+  for (const b of $('list').querySelectorAll('[data-d]')) b.onclick = async () => { await api('/api/delete', { preset, id: +b.dataset.d }); refresh() }
+}
+
+refresh()
+// 视图那边改了也跟着刷新
+const es = new EventSource('/api/stream?preset=' + encodeURIComponent(preset))
+es.onmessage = () => { clearTimeout(window.__t); window.__t = setTimeout(refresh, 250) }
+</script>
+</body>
+</html>

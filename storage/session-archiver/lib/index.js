@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // dsh-session-archiver · 宿主半边
 //
 // 需求（任务-2026-10-27.md 第三节）：
@@ -30,6 +31,8 @@ const DEFAULTS = {
   idleDays: 3,
   intervalHours: 12,
   dryRun: false,
+  // 磁盘上有、但不在任何 workspace 成员表里的「未分组」会话，也按 idleDays 归档
+  archiveUngrouped: true,
   // 会话落盘根目录，空 = <DSH_HOME>/sessions
   sessionsRoot: '',
 }
@@ -307,6 +310,20 @@ async function runOnce(registry, cfg) {
     return { id: preset, name: presetNames.get(preset) || '' }
   }
   const { toArchive, keep } = plan(workspaces, archivedIds, cfg, (id) => activity.get(id), titleOf, presetOf)
+
+  // 「未分组」：磁盘上有、但不在任何 workspace 成员表里的会话。
+  // 以前 plan() 只遍历 workspace.sessionIds，这些永远扫不到，会一直挂在侧边栏。
+  const ungrouped = planUngrouped(
+    workspaces,
+    archivedIds,
+    registry.pinnedSessionIds || [],
+    cfg,
+    activity,
+    titleOf,
+    presetOf,
+  )
+  toArchive.push(...ungrouped.toArchive)
+  keep.push(...ungrouped.keep)
   let done = 0
   let failed = 0
   for (const item of toArchive) {
@@ -332,7 +349,53 @@ async function runOnce(registry, cfg) {
   return { scanned: workspaces.length, archived: done, failed, dryRun: Boolean(cfg.dryRun), toArchive: toArchive.length, keep }
 }
 
+/**
+ * 「未分组」会话的归档计划：磁盘上有、但不在任何 workspace 成员表里的。
+ * 只归档超过 idleDays、没归档、没置顶、没被 ignore 规则命中的。
+ */
+export function planUngrouped(workspaces, archivedIds, pinnedIds, cfgInput, activity, titleOf = () => '', presetOf = () => ({})) {
+  const cfg = { ...DEFAULTS, ...(cfgInput && typeof cfgInput === 'object' ? cfgInput : {}) }
+  const archived = new Set(archivedIds || [])
+  const pinned = new Set(pinnedIds || [])
+  const sMatchers = (cfg.ignoreSessions || []).map(matcherOf)
+  const pMatchers = (cfg.ignorePresets || []).map(matcherOf)
+  const member = new Set()
+  for (const ws of workspaces || []) for (const id of ws.sessionIds || []) member.add(id)
+  const cutoff = Date.now() - Math.max(0, Number(cfg.idleDays) || 0) * 86400000
+  const keep = []
+  const toArchive = []
+  if (cfg.archiveUngrouped === false) return { toArchive, keep }
+  const entries = activity && typeof activity.entries === 'function' ? [...activity.entries()] : []
+  for (const [id, last] of entries) {
+    if (member.has(id)) continue
+    if (archived.has(id)) {
+      keep.push({ id, reason: 'already-archived', workspace: '未分组' })
+      continue
+    }
+    if (pinned.has(id)) {
+      keep.push({ id, reason: 'pinned', workspace: '未分组' })
+      continue
+    }
+    const title = String(titleOf(id) || '')
+    if (hitAny(id, sMatchers) || hitAny(title, sMatchers)) {
+      keep.push({ id, reason: 'ignored', workspace: '未分组' })
+      continue
+    }
+    if (pMatchers.length) {
+      const preset = presetOf(id) || {}
+      if (hitAny(String(preset.id || ''), pMatchers) || hitAny(String(preset.name || ''), pMatchers)) {
+        keep.push({ id, reason: 'ignored-preset', workspace: '未分组' })
+        continue
+      }
+    }
+    if (!last || last > cutoff) continue
+    toArchive.push({ id, workspace: '未分组', last })
+  }
+  return { toArchive, keep }
+}
+
 export function apply(ctx, config = {}) {
+  config = configFor('session-archiver', config)
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
   const registry = ctx.workspaceRegistry
   const run = async (label) => {

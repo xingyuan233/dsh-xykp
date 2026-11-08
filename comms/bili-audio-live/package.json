@@ -1,0 +1,17 @@
+{
+  "name": "dsh-bili-audio-live",
+  "version": "0.1.0",
+  "private": true,
+  "description": "B站直播听众：抽直播间音轨做本地语音识别，连同弹幕按最小间隔/最少句数攒批投递到绑定对话，支持时段与手动开关。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "license": "MIT"
+}

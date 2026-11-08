@@ -4971,150 +4971,1058 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
       return { apply: apply, inject: inject };
     })();
 
-    // ── QQ 通道（qq-adapter 的运行时覆盖 ui-config.json）──
-    // 2026-10-29：把原来 39273/adapter-ui 那页搬进设置左侧栏；后端走 /dsh-qq-adapter/overrides
-    const QQ_GROUPS = [
-      ['mention', '@ 我才转进会话'],
-      ['all', '群里每条都转'],
-    ]
 
-    function QQSection() {
-      const [ov, setOv] = React.useState(null)
-      const [err, setErr] = React.useState('')
+    // ─────────────────────────────────────────────────────────────
+    // 插件配置控制台：设置 → 插件配置
+    //   左栏：dsh-xykp 的子插件（按模块分组）
+    //   右栏：选中行的配置，按值类型渲染成可编辑控件
+    // 宿主半边是 ui/console/index.js（/xykp-console/*）。
+    // ─────────────────────────────────────────────────────────────
+    const XS = {
+      wrap: { display: 'flex', gap: 0, flex: 1, minHeight: 0, alignItems: 'stretch', overflow: 'hidden' },
+      left: {
+        overflow: 'auto',
+        overscrollBehavior: 'contain',
+        minHeight: 0,
+        height: '100%',
+        paddingRight: 8,
+      },
+      divider: {
+        flex: '0 0 9px',
+        width: 9,
+        cursor: 'col-resize',
+        alignSelf: 'stretch',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'stretch',
+        background: 'transparent',
+      },
+      dividerLine: {
+        width: 3,
+        borderRadius: 2,
+        background: 'rgba(127,127,127,.22)',
+        margin: '2px 0',
+      },
+      right: {
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        height: '100%',
+        overflow: 'auto',
+        overscrollBehavior: 'contain',
+        paddingLeft: 6,
+        paddingRight: 4,
+      },
+      group: {
+        fontSize: 11,
+        letterSpacing: 0.4,
+        opacity: 0.55,
+        margin: '10px 0 4px 2px',
+      },
+      item: (on) => ({
+        padding: '6px 8px',
+        marginBottom: 2,
+        borderRadius: 6,
+        cursor: 'pointer',
+        background: on ? 'rgba(120,170,255,.16)' : 'transparent',
+        border: on ? '1px solid rgba(120,170,255,.45)' : '1px solid transparent',
+      }),
+      inp: {
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '6px 8px',
+        borderRadius: 6,
+        border: '1px solid rgba(127,127,127,.35)',
+        background: 'rgba(127,127,127,.08)',
+        color: 'inherit',
+        font: 'inherit',
+        fontSize: 13,
+      },
+      mono: {
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '6px 8px',
+        borderRadius: 6,
+        border: '1px solid rgba(127,127,127,.35)',
+        background: 'rgba(127,127,127,.08)',
+        color: 'inherit',
+        fontFamily: 'ui-monospace, Consolas, monospace',
+        fontSize: 12,
+        lineHeight: 1.45,
+        resize: 'vertical',
+      },
+      label: { fontSize: 12, fontWeight: 550, marginBottom: 3, opacity: 0.92 },
+      hint: { fontSize: 11, opacity: 0.5, marginTop: 2 },
+      fieldRow: { marginBottom: 12 },
+      btn: {
+        padding: '4px 9px',
+        borderRadius: 6,
+        border: '1px solid rgba(127,127,127,.35)',
+        background: 'rgba(127,127,127,.1)',
+        color: 'inherit',
+        font: 'inherit',
+        fontSize: 12,
+        cursor: 'pointer',
+      },
+      btnMain: {
+        padding: '5px 12px',
+        borderRadius: 6,
+        border: '1px solid rgba(120,170,255,.6)',
+        background: 'rgba(120,170,255,.2)',
+        color: 'inherit',
+        font: 'inherit',
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: 'pointer',
+      },
+      badge: {
+        fontSize: 11,
+        padding: '1px 6px',
+        borderRadius: 999,
+        border: '1px solid rgba(127,127,127,.35)',
+        opacity: 0.85,
+      },
+      head: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        paddingBottom: 8,
+        marginBottom: 10,
+        borderBottom: '1px solid rgba(127,127,127,.2)',
+      },
+      groupBox: {
+        border: '1px solid rgba(127,127,127,.22)',
+        borderRadius: 8,
+        padding: '8px 10px',
+        marginBottom: 10,
+        background: 'rgba(127,127,127,.045)',
+      },
+      rowCard: {
+        border: '1px solid rgba(127,127,127,.22)',
+        borderRadius: 7,
+        marginBottom: 6,
+        background: 'rgba(127,127,127,.05)',
+        overflow: 'hidden',
+      },
+      rowHead: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px' },
+      rowBody: { padding: '6px 10px 8px', borderTop: '1px solid rgba(127,127,127,.16)' },
+      chev: {
+        background: 'none',
+        border: 'none',
+        color: 'inherit',
+        opacity: 0.7,
+        cursor: 'pointer',
+        width: 18,
+        padding: 0,
+        fontSize: 12,
+      },
+      nameInput: {
+        width: 190,
+        padding: '2px 6px',
+        borderRadius: 5,
+        border: '1px solid rgba(127,127,127,.3)',
+        background: 'rgba(127,127,127,.06)',
+        color: 'inherit',
+        font: 'inherit',
+        fontFamily: 'ui-monospace, Consolas, monospace',
+        fontSize: 12,
+      },
+    }
+
+    const isPlainObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+    const isPrim = (v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
+    const isPrimArr = (v) => Array.isArray(v) && v.length > 0 && v.every(isPrim)
+    const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+    function ConsoleSection() {
+      const [rows, setRows] = React.useState(null)
+      const [fieldLabels, setFieldLabels] = React.useState({})
+      const [docPath, setDocPath] = React.useState('')
+      const [sel, setSel] = React.useState('')
+      const [draft, setDraft] = React.useState(null)
+      const [base, setBase] = React.useState(null)
+      const [texts, setTexts] = React.useState({})
+      const [errs, setErrs] = React.useState({})
+      const [busy, setBusy] = React.useState(false)
       const [msg, setMsg] = React.useState('')
-      React.useEffect(() => {
-        fetch('/dsh-qq-adapter/overrides', { cache: 'no-store' })
-          .then((r) => r.json())
-          .then((j) => {
-            if (j && j.ok) setOv(j.overrides || {})
-            else setErr(String((j && j.error) || '读不到覆盖配置'))
-          })
-          .catch((e) => setErr(String(e)))
-      }, [])
-      const set = (k, v) => setOv((o) => ({ ...(o || {}), [k]: v }))
-      const save = async () => {
-        setMsg('保存中…')
-        setErr('')
+      const [bad, setBad] = React.useState(false)
+      const [rawMode, setRawMode] = React.useState(false)
+      const [rawText, setRawText] = React.useState('')
+      const [query, setQuery] = React.useState('')
+      const boxRef = React.useRef(null)
+      const kindsRef = React.useRef({})
+      const [leftW, setLeftW] = React.useState(() => {
         try {
-          const r = await fetch('/dsh-qq-adapter/overrides', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(ov || {}),
-          })
-          const j = await r.json()
-          if (j && j.ok) {
-            setOv(j.overrides || {})
-            setMsg('已保存（下一轮 tick 生效，不用重启）')
-          } else {
-            setMsg('')
-            setErr(String((j && j.error) || '保存失败'))
+          const v = Number(localStorage.getItem('xykp.console.leftW'))
+          if (v >= 150 && v <= 460) return v
+        } catch (e) {}
+        return 200
+      })
+      const [viewH, setViewH] = React.useState(0)
+      const [openPaths, setOpenPaths] = React.useState({})
+      const [nameDrafts, setNameDrafts] = React.useState({})
+      const [editingName, setEditingName] = React.useState('')
+      const [editingLeft, setEditingLeft] = React.useState('')
+      const [leftDraft, setLeftDraft] = React.useState('')
+      const [editingField, setEditingField] = React.useState('')
+      const [fieldDraft, setFieldDraft] = React.useState('')
+
+      // 让两栏铺满设置/插件页内容区（而不是固定 60vh 截断）。
+      // 注意：直接父节点可能只是插槽的壳，高度是 auto；要往上找到真正的滚动容器。
+      React.useEffect(() => {
+        const el = boxRef.current
+        if (!el) return
+        const findScroller = () => {
+          let p = el.parentElement
+          while (p && p !== document.body) {
+            const cs = window.getComputedStyle(p)
+            if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && p.clientHeight > 120) return p
+            p = p.parentElement
           }
-        } catch (e) {
-          setMsg('')
-          setErr(String(e))
+          return null
+        }
+        const calc = () => {
+          const target = findScroller()
+          let h = 0
+          if (target) {
+            const cs = window.getComputedStyle(target)
+            const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+            h = target.clientHeight - pad - 12
+          } else {
+            const r = el.getBoundingClientRect()
+            h = window.innerHeight - r.top - 24
+          }
+          if (h > 160) setViewH(Math.max(300, h))
+        }
+        calc()
+        let ro = null
+        if (typeof ResizeObserver !== 'undefined') {
+          ro = new ResizeObserver(calc)
+          ro.observe(document.body)
+          const t = findScroller()
+          if (t) ro.observe(t)
+        }
+        window.addEventListener('resize', calc)
+        return () => {
+          if (ro) ro.disconnect()
+          window.removeEventListener('resize', calc)
+        }
+      }, [])
+
+      const startDrag = (e) => {
+        if (e.button !== 0) return
+        e.preventDefault()
+        const startX = e.clientX
+        const startW = leftW
+        const move = (ev) => setLeftW(Math.min(460, Math.max(150, startW + ev.clientX - startX)))
+        const up = () => {
+          document.removeEventListener('mousemove', move)
+          document.removeEventListener('mouseup', up)
+          document.body.style.cursor = ''
+          try {
+            setLeftW((w) => {
+              localStorage.setItem('xykp.console.leftW', String(w))
+              return w
+            })
+          } catch (e2) {}
+        }
+        document.body.style.cursor = 'col-resize'
+        document.addEventListener('mousemove', move)
+        document.addEventListener('mouseup', up)
+      }
+
+      const applyRows = (list, keepSel) => {
+        setRows(list)
+        kindsRef.current = {}
+        const want = list.some((r) => r.id === (keepSel || sel)) ? keepSel || sel : list[0] && list[0].id
+        if (want) {
+          const row = list.find((r) => r.id === want)
+          setSel(want)
+          setDraft(clone(row.config || {}))
+          setBase(clone(row.config || {}))
+          setTexts({})
+          setErrs({})
+          setRawMode(false)
         }
       }
-      const box = {
-        width: '100%',
-        padding: '6px 8px',
-        borderRadius: '6px',
-        border: '1px solid var(--dsw-alias-border-l2, #444)',
-        background: 'transparent',
-        color: 'inherit',
-        fontSize: '13px',
+
+      const load = async (keepSel) => {
+        setMsg('')
+        setBad(false)
+        try {
+          const r = await fetch('/xykp-console/rows', { cache: 'no-store' }).then((x) => x.json())
+          if (!r.ok) throw new Error(r.error || '读取失败')
+          setFieldLabels(r.fields || {})
+          setDocPath(r.documentPath || '')
+          if (!r.rows || r.rows.length === 0) {
+            setRows([])
+            setMsg('宿主没找到 dsh-xykp 的行，确认 ui/console 已挂上并重启过 dsh web')
+            return
+          }
+          applyRows(r.rows, keepSel)
+        } catch (error) {
+          setRows([])
+          setBad(true)
+          setMsg(String((error && error.message) || error))
+        }
       }
-      const row = { display: 'grid', gridTemplateColumns: '220px 1fr', gap: '10px', alignItems: 'center', marginBottom: '8px' }
-      const lab = { fontSize: '13px', color: 'var(--dsw-alias-label-secondary, #aaa)' }
-      const mono = { ...box, minHeight: '64px', fontFamily: 'ui-monospace, monospace' }
-      if (err && !ov) return React.createElement('div', { style: { padding: '12px', color: '#f88' } }, '读不到：' + err)
-      if (!ov) return React.createElement('div', { style: { padding: '12px', opacity: 0.7 } }, '读取中…')
+
+      React.useEffect(() => {
+        load()
+      }, [])
+
+      const row = rows && rows.find((r) => r.id === sel)
+      const dirty = row && draft && !same(draft, row.config)
+
+      const pick = (id) => {
+        const r = rows.find((x) => x.id === id)
+        kindsRef.current = {}
+        setSel(id)
+        setDraft(clone(r.config || {}))
+        setBase(clone(r.config || {}))
+        setTexts({})
+        setErrs({})
+        setMsg('')
+        setBad(false)
+        setRawMode(false)
+      }
+
+      const commitLeftName = async (id, original) => {
+        const next = String(leftDraft || '').trim()
+        setEditingLeft('')
+        if (next === original) return
+        try {
+          const r = await fetch('/xykp-console/label', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id, title: next }),
+          }).then((x) => x.json())
+          if (r.ok) applyRows(r.rows, id)
+          else {
+            setBad(true)
+            setMsg('改名失败：' + (r.error || '未知错误'))
+          }
+        } catch (error) {
+          setBad(true)
+          setMsg('改名失败：' + String((error && error.message) || error))
+        }
+      }
+
+      const setField = (k, v) => {
+        setDraft((d) => ({ ...d, [k]: v }))
+        setErrs((e) => ({ ...e, [k]: '' }))
+      }
+
+      const save = async () => {
+        if (!row || busy) return
+        if (Object.keys(errs).some((k) => errs[k])) {
+          setBad(true)
+          return setMsg('还有字段格式不对，先改好再保存')
+        }
+        setBusy(true)
+        setMsg('')
+        try {
+          const r = await fetch('/xykp-console/save', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: row.id, config: cleanDraft() }),
+          }).then((x) => x.json())
+          if (!r.ok) {
+            setBad(true)
+            setMsg('保存失败：' + (r.error || '未知错误'))
+          } else {
+            setBad(false)
+            setMsg('已保存，宿主已重载该插件')
+            applyRows(r.rows, row.id)
+          }
+        } catch (error) {
+          setBad(true)
+          setMsg('保存失败：' + String((error && error.message) || error))
+        }
+        setBusy(false)
+      }
+
+      const reset = async () => {
+        if (!row || busy) return
+        setBusy(true)
+        setMsg('')
+        try {
+          const r = await fetch('/xykp-console/reset', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: row.id }),
+          }).then((x) => x.json())
+          if (!r.ok) {
+            setBad(true)
+            setMsg('恢复失败：' + (r.error || '未知错误'))
+          } else {
+            setBad(false)
+            setMsg('已恢复成默认值')
+            applyRows(r.rows, row.id)
+          }
+        } catch (error) {
+          setBad(true)
+          setMsg('恢复失败：' + String((error && error.message) || error))
+        }
+        setBusy(false)
+      }
+
+      const labelOf = (k) => (row && row.fields && row.fields[k]) || k
+
+      const commitFieldLabel = async (k, original) => {
+        const next = String(fieldDraft || '').trim()
+        setEditingField('')
+        if (next === original) return
+        try {
+          const r = await fetch('/xykp-console/label', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: row.id, field: k, title: next }),
+          }).then((x) => x.json())
+          if (r.ok) applyRows(r.rows, row.id)
+          else {
+            setBad(true)
+            setMsg('改名失败：' + (r.error || '未知错误'))
+          }
+        } catch (error) {
+          setBad(true)
+          setMsg('改名失败：' + String((error && error.message) || error))
+        }
+      }
+
+      // 字段的「显示名字」：只影响界面文字，不碰字段 key。
+      const labelEl = (k, text) => {
+        const ek = (row ? row.id : '') + '|' + k
+        if (editingField === ek) {
+          return React.createElement('input', {
+            autoFocus: true,
+            value: fieldDraft,
+            spellCheck: false,
+            onClick: (e) => e.stopPropagation(),
+            onChange: (e) => setFieldDraft(e.target.value),
+            onBlur: () => commitFieldLabel(k, text),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+              if (e.key === 'Escape') setEditingField('')
+            },
+            style: { ...XS.inp, width: 150, padding: '1px 5px', fontSize: 12 },
+          })
+        }
+        return React.createElement(
+          'span',
+          {
+            title: '双击改显示名（留空恢复默认）',
+            onDoubleClick: (e) => {
+              e.stopPropagation()
+              setFieldDraft(text)
+              setEditingField(ek)
+            },
+            style: { cursor: 'text' },
+          },
+          text,
+        )
+      }
+      const pkOf = (path) => path.join('\u0001')
+      const getAt = (obj, path) => path.reduce((o, k) => (o == null ? undefined : o[k]), obj)
+      const isOpen = (path, def) => (pkOf(path) in openPaths ? !!openPaths[pkOf(path)] : def)
+      const toggleOpen = (path) =>
+        setOpenPaths((s) => ({ ...s, [pkOf(path)]: !(pkOf(path) in s ? s[pkOf(path)] : false) }))
+
+      const setAt = (path, v) => {
+        setDraft((prev) => {
+          const copy = clone(prev || {})
+          let o = copy
+          for (let i = 0; i < path.length - 1; i++) {
+            const k = path[i]
+            // 数组路径不能按对象重建，否则会把整条列表换成 {"0": {...}}
+            if (Array.isArray(o[k])) {
+              o = o[k]
+              continue
+            }
+            if (!isPlainObj(o[k])) o[k] = {}
+            o = o[k]
+          }
+          o[path[path.length - 1]] = v
+          return copy
+        })
+        setErrs((e) => ({ ...e, [pkOf(path)]: '' }))
+      }
+
+      const delAt = (path) => {
+        setDraft((prev) => {
+          const copy = clone(prev || {})
+          const parent = getAt(copy, path.slice(0, -1))
+          if (!parent) return prev
+          const last = path[path.length - 1]
+          if (Array.isArray(parent)) parent.splice(Number(last), 1)
+          else delete parent[last]
+          return copy
+        })
+      }
+
+      const commitName = (parentPath, oldName) => {
+        const nk = pkOf(parentPath) + '|' + oldName
+        const raw = nameDrafts[nk]
+        setNameDrafts((s) => {
+          const n = { ...s }
+          delete n[nk]
+          return n
+        })
+        if (raw === undefined) return
+        const next = String(raw).trim()
+        if (!next || next === oldName) return
+        setDraft((prev) => {
+          const copy = clone(prev || {})
+          const parent = getAt(copy, parentPath)
+          if (!isPlainObj(parent) || parent[next] !== undefined) return prev
+          parent[next] = parent[oldName]
+          delete parent[oldName]
+          return copy
+        })
+      }
+
+      const fieldWrap = (path, lab, control, hint, err) =>
+        React.createElement(
+          'div',
+          { key: pkOf(path), style: XS.fieldRow },
+          React.createElement(
+            'div',
+            { style: XS.label },
+            labelEl(path[path.length - 1], lab),
+            ' ',
+            React.createElement('code', { style: { fontSize: 11, opacity: 0.45 } }, path[path.length - 1]),
+          ),
+          control,
+          err
+            ? React.createElement('div', { style: { ...XS.hint, color: '#f88' } }, err)
+            : hint
+              ? React.createElement('div', { style: XS.hint }, hint)
+              : null,
+        )
+
+      const renderArray = (path, arr, lab) => {
+        // 对象列表：卡片式，可展开 / 删除 / 添加
+        const pk0 = pkOf(path)
+        if (arr.length > 0 && arr.every(isPlainObj)) {
+          kindsRef.current[pk0] = 'object'
+          return renderObjectList(path, arr, lab)
+        }
+        // 删空之后别退回字符串模式：本会话内记得它原来是对象列表
+        if (arr.length === 0 && kindsRef.current[pk0] === 'object') return renderObjectList(path, arr, lab)
+        const pk = pkOf(path)
+        const numeric = arr.length > 0 && arr.every((x) => typeof x === 'number')
+        const text = pk in texts ? texts[pk] : arr.map((x) => (isPlainObj(x) ? JSON.stringify(x) : String(x))).join('\n')
+        // 解析一行：像 JSON 对象/数组才解析；最后一行（还在输入）先不解析，
+        // 等换行或失焦再提交，避免刚打出 {} 就被切成对象卡片。
+        const parseLine = (line) => {
+          const s = line.trim()
+          if (!s) return undefined
+          if (numeric) return Number(s)
+          if ((s.startsWith('{') && s.endsWith('}')) || (s.startsWith('[') && s.endsWith(']'))) return JSON.parse(s)
+          return s
+        }
+        const commit = (t, all) => {
+          const rawLines = t.split('\n')
+          const doneCount = all ? rawLines.length : Math.max(0, rawLines.length - 1)
+          const lines = rawLines.slice(0, doneCount)
+          const parsed = []
+          const bad = []
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              parsed.push(parseLine(line))
+            } catch (e) {
+              bad.push(line)
+            }
+          }
+          if (!all) {
+            const pending = rawLines[rawLines.length - 1]
+            if (pending && pending.trim()) parsed.push(pending.trim())
+          }
+          if (bad.length) {
+            setErrs((s) => ({ ...s, [pk]: '有行不是合法 JSON' }))
+            return
+          }
+          setErrs((e) => ({ ...e, [pk]: '' }))
+          setAt(path, parsed)
+        }
+        const onChange = (t) => {
+          setTexts((s) => ({ ...s, [pk]: t }))
+          commit(t, false)
+        }
+        const control = React.createElement('textarea', {
+          rows: Math.min(8, Math.max(2, arr.length + 1)),
+          value: text,
+          spellCheck: false,
+          placeholder: '一行一个，留空就是不设置',
+          onChange: (e) => onChange(e.target.value),
+          onBlur: (e) => {
+            const t = e.target.value
+            setTexts((s) => {
+              const n = { ...s }
+              delete n[pk]
+              return n
+            })
+            commit(t, true)
+          },
+          style: XS.mono,
+        })
+        return fieldWrap(path, lab, control, '一行一个；对象/数组写成 JSON 也会解析', errs[pk])
+      }
+
+      /** 对象数组：每条一张卡，可展开改字段、删除、按第一条的字段结构新增 */
+      const renderObjectList = (path, arr, lab) => {
+        const templateOf = (v) => {
+          if (Array.isArray(v)) return []
+          if (isPlainObj(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, templateOf(x)]))
+          if (typeof v === 'number') return 0
+          if (typeof v === 'boolean') return false
+          return ''
+        }
+        const addItem = () => {
+          const seed = arr.length ? templateOf(arr[0]) : {}
+          const nextPath = path.concat(arr.length)
+          setAt(path, [...arr, seed])
+          setOpenPaths((s) => ({ ...s, [pkOf(nextPath)]: true }))
+        }
+        const summaryOf = (item) => {
+          const parts = []
+          for (const [k, v] of Object.entries(item)) {
+            if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') parts.push(k + '=' + String(v))
+            if (parts.length >= 3) break
+          }
+          return parts.join('  ') || '（空对象）'
+        }
+        return React.createElement(
+          'div',
+          { key: pkOf(path), style: { marginBottom: 12 } },
+          React.createElement(
+            'div',
+            { style: XS.label },
+            labelEl(path[path.length - 1], lab),
+            ' ',
+            React.createElement('code', { style: { fontSize: 11, opacity: 0.45 } }, path[path.length - 1]),
+            React.createElement('span', { style: { ...XS.hint, marginTop: 0, marginLeft: 6 } }, arr.length + ' 项'),
+          ),
+          arr.map((item, index) => {
+            const itemPath = path.concat(index)
+            const open = isOpen(itemPath, false)
+            return React.createElement(
+              'div',
+              { key: pkOf(itemPath), style: XS.rowCard },
+              React.createElement(
+                'div',
+                { style: XS.rowHead },
+                React.createElement('button', { style: XS.chev, onClick: () => toggleOpen(itemPath) }, open ? '▾' : '▸'),
+                React.createElement('span', { style: { ...XS.badge, fontFamily: 'monospace' } }, '#' + (index + 1)),
+                React.createElement(
+                  'span',
+                  { style: { ...XS.hint, marginTop: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                  summaryOf(item),
+                ),
+                React.createElement('button', { style: { ...XS.btn, padding: '1px 8px', fontSize: 11 }, onClick: () => delAt(itemPath) }, '删除'),
+              ),
+              open
+                ? React.createElement(
+                    'div',
+                    { style: XS.rowBody },
+                    Object.keys(item).length
+                      ? Object.keys(item).map((k) => renderValue(itemPath.concat(k), item[k], labelOf(k), 2))
+                      : React.createElement('textarea', {
+                          rows: 2,
+                          style: XS.mono,
+                          placeholder: '{"key": "value"}',
+                          value: pkOf(itemPath) in texts ? texts[pkOf(itemPath)] : '{}',
+                          onChange: (e) => {
+                            const t = e.target.value
+                            setTexts((s) => ({ ...s, [pkOf(itemPath)]: t }))
+                            try {
+                              const v = JSON.parse(t)
+                              if (isPlainObj(v)) setAt(itemPath, v)
+                            } catch (e2) {}
+                          },
+                        }),
+                  )
+                : null,
+            )
+          }),
+          React.createElement('button', { style: { ...XS.btn, marginTop: 4 }, onClick: addItem }, '＋ 添加一条'),
+        )
+      }
+
+      const renderPrimitive = (path, value, lab) => {
+        const pk = pkOf(path)
+        if (typeof value === 'boolean') {
+          return React.createElement(
+            'div',
+            { key: pk, style: { ...XS.fieldRow, display: 'flex', alignItems: 'center', gap: 8 } },
+            React.createElement('input', {
+              type: 'checkbox',
+              checked: value,
+              onChange: (e) => setAt(path, e.target.checked),
+            }),
+            React.createElement('span', { style: { fontWeight: 550, fontSize: 13 } }, labelEl(path[path.length - 1], lab)),
+            React.createElement('code', { style: { fontSize: 11, opacity: 0.45 } }, path[path.length - 1]),
+          )
+        }
+        if (typeof value === 'number') {
+          return fieldWrap(
+            path,
+            lab,
+            React.createElement('input', {
+              type: 'number',
+              value: Number.isFinite(value) ? value : '',
+              onChange: (e) => setAt(path, e.target.value === '' ? '' : Number(e.target.value)),
+              style: XS.inp,
+            }),
+          )
+        }
+        const str = typeof value === 'string' ? value : value === null || value === undefined ? '' : String(value)
+        const key = String(path[path.length - 1])
+        const big = str.length > 48 || str.indexOf('\n') >= 0 || /path|dir|root/i.test(key)
+        const control = big
+          ? React.createElement('textarea', {
+              rows: str.indexOf('\n') >= 0 ? 3 : 2,
+              value: str,
+              spellCheck: false,
+              onChange: (e) => setAt(path, e.target.value),
+              style: XS.mono,
+            })
+          : React.createElement('input', {
+              value: str,
+              spellCheck: false,
+              onChange: (e) => setAt(path, e.target.value),
+              style: XS.inp,
+            })
+        return fieldWrap(path, lab, control)
+      }
+
+      const renderRows = (path, obj, lab) => {
+        const entries = Object.entries(obj)
+        const addRow = () => {
+          let name = '新工具'
+          let i = 2
+          while (obj[name] !== undefined) name = '新工具 ' + i++
+          setAt(path, { ...obj, [name]: { keys: [], cooldown: 8, system: 1 } })
+          setOpenPaths((s) => ({ ...s, [pkOf(path.concat(name))]: true }))
+        }
+        return React.createElement(
+          'div',
+          { key: pkOf(path), style: { marginBottom: 12 } },
+          React.createElement(
+            'div',
+            { style: XS.label },
+            labelEl(path[path.length - 1], lab),
+            ' ',
+            React.createElement('code', { style: { fontSize: 11, opacity: 0.45 } }, path[path.length - 1]),
+          ),
+          entries.map(([name, val]) => {
+            const rowPath = path.concat(name)
+            const open = isOpen(rowPath, false)
+            const nk = pkOf(path) + '|' + name
+            const summary =
+              isPlainObj(val) && Array.isArray(val.keys) && val.keys.length ? val.keys.join(' / ') : '（未填，保存时删除）'
+            return React.createElement(
+              'div',
+              { key: nk, style: XS.rowCard },
+              React.createElement(
+                'div',
+                { style: XS.rowHead },
+                React.createElement(
+                  'button',
+                  { style: XS.chev, onClick: () => toggleOpen(rowPath), title: open ? '折叠' : '展开' },
+                  open ? '▾' : '▸',
+                ),
+                React.createElement(
+                  'span',
+                  {
+                    title: name,
+                    style: {
+                      fontFamily: 'ui-monospace, Consolas, monospace',
+                      fontSize: 12,
+                      padding: '1px 5px',
+                      whiteSpace: 'nowrap',
+                    },
+                  },
+                  name,
+                ),
+                React.createElement('span', { style: { ...XS.hint, marginTop: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, summary),
+                React.createElement(
+                  'button',
+                  { style: { ...XS.btn, padding: '1px 8px', fontSize: 11 }, onClick: () => delAt(rowPath) },
+                  '删除',
+                ),
+              ),
+              open && isPlainObj(val)
+                ? React.createElement(
+                    'div',
+                    { style: XS.rowBody },
+                    Object.keys(val).map((k) => renderValue(rowPath.concat(k), val[k], labelOf(k), 2)),
+                  )
+                : null,
+            )
+          }),
+          React.createElement('button', { style: { ...XS.btn, marginTop: 2 }, onClick: addRow }, '＋ 添加一条'),
+        )
+      }
+
+      const renderObject = (path, obj, lab, depth) => {
+        const entries = Object.entries(obj)
+        const rowMap = entries.length > 0 && entries.every(([, v]) => isPlainObj(v))
+        const forceRows = path[path.length - 1] === 'rules'
+        if (rowMap || (forceRows && entries.length === 0)) return renderRows(path, obj, lab)
+        const open = isOpen(path, depth <= 1)
+        return React.createElement(
+          'div',
+          { key: pkOf(path), style: XS.groupBox },
+          React.createElement(
+            'div',
+            {
+              style: { ...XS.rowHead, marginBottom: open ? 6 : 0 },
+            },
+            React.createElement('button', { style: XS.chev, onClick: () => toggleOpen(path) }, open ? '▾' : '▸'),
+            React.createElement('span', { style: { fontWeight: 600, fontSize: 12.5 } }, labelEl(path[path.length - 1], lab)),
+            React.createElement('code', { style: { fontSize: 10.5, opacity: 0.4 } }, path[path.length - 1]),
+            React.createElement('span', { style: { ...XS.hint, marginTop: 0, flex: 1 } }, entries.length + ' 项'),
+          ),
+          open
+            ? React.createElement(
+                'div',
+                null,
+                entries.map(([k, v]) => renderValue(path.concat(k), v, labelOf(k), depth + 1)),
+              )
+            : null,
+        )
+      }
+
+      const renderValue = (path, value, lab, depth) => {
+        if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+          return renderPrimitive(path, value, lab)
+        }
+        if (Array.isArray(value)) return renderArray(path, value, lab)
+        if (isPlainObj(value)) return renderObject(path, value, lab, depth)
+        return renderPrimitive(path, value == null ? '' : value, lab)
+      }
+
+      // 保存前把「没填关键词的工具规则」和空行清掉
+      const cleanDraft = () => {
+        const copy = clone(draft || {})
+        const rules = copy.rules
+        if (isPlainObj(rules)) {
+          for (const [name, val] of Object.entries(rules)) {
+            const keys = isPlainObj(val) && Array.isArray(val.keys) ? val.keys.filter((x) => String(x).trim()) : []
+            if (!isPlainObj(val) || keys.length === 0) delete rules[name]
+          }
+        }
+        return copy
+      }
+      const renderLeft = () => {
+        const q = query.trim().toLowerCase()
+        const list = (rows || []).filter(
+          (r) => !q || r.id.toLowerCase().indexOf(q) >= 0 || r.title.toLowerCase().indexOf(q) >= 0 || r.spec.toLowerCase().indexOf(q) >= 0,
+        )
+        const out = []
+        let lastGroup = null
+        for (const r of list) {
+          if (r.group !== lastGroup) {
+            lastGroup = r.group
+            out.push(React.createElement('div', { key: 'g:' + r.group, style: XS.group }, r.group))
+          }
+          out.push(
+            React.createElement(
+              'div',
+              {
+                key: r.id,
+                style: XS.item(sel === r.id),
+                onClick: () => pick(r.id),
+                title: r.spec,
+              },
+              React.createElement(
+                'div',
+                { style: { fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
+                editingLeft === r.id
+                  ? React.createElement('input', {
+                      autoFocus: true,
+                      value: leftDraft,
+                      spellCheck: false,
+                      onClick: (e) => e.stopPropagation(),
+                      onChange: (e) => setLeftDraft(e.target.value),
+                      onBlur: () => commitLeftName(r.id, r.title),
+                      onKeyDown: (e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur()
+                        if (e.key === 'Escape') setEditingLeft('')
+                      },
+                      style: { ...XS.inp, fontSize: 12, padding: '1px 5px', width: '100%' },
+                    })
+                  : React.createElement(
+                      'span',
+                      {
+                        title: '双击改名（留空恢复默认）',
+                        onDoubleClick: (e) => {
+                          e.stopPropagation()
+                          setLeftDraft(r.title)
+                          setEditingLeft(r.id)
+                        },
+                      },
+                      r.title,
+                    ),
+              ),
+              React.createElement(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, minWidth: 0 } },
+                React.createElement(
+                  'span',
+                  {
+                    style: {
+                      fontSize: 10.5,
+                      opacity: 0.45,
+                      fontFamily: 'ui-monospace, Consolas, monospace',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    },
+                  },
+                  r.spec.replace('dsh-xykp/', ''),
+                ),
+                r.disabled ? React.createElement('span', { style: { ...XS.badge, fontSize: 10, padding: '0 4px', whiteSpace: 'nowrap', opacity: 0.5 } }, '停用') : null,
+              ),
+            ),
+          )
+        }
+        if (out.length === 0) out.push(React.createElement('div', { key: 'none', style: { ...XS.hint, padding: 8 } }, '没有匹配的插件'))
+        return out
+      }
+
+      const right = () => {
+        if (!row) return React.createElement('div', { style: XS.hint }, '左边选一个插件')
+        const changed = Object.keys(draft || {}).filter((k) => !same(base && base[k], draft[k]))
+        return React.createElement(
+          'div',
+          null,
+          React.createElement(
+            'div',
+            { style: XS.head },
+            React.createElement('div', { style: { fontSize: 15, fontWeight: 650 } }, row.title),
+            React.createElement('code', { style: { fontSize: 11, opacity: 0.55 } }, row.spec),
+            dirty ? React.createElement('span', { style: { ...XS.badge, borderColor: 'rgba(255,190,90,.6)' } }, '未保存 ' + changed.length + ' 项') : null,
+            React.createElement('span', { style: { flex: 1 } }),
+            React.createElement('button', { style: XS.btn, disabled: busy, onClick: () => load(row.id) }, '刷新'),
+            React.createElement('button', { style: XS.btn, disabled: busy || !dirty, onClick: () => { setDraft(clone(row.config || {})); setTexts({}); setErrs({}); setMsg('') } }, '撤销'),
+            React.createElement('button', { style: XS.btn, disabled: busy || !row.config || Object.keys(row.config).length === 0, onClick: reset }, '恢复默认'),
+            React.createElement('button', { style: XS.btnMain, disabled: busy || !dirty, onClick: save }, busy ? '保存中…' : '保存'),
+          ),
+          row.desc ? React.createElement('div', { style: { ...XS.hint, marginTop: 0, marginBottom: 10 } }, row.desc) : null,
+          row.note ? React.createElement('div', { style: { ...XS.hint, marginBottom: 10, color: 'rgba(255,190,90,.9)' } }, row.note) : null,
+          msg
+            ? React.createElement('div', { style: { fontSize: 12, marginBottom: 10, color: bad ? '#f88' : 'rgba(120,200,130,.95)' } }, msg)
+            : null,
+          React.createElement(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8, fontSize: 12 } },
+            React.createElement(
+              'button',
+              {
+                style: { ...XS.btn, alignSelf: 'flex-start', whiteSpace: 'nowrap' },
+                onClick: () => {
+                  const next = !rawMode
+                  if (next) setRawText(JSON.stringify(draft, null, 2))
+                  setRawMode(next)
+                },
+              },
+              rawMode ? '字段视图' : 'JSON 源码',
+            ),
+            docPath
+              ? React.createElement(
+                  'span',
+                  {
+                    style: {
+                      opacity: 0.45,
+                      fontSize: 11,
+                      display: 'block',
+                      width: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    },
+                    title: docPath,
+                  },
+                  '写入 ' + docPath,
+                )
+              : null,
+          ),
+          rawMode
+            ? React.createElement(
+                'div',
+                null,
+                React.createElement('textarea', {
+                  rows: 14,
+                  value: rawText,
+                  spellCheck: false,
+                  onChange: (e) => {
+                    setRawText(e.target.value)
+                    try {
+                      const v = JSON.parse(e.target.value)
+                      if (isPlainObj(v)) {
+                        setDraft(v)
+                        setErrs((s) => ({ ...s, __raw: '' }))
+                      } else {
+                        setErrs((s) => ({ ...s, __raw: '顶层必须是对象' }))
+                      }
+                    } catch (e2) {
+                      setErrs((s) => ({ ...s, __raw: 'JSON 不合法' }))
+                    }
+                  },
+                  style: XS.mono,
+                }),
+                errs.__raw ? React.createElement('div', { style: { ...XS.hint, color: '#f88' } }, errs.__raw) : null,
+              )
+            : React.createElement('div', null, Object.keys(draft || {}).map((k) => renderValue([k], draft[k], labelOf(k), 0))),
+        )
+      }
+
       return React.createElement(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: '820px' } },
-        React.createElement('h3', { style: { margin: 0, fontSize: '15px' } }, 'QQ 通道（热改，不用重启）'),
+        {
+          ref: boxRef,
+          // 滚轮只在本控制台内部消化，别让外层设置页跟着滚
+          onWheel: (e) => e.stopPropagation(),
+          style: {
+            padding: '2px 0',
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            overflow: 'hidden',
+            height: viewH > 0 ? viewH : undefined,
+          },
+        },
         React.createElement(
           'div',
-          { style: row },
-          React.createElement('div', { style: lab }, '合并窗口 coalesceSeconds（秒）'),
+          { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flex: '0 0 auto' } },
+          React.createElement('span', { style: { fontSize: 11, opacity: 0.5 } }, rows ? '共 ' + rows.length + ' 个插件 · 存取都在 home\\xykp\\config.yml' : ''),
+          React.createElement('span', { style: { flex: 1 } }),
           React.createElement('input', {
-            style: box,
-            type: 'number',
-            value: ov.coalesceSeconds ?? 10,
-            onChange: (e) => set('coalesceSeconds', Number(e.target.value) || 0),
+            value: query,
+            placeholder: '过滤…',
+            onChange: (e) => setQuery(e.target.value),
+            style: { ...XS.inp, width: 140, padding: '3px 8px' },
           }),
         ),
         React.createElement(
           'div',
-          { style: row },
-          React.createElement('div', { style: lab }, '群聊唤醒 groupWake'),
+          { style: XS.wrap },
           React.createElement(
-            'select',
-            { style: box, value: ov.groupWake || 'all', onChange: (e) => set('groupWake', e.target.value) },
-            QQ_GROUPS.map(([v, t]) => React.createElement('option', { key: v, value: v }, t)),
+            'div',
+            { style: { ...XS.left, flex: '0 0 ' + leftW + 'px', width: leftW } },
+            rows === null ? React.createElement('div', { style: XS.hint }, '读取中…') : renderLeft(),
           ),
-        ),
-        React.createElement(
-          'div',
-          { style: row },
-          React.createElement('div', { style: lab }, '默认目标 defaultTarget'),
-          React.createElement('input', {
-            style: box,
-            value: ov.defaultTarget || '',
-            placeholder: 'p-alive 或 s-会话id',
-            onChange: (e) => set('defaultTarget', e.target.value),
-          }),
-        ),
-        React.createElement(
-          'div',
-          { style: row },
-          React.createElement('div', { style: lab }, '快速通道 fastUids（每行一个）'),
-          React.createElement('textarea', {
-            style: mono,
-            value: (ov.fastUids || []).join('\n'),
-            onChange: (e) => set('fastUids', e.target.value.split('\n').map((s) => s.trim()).filter(Boolean)),
-          }),
-        ),
-        React.createElement(
-          'div',
-          { style: row },
-          React.createElement('div', { style: lab }, '映射 mappings（每行：chat target）'),
-          React.createElement('textarea', {
-            style: mono,
-            value: (ov.mappings || []).map((m) => String(m.chat) + ' ' + String(m.target)).join('\n'),
-            onChange: (e) =>
-              set(
-                'mappings',
-                e.target.value
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-                  .map((s) => {
-                    const i = s.indexOf(' ')
-                    return i < 0 ? { chat: s, target: '' } : { chat: s.slice(0, i), target: s.slice(i + 1).trim() }
-                  }),
-              ),
-          }),
-        ),
-        React.createElement(
-          'div',
-          { style: { display: 'flex', gap: '10px', alignItems: 'center' } },
           React.createElement(
-            'button',
-            {
-              onClick: save,
-              style: {
-                padding: '6px 16px',
-                borderRadius: '8px',
-                border: '1px solid var(--dsw-alias-border-l2, #444)',
-                background: 'var(--dsw-alias-bg-l2, #222)',
-                color: 'inherit',
-                cursor: 'pointer',
-              },
-            },
-            '保存',
+            'div',
+            { style: XS.divider, onMouseDown: startDrag, title: '拖动调整宽度' },
+            React.createElement('div', { style: XS.dividerLine }),
           ),
-          msg ? React.createElement('span', { style: { fontSize: '12px', opacity: 0.8 } }, msg) : null,
-          err ? React.createElement('span', { style: { fontSize: '12px', color: '#f88' } }, err) : null,
+          React.createElement('div', { style: XS.right }, right()),
         ),
       )
     }
@@ -5144,16 +6052,28 @@ const 洗键进度 = { 已: 0, 总: 0, 在跑: false, 干跑: false }
         console.warn('[dsh-xykp] session-delete 初始化失败：', e)
       }
 
-      // QQ 通道设置（qq-adapter 的运行时覆盖）
+      // 插件配置控制台（所有 dsh-xykp 行的配置）
       try {
         slots.inject('settings.section', () =>
           slots.register(
-            { name: 'settings.section', id: 'qq-adapter', order: 52, label: () => 'QQ 通道' },
-            () => React.createElement(QQSection),
+            { name: 'settings.section', id: 'xykp-config', order: 53, label: () => 'xykp 配置' },
+            () => React.createElement(ConsoleSection),
           ),
         )
       } catch (e) {
-        console.warn('[dsh-xykp] QQ 通道设置页注册失败：', e)
+        console.warn('[dsh-xykp] 插件配置页注册失败：', e)
+      }
+
+      // 插件页 → 配置：同一个控制台，放在整页里更宽敞
+      try {
+        slots.inject('plugins.tab', () =>
+          slots.register(
+            { name: 'plugins.tab', id: 'xykp-config', order: 5, label: () => 'xykp 配置' },
+            () => React.createElement(ConsoleSection),
+          ),
+        )
+      } catch (e) {
+        console.warn('[dsh-xykp] 插件页配置页签注册失败：', e)
       }
     }
 

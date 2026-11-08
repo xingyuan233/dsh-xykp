@@ -1,3 +1,4 @@
+import { configFor } from '../../ui/store.js'
 // dsh-xykp · chat/toolret-forget
 //
 // 让模型自己选择「哪些工具结果不留在下一轮」。
@@ -93,6 +94,7 @@ const tool = (ctx) => ({
 })
 
 export function apply(ctx, config = {}) {
+  config = configFor('toolret-forget', config)
   void boot(ctx, config).catch((err) => warn('启动失败（已忽略）：', err?.stack || err))
 }
 

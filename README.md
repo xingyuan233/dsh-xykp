@@ -32,6 +32,19 @@ DSH（DeepSeek Harness）的插件集合。一个仓库、一个包、内部按�
 | 会话工具 | `dsh-session-delete` | 待搬 |
 | 截屏 / 输入 | `tools\screen-mcp` → `senses/screenshot`、`tools\input-mcp` → `senses/keymouse` | **已搬；原生工具 `screenshot_acquire` / `mouse_input` / `keyboard_input`（Python 后端 + stdio 桥接）** |
 | token 用量 / 余额 | 新增 · `chat/token-reporter` | **已加（默认关：`token_report` 工具 + 可选每轮提示摘要）** |
+| Web 配置控制台 | 新增 · `ui/console` | **已加（设置 → 插件配置：左栏子插件，右栏改 config）** |
+
+## ui/console：Web 端改配置
+
+- 宿主半边 `ui/console/index.js` 提供 `/xykp-console/rows|save|reset`。
+- 持久化只有一个文件：`home\xykp\config.yml`（行 id → 该插件配置，YAML）。
+  各插件在 `apply()` 开头用 `ui/store.js` 的 `configFor('<行 id>')` 读它，
+  所以启动时拿到的就是文件里的值；保存时写文件 + `entry.update()` 热重载该行。
+- 浏览器半边在根 `client.js`（设置 → **插件配置**）：
+  左栏是 `dsh-xykp/*` 的各行，右栏按值类型渲染成控件
+  （布尔开关 / 数字 / 文本 / 列表 / 复杂值走 JSON），也可以切「JSON 源码」。
+- 新加插件时：在 `cordis.patch.yml` 的 insert 里加一行，再在
+  `ui/console/index.js` 的 `META` 里补个中文名和说明即可。
 
 ## 许可
 

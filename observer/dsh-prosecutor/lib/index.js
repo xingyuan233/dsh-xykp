@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // dsh-prosecutor · 宿主半边
 //
 // 需求（任务-2026-10-27.md 第六节 / 2026-10-27 晚补）：
@@ -269,6 +270,7 @@ function sendJson(res, code, data) {
 }
 
 export function apply(ctx, config = {}) {
+  config = configFor('dsh-prosecutor', config)
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
   const script = cfg.scriptPath || defaultScriptPath()
   const hashFile = hashPathOf(cfg, script)

@@ -159,7 +159,7 @@ login `onLoginConnected/onLoginConnecting/onLoginDisConnected/onQRCodeGetPicture
 3. 图片接收落盘（`ms.downloadRichMedia` 我们调了没回调，改试
    `RichMediaService.downloadFileForFileUuid` / `downloadFileByModelId`；语音 `.amr` 是自动下载的）
 4. @ 别人（`atType/atUid/atNtUid`）
-5. 断线重连、掉线自动重扫码、进程守护
+5. 断线重连（2026-10-31 已做：桥里 msf 看门狗，`msf.online()` → 退进程重启壳）、掉线自动重扫码、进程守护
 6. 把这个 shell 的启动/保活做成脚本，`qq-adapter` 插件里做成 dsh 工具（收消息 → 叫醒会话）
 
 ## 七、当前 profile pin（插件仓库）
@@ -1049,3 +1049,60 @@ g[cleanupKey] = cleanup   // ← cleanupKey 从头到尾没定义
 - 每张推出去的码都是现要的（自动换码关掉了，不能靠 keeper）。
 - 逻辑抽在 `lib/post-watch.js`，自测 `node test/post-watch-test.mjs`。
 
+
+## 2026-10-31：MSF「假在线」→ 一整天不推码（已修）
+
+**症状**：08:06:50 之后桥再也没有任何动静，但 `/status` 一直是 `stage=ready, ms=true`。
+插件哨兵据此认为「已登录」，既不推二维码、也不重启壳 —— 鲸鱼娘（uin 2909433072）从 08:06 躺到 17:24，整整 9 小时。
+
+**根因（三层叠加）**：
+1. 08:06:50 与腾讯的 MSF 连接被对端关掉（`cb onMSFStatusChange [2,1]`），QQ 自己不重连，socket 停在 CloseWait；
+   紧跟着 `login cb onQRCodeSessionFailed type=1 code=1` —— QQ 偷偷试过一次重登，失败后就静默卡住，不再发声。
+2. 桥的 `/status` 里 `ms: !!msgService()` 只判断「msgService 这个对象在不在」，永远是 true；
+   `onMSFStatusChange` 只把事件写日志，`S.stage` 只在 `onSessionInitComplete` / 要扫码时才变 → 一直停在 ready。
+3. 插件的 `ensureShell()` 看到 `ready + ms:true` 直接 return —— 既不进推码分支，也不会拉新壳。
+
+**怎么确认的**：
+- `netstat`：QQ 主进程（3260）**没有任何到外网的 established**，只剩一根 `[2409:8c28:…]:443` 的 CloseWait；
+- `GET /diag`：`login.getMsfStatus()` 和 `getMSFService().getMsfStatus()` 都是 **2**（2=掉线，1=在线）。
+
+**修法**（只改 `bridge/qq-bridge-script.js`，自热重载秒生效，不用重启宿主、不用重扫码）：
+- `onMSFStatusChange` 改成 `noteMsf()`：记 `S.msf`，不再只是打日志。
+- 新增 **msf 看门狗**（15s 一次）：`stage=ready` 但 `getMsfStatus()===2` 时开始计时
+  - 到 `msfGraceSec`（配置项，默认 120s）调 `msf.online()` 重连；
+  - 到 `msfKillSec`（默认 600s）还不行就 `process.exit(42)` → 哨兵 `ensureShell()` 用 WMI 拉新壳 →
+    真需要扫码时插件照常推码到 ntfy。
+- `/status` 增加 `msf` / `msfOffSec` 字段；桥日志每行前面加了 `HH:MM:SS`。
+- 新增 `GET /heal`：手动 `msf.online()` 一次，返回 `before/online/after`，临时救急用。
+- `onQRCodeSessionFailed` 只记日志 + `S.qrFailedAt`，**故意不翻 stage**：
+  掉线时它也会响，翻成 login 只会让插件白推一堆码（真正 socket 死了由看门狗兜底）。
+
+**这次怎么恢复的**：`GET /heal` → `{"before":2,"online":"true","after":1}`，
+几秒后 QQ 重新连上（`2409:8c1e:…:80` established），没扫码、没重启 QQ、没重启宿主。
+
+**教训**：判断「在线」要看 `msf.getMsfStatus()`，别拿「msgService 对象存不存在」糊弄。
+`/status` 里 `ms` 这个字段的语义是「kernel 还在」，不是「网络通」。
+
+**补充（同日 17:45）**：
+
+- 我先前把 `quickLogin err w(...) is not a function` 当成本脚本的 bug，**判断错了**。
+  那条是 QQ 自己的登录包装函数内部抛的错，只是被我们的 `.catch` 原样打出来；
+  我们这个回调里的 `w` 一直是好的（同一时段别的日志都正常）。
+  所以 quick login 失败的真实原因是**本地登录票据已经失效**，不是每次重启都必然要扫码 —— 票据有效时它能自己登。
+- 顺手补了 **SSO 鉴权看门狗**：`msf=1` 但 10 分钟内 SSO 报错 ≥5 次、且这期间没正常收/发过消息
+  → 判定「传输层活着、登录态死了」（17:24 那次 `/heal` 之后就是这个状态，光看 msf 是 1，其实消息根本不通）。
+  到 `msfKillSec` 就退进程让哨兵重启壳，重启后自然走 quick login / 扫码。
+- `/status` 现在多两个字段：`stuck`（`msf` / `sso`，没卡住时 null）、`sso10m`（近 10 分钟 SSO 报错次数）。
+  排查时先看这俩，再看 `msf`，别只看 `ms`。
+- ⚠ 注意：SSO 计数挂在 `onMSFSsoError` 上，而这个监听器是**登录服务初始化时注册、热重载不会重新注册**的
+  （`global.__qqLoginPatched` 守卫）。所以「SSO 鉴权」这一路要等壳**重启一次**之后才真正生效；
+  msf 那一路是轮询 `getMsfStatus()`，热重载后立刻生效。
+
+**还有一处天天会踩的坑（同日 17:50 修，需重启宿主生效）**：
+
+- `ensureShell()` 原来只要看到这套目录里有 `QQ.exe` 在跑就 `return`（「不重复拉」）。
+  如果壳还活着、但桥的 HTTP 已经连不上（JS 卡死 / native 挂住 / 假在线），就**永远不会自愈**，只能人肉修。
+- 现在加了 `stuckShellSec`（默认 180s）：桥连续 3 分钟连不上、而 QQ.exe 还在，就直接把这套目录的 QQ 杀掉再重拉。
+  `0` = 关掉这个行为（只等，不杀）。
+- 改动在 `lib/index.js`：`ensureShell()` + Schema 新增 `stuckShellSec`；热重载管不到 ESM，**要重启宿主**。
+- 两份副本（`plugins\...` 和 `home\profiles\web\node_modules\dsh-xykp\...`）已同步。

@@ -16,6 +16,7 @@
     ".": "./index.js",
     "./client": "./client.js",
     "./storage/preset-loader": "./storage/preset-loader/index.js",
+    "./chat/memory-layer": "./chat/memory-layer/index.js",
     "./chat/preset-binder": "./chat/preset-binder/index.js",
     "./chat/preset-binder/table": "./chat/preset-binder/table.js",
     "./chat/toolret-forget": "./chat/toolret-forget/index.js",
@@ -39,7 +40,9 @@
     "./comms/bili-reply": "./comms/bili-reply/lib/index.js",
     "./comms/ntfy": "./comms/ntfy/lib/index.js",
     "./comms/ntfy/client": "./comms/ntfy/lib/client.js",
-    "./comms/search-engine": "./comms/search-engine/index.js"
+    "./comms/search-engine": "./comms/search-engine/index.js",
+    "./ui/console": "./ui/console/index.js",
+    "./comms/bili-audio-live": "./comms/bili-audio-live/lib/index.js"
   },
   "dsh": {
     "bundle": {

@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 // dsh-log-cleaner · 宿主半边
 //
 // 需求（任务-2026-10-27.md 第二节）：
@@ -210,6 +211,7 @@ export async function sweep(cfgInput = {}) {
 }
 
 export function apply(ctx, config = {}) {
+  config = configFor('log-cleaner', config)
   const cfg = { ...DEFAULTS, ...(config && typeof config === 'object' ? config : {}) }
   const run = async (label) => {
     try {

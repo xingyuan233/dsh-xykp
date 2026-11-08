@@ -1,3 +1,4 @@
+import { configFor } from '../../ui/store.js'
 // dsh-xykp · chat/preset-binder
 //
 // 维护一张「预设 → 会话」的实时表：
@@ -23,6 +24,7 @@ const warn = (...args) => console.warn(PREFIX, ...args)
 const DEFAULT_IGNORE = ['standard', 'ptc', 'minimal', 'cordis']
 
 export function apply(ctx, config = {}) {
+  config = configFor('preset-binder', config)
   void boot(ctx, config).catch((err) => warn('启动失败（已忽略）：', err?.stack || err))
 }
 

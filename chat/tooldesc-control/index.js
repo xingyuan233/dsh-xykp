@@ -1,3 +1,4 @@
+import { configFor } from '../../ui/store.js'
 // tooldesc-control —— 工具说明 + 工具懒加载 + 上下文重贴，三件事一个入口
 //
 // 2026-10-29 合体（主人要求）：原来拆在 chat/tool-gate 和 chat/context-refresh 两个插件里，
@@ -18,6 +19,7 @@ export const name = 'tooldesc-control'
 export const inject = [...new Set([...(gate.inject || []), ...(refresh.inject || []), 'systemPrompt'])]
 
 export async function apply(ctx, config = {}) {
+  config = configFor('tooldesc-control', config)
   const log = (...a) => console.log('[tooldesc-control]', ...a)
 
   try {

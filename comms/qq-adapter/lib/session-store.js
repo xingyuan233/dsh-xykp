@@ -134,6 +134,22 @@ export async function listSessions() {
   return out
 }
 
+/**
+ * 会话的「名字」：宿主把 title 投影缓存在 <DSH_HOME>/storages/session_projcache/sessions/<id>.json，
+ * 里面 record.rows.title.val 就是 Web 端对话列表上显示的那个标题。
+ * 没有（还没生成标题 / 文件不存在）就返回 ''。
+ */
+export async function readSessionTitle(sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) return ''
+  const p = join(homeDir(), 'storages', 'session_projcache', 'sessions', id + '.json')
+  try {
+    const j = JSON.parse(await readFile(p, 'utf8'))
+    const v = j && j.record && j.record.rows && j.record.rows.title && j.record.rows.title.val
+    return typeof v === 'string' ? v.trim() : ''
+  } catch { return '' }
+}
+
 /** 删一个会话的落盘目录（真删，不可恢复 —— 主人要的就是这个） */
 export async function deleteSessionDir(workspaceDir, sessionId) {
   const { rm } = await import('node:fs/promises')

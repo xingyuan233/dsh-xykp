@@ -1,3 +1,4 @@
+import { configFor } from '../../../ui/store.js'
 /**
  * dsh-plugin-gate — installation safety gate for DeepSeek Harness plugins.
  *
@@ -106,7 +107,8 @@ async function resolveWorkspaceFile(ctx, file, cwd, signal) {
   return target;
 }
 
-function apply(ctx, config) {
+function apply(ctx, config = {}) {
+  config = configFor('plugin-gate', config)
   const { baselineFile, reportFile } = config;
 
   /** Scan one target (npm spec or directory) and canonicalize the result. */
