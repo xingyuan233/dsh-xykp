@@ -7,6 +7,7 @@
 //
 // 只读：不改任何注入内容，只是旁路记录 + 提供 /injection-shower 页面。
 import { configFor } from '../../ui/store.js'
+import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
@@ -97,7 +98,15 @@ export function apply(ctx, config = {}) {
         const sid = String(agent?.sessionId ?? agent?.id ?? 'unknown')
         let st = store.get(sid)
         if (!st) {
-            st = { sessionId: sid, preset: '', updatedAt: Date.now(), snapshots: [], notices: [] }
+            st = {
+                sessionId: sid,
+                preset: '',
+                updatedAt: Date.now(),
+                snapshots: [],
+                notices: [],
+                prefix: null,
+                prefixVersions: [],
+            }
             store.set(sid, st)
         }
         if (store.size > MAX_SESSIONS) {
@@ -127,6 +136,8 @@ export function apply(ctx, config = {}) {
         // 一轮里每个 step 都会 assemble 一次：同一轮只保留最后一份，历史才是「每轮一条」
         const prev = last && last.turn === turn ? st.snapshots[st.snapshots.length - 2] : last
         const sections = renderSections(assembly)
+        const tools = Array.isArray(assembly?.tools) ? assembly.tools : []
+        trackPrefix(st, turn, sections, tools)
         const prevByName = new Map(((prev && prev.sections) || []).map((s) => [s.name, s.text]))
         // 只有和上一轮相比「新增或内容变了」的段落才算本轮真正多出来的东西
         const changed = prevByName.size === 0 ? [] : sections.filter((s) => prevByName.get(s.name) !== s.text)
@@ -140,6 +151,63 @@ export function apply(ctx, config = {}) {
         if (last && last.turn === turn) st.snapshots[st.snapshots.length - 1] = snap
         else st.snapshots.push(snap)
         if (st.snapshots.length > maxSnapshots) st.snapshots.splice(0, st.snapshots.length - maxSnapshots)
+        save()
+    }
+
+    /** 系统前缀（section + tools）的版本跟踪：变了就记一条，用来定位「谁导致缓存失效」 */
+    function trackPrefix(st, turn, sections, tools) {
+        const toolSig = tools.map((t) => t.name + ':' + String(t.description ?? '').length).join('|')
+        const hash = createHash('sha1')
+            .update(sections.map((s) => s.name + '\u0000' + s.text).join('\u0001'))
+            .update('\u0002')
+            .update(tools.map((t) => t.name + '\u0000' + String(t.description ?? '')).join('\u0001'))
+            .digest('hex')
+            .slice(0, 12)
+        const prev = st.prefix
+        if (!prev) {
+            st.prefix = {
+                hash,
+                turn,
+                at: Date.now(),
+                sectionCount: sections.length,
+                toolCount: tools.length,
+                toolSig,
+                sections: sections.map((s) => ({ name: s.name, length: s.text.length, order: s.order })),
+            }
+            save()
+            return
+        }
+        if (prev.hash === hash) return
+        const prevText = new Map((prev.sections || []).map((s) => [s.name, s.length]))
+        const changed = []
+        const added = []
+        for (const s of sections) {
+            if (!prevText.has(s.name)) added.push({ name: s.name, length: s.text.length })
+            else if (prevText.get(s.name) !== s.text.length) changed.push({ name: s.name, length: s.text.length, was: prevText.get(s.name) })
+        }
+        const removed = [...prevText.keys()].filter((name) => !sections.some((s) => s.name === name))
+        st.prefixVersions.push({
+            at: Date.now(),
+            turn,
+            hash,
+            prevHash: prev.hash,
+            sectionCount: sections.length,
+            toolCount: tools.length,
+            toolsChanged: prev.toolSig !== toolSig,
+            changed,
+            added,
+            removed,
+        })
+        if (st.prefixVersions.length > 30) st.prefixVersions.splice(0, st.prefixVersions.length - 30)
+        st.prefix = {
+            hash,
+            turn,
+            at: Date.now(),
+            sectionCount: sections.length,
+            toolCount: tools.length,
+            toolSig,
+            sections: sections.map((s) => ({ name: s.name, length: s.text.length, order: s.order })),
+        }
         save()
     }
 
@@ -184,6 +252,25 @@ export function apply(ctx, config = {}) {
                 try {
                     if (event?.type === 'turn/start' && typeof event?.data?.turn === 'number') {
                         turnOf.set(agent, event.data.turn)
+                    }
+                    // developer 消息（工具表增删这类宿主提示）也算一种历史消息
+                    if (event?.type === 'developer/message') {
+                        const content = event?.data?.message?.content ?? event?.data?.content
+                        const text = Array.isArray(content)
+                            ? content
+                                  .map((b) =>
+                                      b?.type === 'tool-addition'
+                                          ? '➕ 工具 ' + b.toolName
+                                          : b?.type === 'tool-removal'
+                                            ? '➖ 工具 ' + b.toolName
+                                            : typeof b === 'string'
+                                              ? b
+                                              : String(b?.text ?? ''),
+                                  )
+                                  .filter(Boolean)
+                                  .join('\n')
+                            : String(content ?? '')
+                        if (text) recordNotice(agent, '[developer] ' + text)
                     }
                 } catch {}
             }),
@@ -349,4 +436,6 @@ tick()
 setInterval(tick, 2000)
 </script>
 </body></html>`
+
+
 

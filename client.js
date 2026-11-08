@@ -1596,8 +1596,8 @@ window.__ModuleLoader__.load({
         )
 
       const changed = (snap && snap.changedSections) || []
-      const important = ctxs.length + changed.length + notices.length
-      const secHead = '系统提示词 ' + secs.length + ' 段（每轮都发，不是额外注入）'
+      const secHead = '系统提示词 ' + secs.length + ' 段（固定前缀，已经在最上面那条里）'
+      const groupLabel = (text) => React.createElement('div', { style: { ...IS.name, marginTop: 4 } }, text)
 
       return React.createElement(
         'div',
@@ -1606,20 +1606,23 @@ window.__ModuleLoader__.load({
           'button',
           { style: IS.head, onClick: () => setOpen(!open) },
           (open ? '▾ ' : '▸ ') +
-            '本轮注入：context ' +
+            '本轮注入：快照 ' +
             ctxs.length +
             ' · 变化段落 ' +
             changed.length +
-            ' · 通知 ' +
+            ' · 历史消息 ' +
             notices.length,
         ),
         open
           ? React.createElement(
               'div',
               { style: IS.list },
-              ctxs.map((c, i) => row('c' + i, 'context', c)),
-              notices.map((n, i) => row('n' + i, '通知', { name: '', text: n.text })),
-              changed.map((c, i) => row('d' + i, '本轮新增/变化', c)),
+              ctxs.length ? groupLabel('尾部快照 —— 下一份快照会取代它') : null,
+              ctxs.map((c, i) => row('c' + i, '快照', c)),
+              notices.length ? groupLabel('历史消息 —— 插入后一直留在上下文里') : null,
+              notices.map((n, i) => row('n' + i, '历史消息', { name: '', text: n.text })),
+              changed.length ? groupLabel('⚠ 本轮新增/变化的段落（会导致前缀缓存失效）') : null,
+              changed.map((c, i) => row('d' + i, '变化', c)),
               secs.length
                 ? React.createElement(
                     'details',
@@ -1633,9 +1636,126 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── 对话最前面：系统前缀（systemPrompt.section + tools）版本条 ──
+    const PB = {
+      wrap: {
+        padding: '6px 12px',
+        borderBottom: '1px solid rgba(255,255,255,.06)',
+        fontSize: 12,
+        lineHeight: '18px',
+      },
+      head: {
+        background: 'transparent',
+        border: 0,
+        padding: 0,
+        cursor: 'pointer',
+        color: 'inherit',
+        opacity: 0.6,
+        fontSize: 12,
+        fontFamily: 'inherit',
+      },
+      list: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 },
+      item: { borderLeft: '2px solid rgba(255,255,255,.16)', padding: '2px 0 2px 8px' },
+      name: { fontSize: 11, opacity: 0.65, fontFamily: 'ui-monospace,monospace' },
+      pre: {
+        margin: '4px 0 0',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        font: '12px/1.5 ui-monospace,monospace',
+        opacity: 0.8,
+      },
+    }
+
+    function PrefixBar() {
+      const [state, setState] = React.useState(injectionState)
+      const [open, setOpen] = React.useState(false)
+      React.useEffect(() => injectionSubscribe(setState), [])
+
+      const s = state && state.sessions && state.sessions[0]
+      if (!s || !s.prefix) return null
+      const p = s.prefix
+      const versions = s.prefixVersions || []
+      const latest = versions[versions.length - 1]
+      const parts = latest ? latest.changed.length + latest.added.length + latest.removed.length : 0
+
+      return React.createElement(
+        'div',
+        { style: PB.wrap },
+        React.createElement(
+          'button',
+          { style: PB.head, onClick: () => setOpen(!open) },
+          (open ? '▾ ' : '▸ ') +
+            '系统前缀 ' +
+            p.hash +
+            ' · ' +
+            p.sectionCount +
+            ' 段 · ' +
+            p.toolCount +
+            ' 个工具' +
+            (latest
+              ? ' · 第 ' + latest.turn + ' 轮改过 ' + parts + ' 处' + (latest.toolsChanged ? '（工具定义也变了）' : '') + ' → 前缀缓存失效'
+              : '（还没变化过）'),
+        ),
+        open
+          ? React.createElement(
+              'div',
+              { style: PB.list },
+              versions
+                .slice()
+                .reverse()
+                .map((v, i) =>
+                  React.createElement(
+                    'div',
+                    { key: 'v' + i, style: PB.item },
+                    React.createElement(
+                      'div',
+                      { style: PB.name },
+                      '第 ' +
+                        v.turn +
+                        ' 轮 · ' +
+                        v.prevHash +
+                        ' → ' +
+                        v.hash +
+                        ' · ' +
+                        v.sectionCount +
+                        ' 段 / ' +
+                        v.toolCount +
+                        ' 工具',
+                    ),
+                    v.added.length
+                      ? React.createElement('div', null, '新增：' + v.added.map((x) => x.name + '(' + x.length + ')').join(', '))
+                      : null,
+                    v.changed.length
+                      ? React.createElement(
+                          'div',
+                          null,
+                          '变化：' + v.changed.map((x) => x.name + '(' + x.was + '→' + x.length + ')').join(', '),
+                        )
+                      : null,
+                    v.removed.length ? React.createElement('div', null, '移除：' + v.removed.join(', ')) : null,
+                    v.toolsChanged ? React.createElement('div', null, '工具定义变化（名称或描述）') : null,
+                  ),
+                ),
+            )
+          : null,
+      )
+    }
+
     function apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
+
+      // 对话最前面：系统前缀版本条
+      try {
+        slots.inject('conversation.header', () =>
+          slots.register(
+            { name: 'conversation.header', id: 'xykp-prefix', order: 10 },
+            () => React.createElement(PrefixBar),
+          ),
+        )
+      } catch (e) {
+        console.warn('[dsh-xykp] 系统前缀条注册失败：', e)
+      }
 
       // 对话里每轮尾部的「注入」条
       try {
