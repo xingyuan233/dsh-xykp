@@ -29,14 +29,8 @@
       name: 'dsh-xykp/chat/preset-binder'
     - id: memory-layer
       name: 'dsh-xykp/chat/memory-layer'
-    - id: memory-refine
-      name: 'dsh-xykp/chat/memory-refine'
     - id: toolret-steward
       name: 'dsh-xykp/chat/toolret-steward'
-      # 被 toolret-steward 取代
-    - id: toolret-forget
-      name: 'dsh-xykp/chat/toolret-forget'
-      disabled: true
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
     - id: tooldesc-control
