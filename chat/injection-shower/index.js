@@ -122,18 +122,23 @@ export function apply(ctx, config = {}) {
         const st = stateOf(agent)
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
-        const prev = st.snapshots[st.snapshots.length - 1]
+        const turn = turnOf.get(agent) ?? null
+        const last = st.snapshots[st.snapshots.length - 1]
+        // 一轮里每个 step 都会 assemble 一次：同一轮只保留最后一份，历史才是「每轮一条」
+        const prev = last && last.turn === turn ? st.snapshots[st.snapshots.length - 2] : last
         const sections = renderSections(assembly)
         const prevByName = new Map(((prev && prev.sections) || []).map((s) => [s.name, s.text]))
         // 只有和上一轮相比「新增或内容变了」的段落才算本轮真正多出来的东西
         const changed = prevByName.size === 0 ? [] : sections.filter((s) => prevByName.get(s.name) !== s.text)
-        st.snapshots.push({
+        const snap = {
             at: Date.now(),
-            turn: turnOf.get(agent) ?? null,
+            turn,
             contexts: renderContexts(assembly),
             sections,
             changedSections: changed,
-        })
+        }
+        if (last && last.turn === turn) st.snapshots[st.snapshots.length - 1] = snap
+        else st.snapshots.push(snap)
         if (st.snapshots.length > maxSnapshots) st.snapshots.splice(0, st.snapshots.length - maxSnapshots)
         save()
     }
