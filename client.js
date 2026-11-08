@@ -1676,28 +1676,27 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         let raf = 0
         const measure = () => {
-          // 可能有多个 chat flow（隐藏的会话/视图），只取真正可见的那个
+          // 优先用会话内容区（不随滚动移动）；找不到再退回 chat flow
           let rect = null
-          for (const node of document.querySelectorAll('[data-slot="conversation.chat.flow"]')) {
-            const r = node.getBoundingClientRect()
-            if (r.width > 100 && r.height > 50) {
-              rect = r
-              break
-            }
+          const content = document.querySelector('[data-slot="conversation.content"]')
+          if (content) {
+            const c = content.getBoundingClientRect()
+            if (c.width > 200 && c.height > 100) rect = c
           }
-          // 量到的 left 太靠左说明选错了（隐藏视图），退回到会话内容区
-          if (!rect || rect.left < 50) {
-            const content = document.querySelector('[data-slot="conversation.content"]')
-            if (content) {
-              const c = content.getBoundingClientRect()
-              if (c.width > 200 && c.height > 100) rect = c
+          if (!rect) {
+            for (const node of document.querySelectorAll('[data-slot="conversation.chat.flow"]')) {
+              const r = node.getBoundingClientRect()
+              if (r.width > 100 && r.height > 50) {
+                rect = r
+                break
+              }
             }
           }
           if (!rect) {
             setBox(null)
             return
           }
-          setBox({ top: rect.top, left: rect.left, width: rect.width })
+          setBox({ top: Math.max(rect.top, 44) + 8, left: rect.left + 12, width: Math.max(240, rect.width - 24) })
         }
         const soon = () => {
           cancelAnimationFrame(raf)
@@ -1719,6 +1718,8 @@ window.__ModuleLoader__.load({
       const versions = s.prefixVersions || []
       const latest = versions[versions.length - 1]
       const parts = latest ? latest.changed.length + latest.added.length + latest.removed.length : 0
+      const snapLast = s.snapshots && s.snapshots[s.snapshots.length - 1]
+      const sect = (snapLast && snapLast.sections) || []
 
       return React.createElement(
         'div',
@@ -1730,7 +1731,9 @@ window.__ModuleLoader__.load({
             left: box.left,
             width: box.width,
             zIndex: 6,
-            background: '#171a20',
+            background: '#1b1e24',
+            border: '1px solid #2b2f38',
+            borderRadius: 10,
             boxSizing: 'border-box',
           },
         },
@@ -1747,8 +1750,7 @@ window.__ModuleLoader__.load({
             ' 个工具' +
             (latest
               ? ' · 第 ' + latest.turn + ' 轮改过 ' + parts + ' 处' + (latest.toolsChanged ? '（工具定义也变了）' : '') + ' → 前缀缓存失效'
-              : '（还没变化过）') + 
-            ' [' + Math.round(box.left) + ',' + Math.round(box.top) + ',' + Math.round(box.width) + ']',
+              : '（还没变化过）'),
         ),
         open
           ? React.createElement(
@@ -1790,6 +1792,19 @@ window.__ModuleLoader__.load({
                     v.toolsChanged ? React.createElement('div', null, '工具定义变化（名称或描述）') : null,
                   ),
                 ),
+              React.createElement(
+                'details',
+                { style: { marginTop: 8 } },
+                React.createElement('summary', { style: PB.name }, '当前系统提示词全文（' + sect.length + ' 段）'),
+                ...sect.map((c, i) =>
+                  React.createElement(
+                    'div',
+                    { key: 't' + i, style: PB.item },
+                    React.createElement('div', { style: PB.name }, c.name + ' · ' + c.length + ' 字'),
+                    React.createElement('pre', { style: PB.pre }, c.text),
+                  ),
+                ),
+              ),
             )
           : null,
       )
