@@ -1745,29 +1745,37 @@ window.__ModuleLoader__.load({
       const slots = ctx.get('slots')
       if (slots === undefined) return
 
-      // 对话最前面：系统前缀版本条
-      try {
-        slots.inject('conversation.header', () =>
-          slots.register(
-            { name: 'conversation.header', id: 'xykp-prefix', order: 10 },
+      // 2026-11-08：0.2.1-rc.2 里 conversation.header 是 single 槽位，内核的
+      // ConversationHeader 已经占了 priority 0。再往同名槽位注册会抛
+      //   single slot "conversation.header" already has a registration at priority 0
+      // 而且这个异常是在 inject 回调里抛的，外层 try/catch 根本接不到，
+      // 会直接把 ui-conversation 的激活搞失败 —— 首页就停在 "Failed to load plugins"。
+      // 因此改用官方槽位表里当前无占用的 conversation.header.leading（single/root），
+      // 并把 try/catch 挪进回调：注册失败只丢这一条，不再拖垮整个界面。
+      slots.inject('conversation.header.leading', () => {
+        try {
+          return slots.register(
+            { name: 'conversation.header.leading', id: 'xykp-prefix' },
             () => React.createElement(PrefixBar),
-          ),
-        )
-      } catch (e) {
-        console.warn('[dsh-xykp] 系统前缀条注册失败：', e)
-      }
+          )
+        } catch (e) {
+          console.warn('[dsh-xykp] 系统前缀条注册失败：', e)
+          return undefined
+        }
+      })
 
       // 对话里每轮尾部的「注入」条
-      try {
-        slots.inject('conversation.chat.turnTail', () =>
-          slots.register(
+      slots.inject('conversation.chat.turnTail', () => {
+        try {
+          return slots.register(
             { name: 'conversation.chat.turnTail', id: 'xykp-injection', order: 90 },
             (props) => React.createElement(InjectionTail, props),
-          ),
-        )
-      } catch (e) {
-        console.warn('[dsh-xykp] 注入条注册失败：', e)
-      }
+          )
+        } catch (e) {
+          console.warn('[dsh-xykp] 注入条注册失败：', e)
+          return undefined
+        }
+      })
 
       // 会话永久删除 —— 合并进来的 UI（原来是 storage/session-delete 的 client.js）
       try {
@@ -1780,28 +1788,30 @@ window.__ModuleLoader__.load({
       }
 
       // 插件配置控制台（所有 dsh-xykp 行的配置）
-      try {
-        slots.inject('settings.section', () =>
-          slots.register(
+      slots.inject('settings.section', () => {
+        try {
+          return slots.register(
             { name: 'settings.section', id: 'xykp-config', order: 53, label: () => 'xykp 配置' },
             () => React.createElement(ConsoleSection),
-          ),
-        )
-      } catch (e) {
-        console.warn('[dsh-xykp] 插件配置页注册失败：', e)
-      }
+          )
+        } catch (e) {
+          console.warn('[dsh-xykp] 插件配置页注册失败：', e)
+          return undefined
+        }
+      })
 
       // 插件页 → 配置：同一个控制台，放在整页里更宽敞
-      try {
-        slots.inject('plugins.tab', () =>
-          slots.register(
+      slots.inject('plugins.tab', () => {
+        try {
+          return slots.register(
             { name: 'plugins.tab', id: 'xykp-config', order: 5, label: () => 'xykp 配置' },
             () => React.createElement(ConsoleSection),
-          ),
-        )
-      } catch (e) {
-        console.warn('[dsh-xykp] 插件页配置页签注册失败：', e)
-      }
+          )
+        } catch (e) {
+          console.warn('[dsh-xykp] 插件页配置页签注册失败：', e)
+          return undefined
+        }
+      })
     }
 
     exports.apply = apply
