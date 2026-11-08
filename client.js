@@ -1740,7 +1740,8 @@ window.__ModuleLoader__.load({
             ' 个工具' +
             (latest
               ? ' · 第 ' + latest.turn + ' 轮改过 ' + parts + ' 处' + (latest.toolsChanged ? '（工具定义也变了）' : '') + ' → 前缀缓存失效'
-              : '（还没变化过）'),
+              : '（还没变化过）') + 
+            ' [' + Math.round(box.left) + ',' + Math.round(box.top) + ',' + Math.round(box.width) + ']',
         ),
         open
           ? React.createElement(
