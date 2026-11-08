@@ -10,8 +10,8 @@ import { configFor } from '../../ui/store.js'
 
 export const name = 'injection-shower'
 
-// 依赖宿主服务：agents（列已有 agent）+ webServer（挂 /injection-shower 页面）
-export const inject = ['agents', 'webServer']
+// 依赖宿主服务：agents（列已有 agent）+ agentPresets（显示预设名）+ webServer（挂页面）
+export const inject = ['agents', 'agentPresets', 'webServer']
 
 const MAX_SESSIONS = 12
 
