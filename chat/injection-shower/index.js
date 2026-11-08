@@ -7,6 +7,8 @@
 //
 // 只读：不改任何注入内容，只是旁路记录 + 提供 /injection-shower 页面。
 import { configFor } from '../../ui/store.js'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 export const name = 'injection-shower'
 
@@ -15,6 +17,21 @@ export const inject = ['agents', 'agentPresets', 'webServer']
 
 const MAX_SESSIONS = 12
 
+const homeDir = () => process.env.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
+const stateFile = () => join(homeDir(), 'xykp', 'injection-shower', 'state.json')
+
+function loadStore() {
+    try {
+        const raw = JSON.parse(readFileSync(stateFile(), 'utf8'))
+        if (raw && Array.isArray(raw.sessions)) {
+            const map = new Map()
+            for (const s of raw.sessions) if (s && s.sessionId) map.set(s.sessionId, s)
+            return map
+        }
+    } catch {}
+    return new Map()
+}
+
 export function apply(ctx, config = {}) {
     config = configFor('injection-shower', config)
     const maxSnapshots = Math.max(1, Number(config.maxSnapshots) || 20)
@@ -22,7 +39,24 @@ export function apply(ctx, config = {}) {
     const maxChars = Math.max(200, Number(config.maxChars) || 4000)
 
     /** sessionId -> { sessionId, preset, updatedAt, snapshots: [], notices: [] } */
-    const store = new Map()
+    const store = loadStore()
+    let saveTimer = null
+    function save() {
+        if (saveTimer) return
+        saveTimer = setTimeout(() => {
+            saveTimer = null
+            try {
+                const p = stateFile()
+                mkdirSync(dirname(p), { recursive: true })
+                const tmp = p + '.tmp'
+                writeFileSync(tmp, JSON.stringify({ sessions: [...store.values()] }), 'utf8')
+                renameSync(tmp, p)
+            } catch (e) {
+                console.warn('[injection-shower] 存盘失败：', e)
+            }
+        }, 800)
+        if (saveTimer.unref) saveTimer.unref()
+    }
     /** agent -> 当前轮次号（来自 session/event 的 turn/start），用来和对话里的 turn tail 对齐 */
     const turnOf = new Map()
     /** 调试：客户端 turn tail 上报的 turn（最多 20 条） */
@@ -103,6 +137,7 @@ export function apply(ctx, config = {}) {
             changedSections: changed,
         })
         if (st.snapshots.length > maxSnapshots) st.snapshots.splice(0, st.snapshots.length - maxSnapshots)
+        save()
     }
 
     function recordNotice(agent, text) {
@@ -112,6 +147,7 @@ export function apply(ctx, config = {}) {
         st.updatedAt = Date.now()
         st.notices.push({ at: Date.now(), turn: turnOf.get(agent) ?? null, text: clip(text) })
         if (st.notices.length > maxNotices) st.notices.splice(0, st.notices.length - maxNotices)
+        save()
     }
 
     function textOfMessage(message) {
@@ -324,3 +360,4 @@ tick()
 setInterval(tick, 2000)
 </script>
 </body></html>`
+
