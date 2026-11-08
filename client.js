@@ -1677,20 +1677,27 @@ window.__ModuleLoader__.load({
         let raf = 0
         const measure = () => {
           // 可能有多个 chat flow（隐藏的会话/视图），只取真正可见的那个
-          let el = null
+          let rect = null
           for (const node of document.querySelectorAll('[data-slot="conversation.chat.flow"]')) {
-            const rect = node.getBoundingClientRect()
-            if (rect.width > 100 && rect.height > 50) {
-              el = node
+            const r = node.getBoundingClientRect()
+            if (r.width > 100 && r.height > 50) {
+              rect = r
               break
             }
           }
-          if (!el) {
+          // 量到的 left 太靠左说明选错了（隐藏视图），退回到会话内容区
+          if (!rect || rect.left < 50) {
+            const content = document.querySelector('[data-slot="conversation.content"]')
+            if (content) {
+              const c = content.getBoundingClientRect()
+              if (c.width > 200 && c.height > 100) rect = c
+            }
+          }
+          if (!rect) {
             setBox(null)
             return
           }
-          const r = el.getBoundingClientRect()
-          setBox({ top: r.top, left: r.left, width: r.width })
+          setBox({ top: rect.top, left: rect.left, width: rect.width })
         }
         const soon = () => {
           cancelAnimationFrame(raf)
