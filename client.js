@@ -1741,28 +1741,101 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // 前缀卡片：插在消息流最前面（conversation.chat.flow 是 display:contents 的锚点，
+    // 0 尺寸但子节点就是消息行）。全程 try/catch，出错最多不显示，不会拖垮客户端。
+    function installPrefixCard(ctx) {
+      try {
+        ctx.effect(() => {
+          const stop = injectionSubscribe(() => {})
+          let timer = null
+          const tick = () => {
+            try {
+              const flow = document.querySelector('[data-slot="conversation.chat.flow"]')
+              const host = (flow && flow.parentElement) || flow
+              let card = document.getElementById('xykp-prefix-card')
+              if (!host) {
+                if (card) card.remove()
+                return
+              }
+              if (!card) {
+                card = document.createElement('div')
+                card.id = 'xykp-prefix-card'
+                card.style.cssText =
+                  'position:sticky;top:0;z-index:2;margin:8px 12px;padding:8px 12px;background:#1b1e24;border:1px solid #2b2f38;border-radius:10px;font:12px/1.6 system-ui,-apple-system,sans-serif;color:#cfd6e2;white-space:normal'
+              }
+              if (host.firstChild !== card) host.insertBefore(card, host.firstChild)
+              const s = injectionState && injectionState.sessions && injectionState.sessions[0]
+              if (!s || !s.prefix) {
+                card.style.display = 'none'
+                return
+              }
+              card.style.display = ''
+              const p = s.prefix
+              const versions = s.prefixVersions || []
+              const latest = versions[versions.length - 1]
+              const snap = s.snapshots && s.snapshots[s.snapshots.length - 1]
+              const sect = (snap && snap.sections) || []
+              const head =
+                '系统前缀 ' +
+                p.hash +
+                ' · ' +
+                p.sectionCount +
+                ' 段 · ' +
+                p.toolCount +
+                ' 个工具' +
+                (latest
+                  ? ' · 第 ' +
+                    latest.turn +
+                    ' 轮改过 ' +
+                    (latest.changed.length + latest.added.length + latest.removed.length) +
+                    ' 处 → 缓存失效'
+                  : '（还没变化过）')
+              const sig = head + '|' + sect.length + '|' + (card.dataset.open || '0')
+              if (card.dataset.sig === sig) return
+              card.dataset.sig = sig
+              const open = card.dataset.open === '1'
+              card.textContent = ''
+              const headEl = document.createElement('div')
+              headEl.style.cssText = 'cursor:pointer;opacity:.7'
+              headEl.textContent = (open ? '▾ ' : '▸ ') + head
+              headEl.onclick = () => {
+                card.dataset.open = open ? '0' : '1'
+                card.dataset.sig = ''
+                tick()
+              }
+              card.appendChild(headEl)
+              if (open) {
+                const pre = document.createElement('pre')
+                pre.style.cssText =
+                  'margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,monospace;opacity:.85;max-height:420px;overflow:auto'
+                pre.textContent = sect.map((c) => '──── ' + c.name + '（' + c.length + ' 字）\n' + c.text).join('\n\n')
+                card.appendChild(pre)
+              }
+            } catch (e) {
+              console.warn('[dsh-xykp] 前缀卡片渲染失败：', e)
+            }
+          }
+          timer = setInterval(tick, 1000)
+          tick()
+          return () => {
+            clearInterval(timer)
+            const card = document.getElementById('xykp-prefix-card')
+            if (card) card.remove()
+            stop()
+          }
+        }, 'dsh-xykp: prefix card')
+      } catch (e) {
+        console.warn('[dsh-xykp] 前缀卡片安装失败：', e)
+      }
+    }
+
     function apply(ctx) {
       const slots = ctx.get('slots')
       if (slots === undefined) return
 
-      // 2026-11-08：0.2.1-rc.2 里 conversation.header 是 single 槽位，内核的
-      // ConversationHeader 已经占了 priority 0。再往同名槽位注册会抛
-      //   single slot "conversation.header" already has a registration at priority 0
-      // 而且这个异常是在 inject 回调里抛的，外层 try/catch 根本接不到，
-      // 会直接把 ui-conversation 的激活搞失败 —— 首页就停在 "Failed to load plugins"。
-      // 因此改用官方槽位表里当前无占用的 conversation.header.leading（single/root），
-      // 并把 try/catch 挪进回调：注册失败只丢这一条，不再拖垮整个界面。
-      slots.inject('conversation.header.leading', () => {
-        try {
-          return slots.register(
-            { name: 'conversation.header.leading', id: 'xykp-prefix' },
-            () => React.createElement(PrefixBar),
-          )
-        } catch (e) {
-          console.warn('[dsh-xykp] 系统前缀条注册失败：', e)
-          return undefined
-        }
-      })
+      // 前缀卡片：直接插进消息流。conversation.chat.flow 是 display:contents 的锚点（0 尺寸），
+      // 但它的子节点就是消息行，所以把卡片插成它的第一个子元素即可。
+      installPrefixCard(ctx)
 
       // 对话里每轮尾部的「注入」条
       slots.inject('conversation.chat.turnTail', () => {
@@ -1819,3 +1892,5 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
+
