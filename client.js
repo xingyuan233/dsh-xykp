@@ -1669,10 +1669,37 @@ window.__ModuleLoader__.load({
     function PrefixBar() {
       const [state, setState] = React.useState(injectionState)
       const [open, setOpen] = React.useState(false)
+      const [box, setBox] = React.useState(null)
       React.useEffect(() => injectionSubscribe(setState), [])
+      // 宿主没有「消息列表上方」的槽位（conversation.chat.flow 是 single 且被 ui-chat 占着），
+      // 所以用 shell.overlay 浮在 flow 的上沿；flow 顶部留出 28px 由下面的 style 注入负责。
+      React.useEffect(() => {
+        let raf = 0
+        const measure = () => {
+          const el = document.querySelector('[data-slot="conversation.chat.flow"]')
+          if (!el) {
+            setBox(null)
+            return
+          }
+          const r = el.getBoundingClientRect()
+          setBox({ top: r.top, left: r.left, width: r.width })
+        }
+        const soon = () => {
+          cancelAnimationFrame(raf)
+          raf = requestAnimationFrame(measure)
+        }
+        soon()
+        window.addEventListener('resize', soon)
+        const timer = setInterval(soon, 1500)
+        return () => {
+          window.removeEventListener('resize', soon)
+          clearInterval(timer)
+          cancelAnimationFrame(raf)
+        }
+      }, [])
 
       const s = state && state.sessions && state.sessions[0]
-      if (!s || !s.prefix) return null
+      if (!box || !s || !s.prefix) return null
       const p = s.prefix
       const versions = s.prefixVersions || []
       const latest = versions[versions.length - 1]
@@ -1680,7 +1707,18 @@ window.__ModuleLoader__.load({
 
       return React.createElement(
         'div',
-        { style: PB.wrap },
+        {
+          style: {
+            ...PB.wrap,
+            position: 'fixed',
+            top: box.top,
+            left: box.left,
+            width: box.width,
+            zIndex: 6,
+            background: '#171a20',
+            boxSizing: 'border-box',
+          },
+        },
         React.createElement(
           'button',
           { style: PB.head, onClick: () => setOpen(!open) },
@@ -1750,19 +1788,31 @@ window.__ModuleLoader__.load({
       //   single slot "conversation.header" already has a registration at priority 0
       // 而且这个异常是在 inject 回调里抛的，外层 try/catch 根本接不到，
       // 会直接把 ui-conversation 的激活搞失败 —— 首页就停在 "Failed to load plugins"。
-      // 因此改用官方槽位表里当前无占用的 conversation.header.leading（single/root），
+      // 因此改挂到 shell.overlay（多条目槽），用固定定位浮在消息列表上方；
       // 并把 try/catch 挪进回调：注册失败只丢这一条，不再拖垮整个界面。
-      slots.inject('conversation.header.leading', () => {
+      slots.inject('shell.overlay', function* () {
         try {
-          return slots.register(
-            { name: 'conversation.header.leading', id: 'xykp-prefix' },
+          yield slots.register(
+            { name: 'shell.overlay', id: 'xykp-prefix', order: 10 },
             () => React.createElement(PrefixBar),
           )
         } catch (e) {
           console.warn('[dsh-xykp] 系统前缀条注册失败：', e)
-          return undefined
         }
       })
+
+      // 消息列表顶端留出前缀条的高度（只加一条样式，不改宿主代码）
+      try {
+        ctx.effect(() => {
+          const tag = document.createElement('style')
+          tag.dataset.plugin = 'dsh-xykp-prefix'
+          tag.textContent = '[data-slot="conversation.chat.flow"]{padding-top:28px !important}'
+          document.head.appendChild(tag)
+          return () => tag.remove()
+        }, 'dsh-xykp: prefix spacing')
+      } catch (e) {
+        console.warn('[dsh-xykp] 前缀条样式注入失败：', e)
+      }
 
       // 对话里每轮尾部的「注入」条
       slots.inject('conversation.chat.turnTail', () => {
@@ -1819,3 +1869,4 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
