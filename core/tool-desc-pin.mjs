@@ -8,7 +8,7 @@
 // 唯一稳的地方是注册表本身：按工具名把第一次注册时的 description 冻住，**落盘**（跨重启有效），
 // 之后再注册同名工具、说明变了也照样返回旧说明；改动只记日志（globalThis + 文件）。
 //
-// 想让某条新说明真正生效：删掉 home\xykp\tool-desc-freeze.json 里那一条（或整个文件）再重启。
+// 想让某条新说明真正生效：删掉 home\xykp\tool-desc-pin\freeze.json 里那一条（或整个文件）再重启。
 // 只管说明文本；parameters 变了一律放行（那是真换 schema，该重写就重写）。
 
 const TARGET = 'D:\\AI\\DeepseekHarness\\npm\\node_modules\\@deepseek-ai\\dsh-tools\\lib\\index.js'
@@ -24,7 +24,8 @@ const PATCHED = `\tregister(definition) {
 \t\t// 请求开头的 tools 不变 → 前缀缓存不废。变更只记日志，不动定义。
 \t\ttry {
 \t\t\tconst fs = globalThis.process?.getBuiltinModule?.('node:fs');
-\t\t\tconst jsonPath = 'D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\tool-desc-freeze.json';
+			try { fs?.mkdirSync('D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\tool-desc-pin', { recursive: true }); } catch { }
+\t\t\tconst jsonPath = 'D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\tool-desc-pin\\\\freeze.json';
 \t\t\tconst store = (globalThis.__ykpFrozenTools ||= (() => {
 \t\t\t\ttry {
 \t\t\t\t\treturn new Map(Object.entries(JSON.parse(fs.readFileSync(jsonPath, 'utf8'))));
@@ -47,7 +48,7 @@ const PATCHED = `\tregister(definition) {
 \t\t\t\t\tconst change = { at: (new Date()).toISOString(), name: definition.name, builtin: Boolean(typeof WIRE_TRIMS !== 'undefined' && WIRE_TRIMS && WIRE_TRIMS[definition.name]), before: first.slice(0, 400), after: desc.slice(0, 400) };
 \t\t\t\t\t(globalThis.__ykpToolDescChanges ||= []).push(change);
 \t\t\t\t\ttry {
-\t\t\t\t\t\tfs?.appendFileSync('D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\tool-desc-changes.log', JSON.stringify(change) + '\\n');
+\t\t\t\t\t\tfs?.appendFileSync('D:\\\\AI\\\\DeepseekHarness\\\\home\\\\xykp\\\\tool-desc-pin\\\\changes.log', JSON.stringify(change) + '\\n');
 \t\t\t\t\t}
 \t\t\t\t\tcatch { }
 \t\t\t\t\tdefinition = { ...definition, description: first };
