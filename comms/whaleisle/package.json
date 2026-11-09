@@ -1,8 +1,8 @@
 {
-  "name": "dsh-finch",
-  "version": "0.1.0",
+  "name": "dsh-whaleisle",
+  "version": "0.2.0",
   "private": true,
-  "description": "Finch（雀语）自建 IM 适配层：长轮询本地桥把消息注入会话，自动回发，提供 finch_send / finch_read / finch_status。",
+  "description": "WhaleIsle（鲸屿）自建 IM 适配层：长轮询本地桥把消息注入会话，自动回发；带名单/绑定/预设分流，提供 whaleisle_send / whaleisle_read / whaleisle_status / whaleisle_bind。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

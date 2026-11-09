@@ -56,8 +56,8 @@
       name: 'dsh-xykp/comms/ntfy'
     - id: search-engine
       name: 'dsh-xykp/comms/search-engine'
-    - id: finch
-      name: 'dsh-xykp/comms/finch'
+    - id: whaleisle
+      name: 'dsh-xykp/comms/whaleisle'
 
     # ── observer
     - id: dsh-prosecutor

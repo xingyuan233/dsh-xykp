@@ -13,7 +13,7 @@ import { join } from 'node:path'
 
 const PROJECT = 'D:\\devoding\\Python\\Finch'
 const PLUGIN = process.env.FINCH_PLUGIN_PATH
-  || 'D:\\AI\\DeepseekHarness\\plugins\\comms\\finch\\lib\\index.js'
+  || 'D:\\AI\\DeepseekHarness\\plugins\\comms\\whaleisle\\lib\\index.js'
 const PY = 'D:\\Program-Files\\Python\\312\\python.exe'
 
 const env = { ...process.env, PYTHONPATH: PROJECT, FINCH_SERVER: 'https://114.215.205.181' }
@@ -25,7 +25,7 @@ const probe = (...args) => execFileSync(PY, [join(PROJECT, 'tests', 'bot_probe.p
 const dshHome = mkdtempSync(join(tmpdir(), 'finch-dsh-'))
 process.env.DSH_HOME = dshHome
 
-const BRIDGE_CONFIG = process.env.FINCH_BRIDGE_CONFIG
+const BRIDGE_CONFIG = process.env.WHALEISLE_BRIDGE_CONFIG
   || (process.env.LOCALAPPDATA + '\\Finch\\bridge.json')
 
 const config = {

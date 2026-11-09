@@ -375,6 +375,68 @@ export function apply(ctx, config = {}) {
   // 重入守卫：发通知本身就是往收件箱插消息，会同步再触发本 handler
   let dispatching = false
 
+  // ── 整段系统提示词冻结（前缀无论如何都不能改）─────────────────────────
+  // tools 早就冻结了；sections 以前还是每次现拼，改一个字就把整条前缀缓存冲掉。
+  // 现在：第一次组装后把 sections 原样存盘，之后**永远**发回这份冻结版；
+  // 后面插件改说明/加说明/删说明，都只走“变更通知”这条增量通道（走 queueNotice，
+  // 跟工具解锁通知同一条路，追加在对话里），前缀字节保持不变。
+  const notifiedDeltas = new Map() // sid -> Set<name+NUL+hash+kind>
+
+  const shortHash = (text) => {
+    let h = 0
+    for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0
+    return h
+  }
+
+  const pushNotice = (text, sid) => {
+    try {
+      globalThis.__toolGate?.queueNotice?.(text, sid)
+    } catch {}
+  }
+
+  /** 冻结 sections，并把 live 与冻结版的差异转成增量通知。 */
+  const freezeSections = (sid, assembly) => {
+    const live = (Array.isArray(assembly.sections) ? assembly.sections : []).map((s) => ({
+      name: String(s?.name ?? ''),
+      order: s?.order,
+      text: String(s?.text ?? ''),
+    }))
+    const frozen = __R.frozenSections(sid)
+    if (!frozen) {
+      __R.saveFrozenSections(sid, live)
+      return
+    }
+    // 前缀永远用冻结版，live 一律不写回去
+    assembly.sections = frozen.map((s) => ({ ...s }))
+
+    const liveMap = new Map(live.map((s) => [s.name, s.text]))
+    const frozenMap = new Map(frozen.map((s) => [s.name, s.text]))
+    let seen = notifiedDeltas.get(sid)
+    if (!seen) {
+      seen = new Set()
+      notifiedDeltas.set(sid, seen)
+    }
+    for (const [name, text] of liveMap) {
+      const old = frozenMap.get(name)
+      if (old === text) continue
+      const kind = old === undefined ? 'add' : 'edit'
+      const key = name + '\u0000' + shortHash(text) + '\u0000' + kind
+      if (seen.has(key)) continue
+      seen.add(key)
+      pushNotice(
+        (kind === 'add' ? '〔说明新增〕' : '〔说明变更〕') + name + '\n\n' + text,
+        sid,
+      )
+    }
+    for (const [name] of frozenMap) {
+      if (liveMap.has(name)) continue
+      const key = name + '\u0000\u0000del'
+      if (seen.has(key)) continue
+      seen.add(key)
+      pushNotice('〔说明移除〕' + name + '（前缀保持冻结，模型仍按旧说明工作）', sid)
+    }
+  }
+
   // 「本会话已经给模型看过的工具」= 会话里所有 request/header 里出现过的工具名 ∪ tool-addition 事件。
   // 这是单调集合：只增不减。所以只要某个工具在某个历史请求里出现过，就永远不再摘（保证前缀稳定）。
   const declaredOf = (agent, st) => {
@@ -454,6 +516,7 @@ export function apply(ctx, config = {}) {
         }
         assembly.tools = snap.tools
         assembly.sections = dropSections(assembly.sections, visible, snap.dropped)
+        freezeSections(sid, assembly)
         return next()
       }
       // 定义快照要抓「过滤前」的全量：被门控摘掉的工具也得有定义，否则解锁通知贴不出参数
@@ -482,6 +545,7 @@ export function apply(ctx, config = {}) {
         }
         assembly.sections = keptSections
         __R.saveFrozenTools(sid, kept, dropped)
+        freezeSections(sid, assembly)
       }
       assembly.tools = kept
       dbg('工具表快照 ' + kept.length + ' 条（原 ' + total + ' 条）· sid=' + sid)
@@ -508,6 +572,13 @@ export function apply(ctx, config = {}) {
         restorePushed(agent)
         // 只扫「真人用户输入」：注入的（门控通知、审批、定时提醒、系统提示）一律跳过
         const text = (Array.isArray(list) ? list : [list]).filter(isUserNode).map(textOf).join('\n')
+        // 手动解冻前缀：工具表 + sections 快照都清掉，下一次 assemble 按当前内容重建
+        // （正常情况前缀永远冻结；只有你主动要更新说明/工具时才用，会重算一次缓存）
+        if (st && /\/(?:刷新前缀|刷新说明)/.test(text)) {
+          __R.clearFrozenPrefix(st.sessionId)
+          notifiedDeltas.delete(st.sessionId)
+          pushNotice('〔前缀已解冻〕下一次请求会按当前内容重建工具表和说明（这一次会重新算缓存）', st.sessionId)
+        }
         scan(agent, text, 'inbox')
         // 工具说明变更：同一套通知通道发一条独立消息（不碰前缀）
         // 工具说明变更 / 解锁 / 闲话都按会话（sid）取自己那一桶

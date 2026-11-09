@@ -63,11 +63,13 @@ tooldesc-control:
 ## 4. 冻结机制（核心）
 
 ```
-第一次组装:  按规则过滤一次 → 写盘 tool-gate-frozen.json → 发出去
-之后每次:    直接从盘上读这份 → 原样发出去（不看注册表）
+第一次组装:  按规则过滤一次 → 写盘 frozen-tools.json + frozen-sections.json → 发出去
+之后每次:    直接从盘上读这两份 → 原样发出去（tools 和 sections 都不看当前内容）
 ```
 
-于是：改描述、改参数、删工具、改名、插件重载——**请求里的 `tools` 都是那一份**。新注册的工具也不会进表，只能靠消息补充。
+- **tools**：改描述、改参数、删工具、改名、插件重载——请求里的 `tools` 都是那一份；描述变更走消息通知（`pendingDescNotices`）。
+- **sections**：系统提示词段落（人格、说明、`tool:*`、`whaleisle:channel` 之类）也在请求开头，改一个字整条前缀就作废。所以第一次组装后整段 sections 快照落盘，之后永远发冻结版；live 里的新增/修改/删除一律只发**变更通知**（走 `queueNotice`，追加在对话里），永不写回前缀。
+- 手动更新：用户消息里带 `/刷新前缀`（或 `/刷新说明`）→ 删掉该会话的两个快照，下一次组装按当前内容重建。**这会主动重算一次缓存，平时不要用。**
 
 「第一次组装」的过滤判据是**并集**：
 
@@ -81,7 +83,8 @@ declared = 会话里所有 request/header 出现过的工具 ∪ 所有 tool-add
 快照文件：
 
 ```
-<DSH_HOME>\xykp\tooldesc-control\frozen-tools.json     { "<sid>": [ {name, description, parameters}, ... ] }
+<DSH_HOME>\xykp\tooldesc-control\frozen-tools.json     { "<sid>": { tools: [...], dropped: [...] } }
+<DSH_HOME>\xykp\tooldesc-control\frozen-sections.json  { "<sid>": [ {name, order, text}, ... ] }
 ```
 
 ## 5. 什么时候扫描关键词

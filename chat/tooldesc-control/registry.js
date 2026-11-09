@@ -138,3 +138,54 @@ export function saveFrozenTools(sid, list, dropped) {
     writeFileSync(FROZEN_PATH, JSON.stringify(all), 'utf8')
   } catch {}
 }
+
+// ── 会话级「整段系统提示词」快照 ────────────────────────────────────────────
+// 只冻工具表挡不住缓存：sections（说明、人格、工具文档）在请求开头，改一个字
+// 整条前缀就作废，一次冲掉几十轮的缓存。所以第一次组装后的 sections 也原样存盘，
+// 之后每次原样发回；要更新用 `/刷新前缀` 解冻一次。
+const FROZEN_SECTIONS_PATH = join(DATA_DIR, 'frozen-sections.json')
+
+function readFrozenSectionsAll() {
+  try {
+    return JSON.parse(readFileSync(FROZEN_SECTIONS_PATH, 'utf8')) || {}
+  } catch {
+    return {}
+  }
+}
+
+/** 返回该会话冻结的 [{ name, order, text }]，没有就是 null。 */
+export function frozenSections(sid) {
+  const v = readFrozenSectionsAll()[sid]
+  return Array.isArray(v) ? v : null
+}
+
+export function saveFrozenSections(sid, list) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true })
+    const all = readFrozenSectionsAll()
+    all[sid] = (Array.isArray(list) ? list : []).map((s) => ({
+      name: String(s?.name ?? ''),
+      order: s?.order,
+      text: String(s?.text ?? ''),
+    }))
+    writeFileSync(FROZEN_SECTIONS_PATH, JSON.stringify(all), 'utf8')
+  } catch {}
+}
+
+/** 解冻：工具表 + 段落快照都删掉，下一次组装按当前内容重建。 */
+export function clearFrozenPrefix(sid) {
+  try {
+    const all = readFrozenAll()
+    if (sid in all) {
+      delete all[sid]
+      writeFileSync(FROZEN_PATH, JSON.stringify(all), 'utf8')
+    }
+  } catch {}
+  try {
+    const all = readFrozenSectionsAll()
+    if (sid in all) {
+      delete all[sid]
+      writeFileSync(FROZEN_SECTIONS_PATH, JSON.stringify(all), 'utf8')
+    }
+  } catch {}
+}

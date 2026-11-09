@@ -38,7 +38,7 @@
     "./comms/ntfy": "./comms/ntfy/lib/index.js",
     "./comms/ntfy/client": "./comms/ntfy/lib/client.js",
     "./comms/search-engine": "./comms/search-engine/index.js",
-    "./comms/finch": "./comms/finch/lib/index.js",
+    "./comms/whaleisle": "./comms/whaleisle/lib/index.js",
     "./ui/console": "./ui/console/index.js",
     "./comms/bili-audio-live": "./comms/bili-audio-live/lib/index.js"
   },
