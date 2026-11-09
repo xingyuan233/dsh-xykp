@@ -301,6 +301,8 @@ export function apply(ctx, config = {}) {
   const service = {
     /** 统一通知通道：别的插件（比如 context-refresh）想跟用户说句话就走这里 */
     notify,
+    /** 写一行到 tool-gate.log（给别的子插件用） */
+    debug: (msg) => { try { dbg(String(msg)) } catch {} },
     /** 攒一条闲话，等下一条用户消息进来时一起带到开头（不单独开一轮回复）；按 sid 分桶 */
     queueNotice: (text, sid) => {
       const q = queueOf(sid ? String(sid) : '')

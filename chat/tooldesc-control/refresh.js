@@ -15,7 +15,7 @@
 //   withTools     提醒里带不带工具名清单（从最近一次请求头里读，默认 true）
 //   presetDir     预设目录（空 = <DSH_HOME>/profiles/web/presets）
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -139,12 +139,39 @@ export function apply(ctx, config = {}) {
   }
 
 
+
+  // 上一次触发的上下文长度：落盘，重启不要重置（否则重启后要从当前长度再涨 10 万才触发）
+  function refreshStatePath() {
+    return join(home(), 'xykp', 'tooldesc-control', 'refresh-state.json')
+  }
+  function readRefreshState() {
+    try {
+      return JSON.parse(readFileSync(refreshStatePath(), 'utf8')) || {}
+    } catch {
+      return {}
+    }
+  }
+  function saveRefreshState(sid, lastAt) {
+    try {
+      const all = readRefreshState()
+      all[sid] = Number(lastAt) || 0
+      mkdirSync(join(home(), 'xykp', 'tooldesc-control'), { recursive: true })
+      writeFileSync(refreshStatePath(), JSON.stringify(all, null, 2), 'utf8')
+    } catch {}
+  }
+
   function mount(agent) {
     const sid = String(agent?.session?.id || agent?.id || '')
     if (!sid || mounted.has(sid)) return
     // 2026-10-29：不再往 systemPrompt 里塞（那会重写请求开头、把前缀缓存整段作废），
     // 改成走 tool-gate 的统一通知通道（steer 一条消息，前缀一个字不动）。
-    const state = sharedState.get(sid) || { lastAt: tokensOf(ctx, agent), busy: false, lastFiredAt: 0 }
+    const persisted = readRefreshState()
+    const state = sharedState.get(sid) || {
+      lastAt: Number.isFinite(persisted[sid]) ? persisted[sid] : tokensOf(ctx, agent),
+      busy: false,
+      lastFiredAt: 0,
+    }
+    globalThis.__toolGate?.debug?.('[refresh] mount ' + sid + ' lastAt=' + state.lastAt + ' now=' + tokensOf(ctx, agent))
     sharedState.set(sid, state)
     const timer = setInterval(() => {
       try {
@@ -154,6 +181,8 @@ export function apply(ctx, config = {}) {
         state.busy = true
         state.lastAt = now
         state.lastFiredAt = Date.now()
+        saveRefreshState(sid, now)
+        globalThis.__toolGate?.debug?.('[refresh] fire sid=' + sid + ' at=' + now)
         let text = ''
         try {
           text = reminderFor(agent)
