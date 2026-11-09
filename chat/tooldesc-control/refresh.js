@@ -1,4 +1,4 @@
-// context-refresh · 长对话里定期把「预设 + 工具清单」再提醒一遍
+// context-refresh · 长对话里定期把 AGENTS.md + 角色预设再贴一遍
 //
 // 为什么需要：上下文一长，开头的系统提示（人格、规矩、工具说明）在注意力上越来越远，
 // 容易开始「忘自己是谁」「编工具名」。这里按累计 token 定期塞一小段提醒进系统提示的**最后**。
@@ -109,6 +109,16 @@ export function apply(ctx, config = {}) {
   const mounted = (globalThis.__ctxRefreshMounted ||= new Map()) // sid -> off（模块级，防重复挂）
   const sharedState = (globalThis.__ctxRefreshState ||= new Map()) // sid -> state（几个定时器共用同一道闸）
 
+  // 重发的就两样：AGENTS.md 全文 + 角色预设的 persona。别的（工具清单、寒暄）一律不贴。
+  function agentsDoc() {
+    try {
+      const home = globalThis.process?.env?.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
+      return readFileSync(join(home, 'AGENTS.md'), 'utf8').trim()
+    } catch {
+      return ''
+    }
+  }
+
   function reminderFor(agent) {
     const preset = (() => {
       try {
@@ -118,19 +128,16 @@ export function apply(ctx, config = {}) {
         return ''
       }
     })()
-    const parts = ['〔上下文提醒 · 把开头要点再带一遍〕']
-    if (preset) parts.push('当前预设：' + preset)
-    if (config.withPrefix !== false && preset) {
+    const parts = ['〔上下文提醒 · 重新贴一遍开头的规矩〕']
+    const doc = agentsDoc()
+    if (doc) parts.push('—— AGENTS.md ——\n' + doc)
+    if (preset) {
       const prefix = readPresetPrefix(dir, preset)
-      if (prefix) parts.push('—— 预设要点 ——\n' + prefix)
+      if (prefix) parts.push('—— 角色预设「' + preset + '」——\n' + prefix)
     }
-    if (config.withTools !== false) {
-      const names = toolNames(agent)
-      if (names.length) parts.push('—— 工具（只有这些，别编名字）——\n' + names.join(', '))
-    }
-    parts.push('（照系统提示的人格和规矩继续，别把自己是谁忘了）')
     return parts.join('\n\n')
   }
+
 
   function mount(agent) {
     const sid = String(agent?.session?.id || agent?.id || '')

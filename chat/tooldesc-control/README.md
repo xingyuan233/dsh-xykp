@@ -113,6 +113,7 @@ declared = 会话里所有 request/header 出现过的工具 ∪ 所有 tool-add
 
 | 路径 | 作用 |
 |---|---|
+| `chat/tooldesc-control/refresh.js` | 长对话重贴：每累计 `everyTokens`（默认 20 万）把 AGENTS.md + 角色预设 persona 再贴一遍，走 queueNotice 追加，不动前缀 |
 | `chat/tooldesc-control/gate.js` | 钩子、扫描、通知、快照过滤 |
 | `chat/tooldesc-control/registry.js` | 规则/说明的读取编译、快照读写、debug 日志 |
 | `chat/tooldesc-control/index.js` | 入口，把 gate / refresh 挂一起 |
