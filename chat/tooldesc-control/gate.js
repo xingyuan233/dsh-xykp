@@ -424,7 +424,10 @@ export function apply(ctx, config = {}) {
       if (seen.has(key)) continue
       seen.add(key)
       pushNotice(
-        (kind === 'add' ? '〔说明新增〕' : '〔说明变更〕') + name + '\n\n' + text,
+        (kind === 'add' ? '〔说明新增〕' : '〔说明变更〕') +
+          name +
+          '\n\n（请求开头的说明保持不变以复用缓存，以下为最新内容，以此为准）\n\n' +
+          text,
         sid,
       )
     }
@@ -433,7 +436,10 @@ export function apply(ctx, config = {}) {
       const key = name + '\u0000\u0000del'
       if (seen.has(key)) continue
       seen.add(key)
-      pushNotice('〔说明移除〕' + name + '（前缀保持冻结，模型仍按旧说明工作）', sid)
+      pushNotice(
+        '〔说明移除〕' + name + '（请求开头的说明保持不变以复用缓存，请忽略这一段）',
+        sid,
+      )
     }
   }
 
@@ -572,13 +578,6 @@ export function apply(ctx, config = {}) {
         restorePushed(agent)
         // 只扫「真人用户输入」：注入的（门控通知、审批、定时提醒、系统提示）一律跳过
         const text = (Array.isArray(list) ? list : [list]).filter(isUserNode).map(textOf).join('\n')
-        // 手动解冻前缀：工具表 + sections 快照都清掉，下一次 assemble 按当前内容重建
-        // （正常情况前缀永远冻结；只有你主动要更新说明/工具时才用，会重算一次缓存）
-        if (st && /\/(?:刷新前缀|刷新说明)/.test(text)) {
-          __R.clearFrozenPrefix(st.sessionId)
-          notifiedDeltas.delete(st.sessionId)
-          pushNotice('〔前缀已解冻〕下一次请求会按当前内容重建工具表和说明（这一次会重新算缓存）', st.sessionId)
-        }
         scan(agent, text, 'inbox')
         // 工具说明变更：同一套通知通道发一条独立消息（不碰前缀）
         // 工具说明变更 / 解锁 / 闲话都按会话（sid）取自己那一桶
