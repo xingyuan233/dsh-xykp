@@ -40,7 +40,7 @@ export const Config = Schema.object({
   checkAssistant: Schema.boolean().default(true).description('也检查模型自己的输出/思考'),
 })
 
-function textOf(node) {
+function textOf(node, opts = {}) {
   // 从消息节点里尽量把可读文本抠出来（块结构 / 纯字符串都照顾）
   if (!node) return ''
   if (typeof node === 'string') return node
@@ -56,7 +56,10 @@ function textOf(node) {
       return
     }
     if (typeof v === 'object') {
-      for (const key of ['text', 'content', 'thinking', 'delta', 'message', 'messages', 'frame', 'chunk']) {
+      const keys = opts.thinking === false
+        ? ['text', 'content', 'delta', 'message', 'messages', 'frame', 'chunk']
+        : ['text', 'content', 'thinking', 'delta', 'message', 'messages', 'frame', 'chunk']
+      for (const key of keys) {
         if (key in v) walk(v[key], depth + 1)
       }
     }
@@ -546,7 +549,8 @@ export function apply(ctx, config = {}) {
       ctx.on('agent/assistant-stream', (payload) => {
         try {
           // 只扫模型自己产出的文本/思考；不 dump 原始帧 JSON（会把工具定义、上下文里的字一起带进来）
-          scan(payload?.agent, textOf(payload?.frame ?? payload))
+          // 只看正式输出，思考（thinking）不算关键词来源
+          scan(payload?.agent, textOf(payload?.frame ?? payload, { thinking: false }))
         } catch {}
       })
     } catch (error) {
