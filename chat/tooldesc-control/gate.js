@@ -527,12 +527,18 @@ export function apply(ctx, config = {}) {
             }
             releaseDescNotices(agent, notes)
           }
-          const sentText = parts.concat(extras).join('\n\n')
+          const chunks = parts.concat(extras)
+          const sentText = chunks.join('\n\n')
           {
+            // 逐段记：宿主可能把这条消息拆开/重排，整条精确匹配会失配；按段记才能都剥掉
             const st = stateOf(agent)
-            if (st && sentText) {
-              st.injected.unshift(sentText)
-              if (st.injected.length > 20) st.injected.length = 20
+            if (st) {
+              for (const chunk of chunks) {
+                const s = String(chunk || '')
+                if (!s) continue
+                st.injected.unshift(s)
+              }
+              if (st.injected.length > 60) st.injected.length = 60
             }
           }
           notify(agent, sentText).then((ok) => {
