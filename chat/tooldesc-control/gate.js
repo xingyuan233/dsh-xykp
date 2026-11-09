@@ -412,17 +412,9 @@ export function apply(ctx, config = {}) {
       // 会话级快照：第一次组装时按规则过滤一次、存盘；之后永远发这一份
       // 系统提示词里 `tool:<名字>` 那段说明，对「被门控且不在快照里」的工具要一起摘掉：
       // 否则模型照着说明直接按名字调用 —— 工具其实注册着，调用会成功（绕过门控）。
-      // section 名和工具名不是一一对应：`tool:goal` 管 create_goal/get_goal/update_goal，
-      // `tool:jobs` 管 job_*，`tool:subagent` 管 subagent_fork 等。所以按「有没有相关工具可见」判断。
-      const hasRelatedTool = (sectionName, visibleNames) => {
-        const x = sectionName.slice(5)
-        const base = x.replace(/s$/, '')
-        for (const n of visibleNames) {
-          if (n === x || n === base) return true
-          if (n.includes(x) || n.includes(base)) return true
-        }
-        return false
-      }
+      // 只做精确匹配，不做任何“名字包含”推断：
+      //   ① notes 里配了什么 section 名，就摘什么（tool:goal 这种分组说明靠这条）
+      //   ② 其余只有 tool:<工具名> 且该工具在规则里、又没进快照时才摘
       const dropSections = (list, visibleNames, forcedDrop) => {
         if (!Array.isArray(list)) return list
         const forced = new Set(forcedDrop || [])
@@ -430,11 +422,13 @@ export function apply(ctx, config = {}) {
           const name = String(section?.name || '')
           if (!name.startsWith('tool:')) return true
           if (forced.has(name)) return false
-          // notes 里配了同名 key（tool:goal 这种）→ 这段说明默认不给，等关键词命中再作为消息注入
           if (compiledNotes.has(name)) return false
-          return hasRelatedTool(name, visibleNames)
+          const tool = name.slice(5)
+          if (!compiled.has(tool)) return true
+          return visibleNames.has(tool)
         })
       }
+
       const snap = __R.frozenTools(sid)
       if (snap) {
         const visible = new Set()
@@ -465,7 +459,11 @@ export function apply(ctx, config = {}) {
         const keptSections = []
         for (const section of assembly.sections || []) {
           const name = String(section?.name || '')
-          if (name.startsWith('tool:') && (compiledNotes.has(name) || !hasRelatedTool(name, visible))) { dropped.push(name); continue }
+          if (name.startsWith('tool:')) {
+            if (compiledNotes.has(name)) { dropped.push(name); continue }
+            const tool = name.slice(5)
+            if (compiled.has(tool) && !visible.has(tool)) { dropped.push(name); continue }
+          }
           keptSections.push(section)
         }
         assembly.sections = keptSections
