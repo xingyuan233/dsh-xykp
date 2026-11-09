@@ -121,16 +121,20 @@ function readFrozenAll() {
   }
 }
 
+/** 返回 { tools, dropped } 或 null。老格式（纯数组）当 dropped=[] 处理。 */
 export function frozenTools(sid) {
   const all = readFrozenAll()
-  return Array.isArray(all[sid]) ? all[sid] : null
+  const v = all[sid]
+  if (Array.isArray(v)) return { tools: v, dropped: [] }
+  if (v && Array.isArray(v.tools)) return { tools: v.tools, dropped: Array.isArray(v.dropped) ? v.dropped : [] }
+  return null
 }
 
-export function saveFrozenTools(sid, list) {
+export function saveFrozenTools(sid, list, dropped) {
   try {
     mkdirSync(DATA_DIR, { recursive: true })
     const all = readFrozenAll()
-    all[sid] = list
+    all[sid] = { tools: list, dropped: Array.isArray(dropped) ? dropped : [] }
     writeFileSync(FROZEN_PATH, JSON.stringify(all), 'utf8')
   } catch {}
 }

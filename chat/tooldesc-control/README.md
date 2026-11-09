@@ -41,7 +41,7 @@ tooldesc-control:
       limit: 3                            # 可选，这个会话最多推几次；不填 = 无限
     create_goal: { keys: [goal, 长期目标], cooldown: 8 }
 
-  notes:                                  # 说明：命中就追加一段文本（可反复注入）
+  notes:                                  # 说明：key = 系统提示词里那段 section 的名字（tool:goal 这种）
     tool:workflow:
       keys: [工作流, workflow, 编排]
       cooldown: 8
@@ -105,7 +105,7 @@ declared = 会话里所有 request/header 出现过的工具 ∪ 所有 tool-add
 <该工具的 description>
 ```
 
-- `notes` 的消息在前，工具解锁在后。`「xx」` 是实际命中的那个关键词（不是规则里全部关键词）。
+- `notes` 的消息在前，工具解锁在后。`notes` 的 key 必须等于系统提示词里的 section 名：配了就**默认把那段说明从 system prompt 摘掉**，命中关键词再以消息形式注入（可反复注入）。`「xx」` 是实际命中的那个关键词（不是规则里全部关键词）。
 - 同一段 note 文本在队列里只保留一份。
 
 ## 7. 文件与状态

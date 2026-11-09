@@ -423,25 +423,29 @@ export function apply(ctx, config = {}) {
         }
         return false
       }
-      const dropSections = (list, visibleNames) => {
+      const dropSections = (list, visibleNames, forcedDrop) => {
         if (!Array.isArray(list)) return list
+        const forced = new Set(forcedDrop || [])
         return list.filter((section) => {
           const name = String(section?.name || '')
           if (!name.startsWith('tool:')) return true
+          if (forced.has(name)) return false
+          // notes 里配了同名 key（tool:goal 这种）→ 这段说明默认不给，等关键词命中再作为消息注入
+          if (compiledNotes.has(name)) return false
           return hasRelatedTool(name, visibleNames)
         })
       }
       const snap = __R.frozenTools(sid)
       if (snap) {
         const visible = new Set()
-        for (const tool of snap) {
+        for (const tool of snap.tools) {
           const name = nameOf(tool)
           if (!name) continue
           visible.add(name)
           defs.set(name, { description: tool?.description, parameters: tool?.parameters })
         }
-        assembly.tools = snap
-        assembly.sections = dropSections(assembly.sections, visible)
+        assembly.tools = snap.tools
+        assembly.sections = dropSections(assembly.sections, visible, snap.dropped)
         return next()
       }
       // 定义快照要抓「过滤前」的全量：被门控摘掉的工具也得有定义，否则解锁通知贴不出参数
@@ -455,10 +459,17 @@ export function apply(ctx, config = {}) {
         const name = nameOf(tool)
         return !compiled.has(name) || declared.has(name)
       })
-      __R.saveFrozenTools(sid, kept)
       {
         const visible = new Set(kept.map(nameOf).filter(Boolean))
-        assembly.sections = dropSections(assembly.sections, visible)
+        const dropped = []
+        const keptSections = []
+        for (const section of assembly.sections || []) {
+          const name = String(section?.name || '')
+          if (name.startsWith('tool:') && (compiledNotes.has(name) || !hasRelatedTool(name, visible))) { dropped.push(name); continue }
+          keptSections.push(section)
+        }
+        assembly.sections = keptSections
+        __R.saveFrozenTools(sid, kept, dropped)
       }
       assembly.tools = kept
       dbg('工具表快照 ' + kept.length + ' 条（原 ' + total + ' 条）· sid=' + sid)
