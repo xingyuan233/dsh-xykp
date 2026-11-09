@@ -593,8 +593,11 @@ export function apply(ctx, config = {}) {
       ctx.on('agent/assistant-stream', (payload) => {
         try {
           // 只扫模型自己产出的文本/思考；不 dump 原始帧 JSON（会把工具定义、上下文里的字一起带进来）
-          // 只看正式输出，思考（thinking）不算关键词来源
-          scan(payload?.agent, textOf(payload?.frame ?? payload, { thinking: false }))
+          // 只看正式输出：思考帧整帧跳过（流式思考的正文在 delta 里，光排 thinking 键不够）
+          const frame = payload?.frame ?? payload
+          const kind = String(frame?.type || frame?.channel || '').toLowerCase()
+          if (kind.includes('think') || kind.includes('reason')) return
+          scan(payload?.agent, textOf(frame, { thinking: false }))
         } catch {}
       })
     } catch (error) {
