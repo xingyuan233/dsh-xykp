@@ -131,6 +131,14 @@ await tick()
 const sliced2 = resultText(s1, 'c6') || ''
 check('subbytes 只留字节', sliced2.startsWith('[#5] A0\nA1\nA2'), JSON.stringify(sliced2.slice(0, 20)))
 
+// 切片现在和 recall 一样「当场把内容作为工具结果返回」，不要求被切的那步还在 pending
+const inlineSlice = await a1.tool().execute({ sublines: [{ id: 4, offset: 0, limit: 2 }] })
+check('sublines 当场带回内容', inlineSlice.text.includes('行 0..2') && inlineSlice.text.includes('L0\nL1'), inlineSlice.text.slice(0, 80))
+const inlineBytes = await a1.tool().execute({ subbytes: [{ id: 5, offset: 3, limit: 2 }] })
+check('subbytes 当场带回内容', inlineBytes.text.includes('字节 3..5') && inlineBytes.text.includes('A1'), inlineBytes.text.slice(0, 80))
+const inlineLost = await a1.tool().execute({ sublines: [{ id: 999, offset: 0, limit: 1 }] })
+check('切片未找到会报', inlineLost.text.includes('未找到可切片的：#999'), inlineLost.text.slice(0, 80))
+
 const s2 = new Session('s2')
 s2.append('assistant/message', { message: { role: 'assistant', content: [] } })
 s2.append('tool/result', { message: { role: 'tool', toolCallId: 'old', content: [{ type: 'text', text: '[#9] 旧' }] } })

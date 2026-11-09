@@ -67,7 +67,7 @@ const parametersDsl = {
       additionalProperties: false,
       properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
     },
-    description: '[{id:number,offset,limit}] lines',
+    description: '[{id:number,offset,limit}] 当场返回这些行（同 recall）',
   },
   subbytes: {
     type: 'array',
@@ -76,7 +76,7 @@ const parametersDsl = {
       additionalProperties: false,
       properties: { id: { type: 'number' }, offset: { type: 'number' }, limit: { type: 'number' } },
     },
-    description: '[{id:number,offset,limit}] bytes',
+    description: '[{id:number,offset,limit}] 当场返回这些字节（同 recall）',
   },
   silence: { type: 'number', showDesc: false },
 }
@@ -112,12 +112,12 @@ const parametersSchema = {
 
 const parameters = wireSlim ? parametersDsl : parametersSchema
 
-function makeTool(takeRecall) {
+function makeTool(takeRecall, takeSlice) {
   return defineTool({
     name: TOOL_NAME,
     description:
       'Tool results of the previous step (ids in the notice). ids: 0 = all of last step, -1/-2… = newest/second newest. No args = fold to ⟨dropped #id⟩.\n' +
-      'keep keeps whole · summarize swaps in text · recall re-emits as a new tagged result (history untouched) · sublines/subbytes keep offset..offset+limit lines/bytes (0-based) · silence mutes N notices.',
+      'keep keeps whole · summarize swaps in text · recall re-emits as a new tagged result (history untouched) · sublines/subbytes re-emit a trimmed slice of the target result as a new tagged result (history untouched; archived ids work too) · silence mutes N notices.',
     parameters,
     output: {
       schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, text: { type: 'string' } } },
@@ -129,18 +129,47 @@ function makeTool(takeRecall) {
       const keep = Array.isArray(args?.keep) ? args.keep : []
       const sum = Array.isArray(args?.summarize) ? args.summarize : []
       const recall = (Array.isArray(args?.recall) ? args.recall : []).map(Number).filter((id) => Number.isFinite(id))
+      const sliceSpecs = [
+        ...(Array.isArray(args?.sublines) ? args.sublines : []).map((s) => ({ ...s, mode: 'lines' })),
+        ...(Array.isArray(args?.subbytes) ? args.subbytes : []).map((s) => ({ ...s, mode: 'bytes' })),
+      ]
       const silence = Number(args?.silence)
       const got = typeof takeRecall === 'function' && recall.length ? takeRecall(recall) : { blocks: [], lost: [] }
+      const sliced = typeof takeSlice === 'function' && sliceSpecs.length ? takeSlice(sliceSpecs) : { blocks: [], lost: [] }
       const head =
         `⟨decided⟩ keep ${keep.join(',') || '-'} / summary ${sum.map((s) => s.id).join(',') || '-'}` +
         (recall.length ? ` / recall ${recall.join(',')}` : '') +
+        (sliceSpecs.length ? ` / slice ${sliceSpecs.map(rangeLabel).join(', ')}` : '') +
         (Number.isFinite(silence) && silence > 0 ? ` / silence ${Math.floor(silence)}` : '')
       const decided = keep.length > 0 || sum.length > 0 || (Number.isFinite(silence) && silence > 0)
-      let text = got.blocks.length ? (decided ? head + '\n\n' : '') + got.blocks.join('\n\n') : head
+      const blocks = [...sliced.blocks, ...got.blocks]
+      let text = blocks.length ? (decided ? head + '\n\n' : '') + blocks.join('\n\n') : head
       if (got.lost.length) text += `\n未找到：${got.lost.map((id) => '#' + id).join(' ')}`
+      if (sliced.lost.length) {
+        text += `\n未找到可切片的：${[...new Set(sliced.lost)].map((id) => '#' + id).join(' ')}（不在本步结果里，档案/日志也没有）`
+      }
       return { ok: true, text }
     },
   })
+}
+
+/** 切片参数的简短描述，如 #3 行 10..40 / #3 字节 0..2000。 */
+function rangeLabel(spec) {
+  const from = Number.isFinite(Number(spec?.offset)) ? Math.max(0, Math.floor(Number(spec.offset))) : 0
+  const limit = Number(spec?.limit)
+  const to = Number.isFinite(limit) && limit >= 0 ? from + Math.floor(limit) : ''
+  return `#${spec?.id} ${spec?.mode === 'bytes' ? '字节' : '行'} ${from}..${to || '末'}`
+}
+
+/** 只取一段的行/字节区间（0-based）；行模式 limit 缺省/0 = 到末尾。 */
+function sliceBody(text, spec) {
+  const body = typeof text === 'string' ? text : ''
+  const offset = Math.max(0, Math.floor(Number(spec?.offset) || 0))
+  const rawLimit = Number(spec?.limit)
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 0
+  if (spec?.mode === 'bytes') return body.slice(offset, limit ? offset + limit : undefined)
+  const lines = body.split('\n')
+  return lines.slice(offset, limit ? offset + limit : undefined).join('\n')
 }
 
 function clip(text, max) {
@@ -351,6 +380,36 @@ export function apply(ctx, config = {}) {
       return { blocks, lost }
     }
 
+    /** 切片：和 recall 一样当场把区间内容带回；finalize 仍会按 pending 决定历史里留不留这段。 */
+    const recallSlice = (specs) => {
+      const blocks = []
+      const lost = []
+      for (const spec of specs) {
+        const id0 = Number(spec?.id)
+        if (!Number.isFinite(id0)) continue
+        const resolved = resolveIds([id0], state.lastBatch, newestFirst(state))
+        if (!resolved.length) {
+          lost.push(id0)
+          continue
+        }
+        for (const id of resolved) {
+          let entry = state.archive.get(id)
+          if (!entry) {
+            const found = recoverFromLog([id])
+            entry = found.get(id)
+            if (entry) state.archive.set(id, entry)
+          }
+          if (!entry) {
+            lost.push(id)
+            warn(`切片 #${id} 失败：档案和日志里都没找到`)
+            continue
+          }
+          blocks.push(`⟨#${id} ${entry.tool} · ${entry.chars} chars · ${rangeLabel({ ...spec, id })}⟩\n${sliceBody(entry.text, spec)}`)
+        }
+      }
+      return { blocks, lost }
+    }
+
     const finalize = (decisions) => {
       const pending = state.pending
       state.pending = null
@@ -471,7 +530,7 @@ export function apply(ctx, config = {}) {
 
     const disposers = []
     try {
-      disposers.push(agent.ctx.tools.register(makeTool(recallText)))
+      disposers.push(agent.ctx.tools.register(makeTool(recallText, recallSlice)))
     } catch (error) {
       // 同一个 agent 只挂一次；失败也不再重试，避免每 3 秒刷屏
       warn('挂载失败（tools）：', error?.message || error)
@@ -498,7 +557,7 @@ export function apply(ctx, config = {}) {
             const ids = items.map((item) => '#' + item.id).join(' ')
             const tail = state.silenceEnded ? '（silence 已结束）' : ''
             state.silenceEnded = false
-            return '[steward] 上一步结果 ' + ids + ' 默认折叠；recall拿回之前,keep永久保留,summarize概括保留,sublines/bytes切片保留' + tail
+            return '[steward] 上一步结果 ' + ids + ' 默认折叠；recall/sublines/subbytes当场带回内容,keep永久保留,summarize概括保留' + tail
           },
         }),
       )
@@ -511,7 +570,7 @@ export function apply(ctx, config = {}) {
           name: 'toolret-steward:howto',
           order: 1,
           text:
-            '工具结果：较短的无影响，较长的在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +  '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])；steward(sublines/subbytes:[{id,offest?=0,limit?=最后}])选择其中的某几行或某些。\n' + 
+            '工具结果：较短的无影响，较长的在你看到的那一步之后会被折叠成一行 ⟨dropped #id⟩（或空结果，不意味着失败）。\n' +  '如果需要一直保留比较重要或者后面还会多次用的消息使用：steward(keep:[ids...])；如果你已经读完不再需要完整内容则进行概括之后会一直保留概括内容：steward(summarize:[{id,text}...])；如果之后想要拿回之前读过的原文：steward(recall:[ids...])带回整段原文；steward(sublines/subbytes:[{id,offset?=0,limit?=最后}])和recall一样当场带回其中某几行/某些字节。\n' + 
 			'特殊id: 0取上一次所以输出，负数按id结果逆序获取，比如-1拿到最近一次输出，recall后也会占新id。\n' +
 			'这些工具可以和 edit / read / pwsh 等调用并排发，不单独占一轮！！！',
         }),
