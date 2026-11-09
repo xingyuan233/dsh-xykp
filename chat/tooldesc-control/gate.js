@@ -205,19 +205,33 @@ export function apply(ctx, config = {}) {
     return out.replace(INJECTED_MARK, '\n')
   }
 
-  function scan(agent, text) {
+  function scan(agent, text, source = '?') {
     text = stripInjected(agent, text)
     if (!text || (!compiled.size && !compiledNotes.size)) return
     for (const toolName of compiled.keys()) {
       const key = hitKey(text, compiled.get(toolName))
       if (!key) continue
+      logHit(source, text, key, 'tool:' + toolName)
       tryPush(agent, toolName, key)
     }
     // 说明（notes）：跟工具同理，命中 + 过了冷却就注入一次（可反复注入）
     for (const id of compiledNotes.keys()) {
-      if (!hit(text, compiledNotes.get(id))) continue
+      const nk = hitKey(text, compiledNotes.get(id))
+      if (!nk) continue
+      logHit(source, text, nk, 'note:' + id)
       tryNote(agent, id)
     }
+  }
+
+  /** 记录「谁、哪个词、什么上下文」触发的：排障全靠它 */
+  function logHit(source, text, key, target) {
+    try {
+      const lower = String(text).toLowerCase()
+      const idx = lower.indexOf(String(key).toLowerCase())
+      const from = Math.max(0, idx - 40)
+      const snippet = String(text).slice(from, Math.min(String(text).length, idx + key.length + 40)).replace(/\s+/g, ' ')
+      dbg('[hit] src=' + source + ' key=' + key + ' target=' + target + ' :: ' + snippet)
+    } catch {}
   }
 
   function tryNote(agent, id) {
@@ -494,7 +508,7 @@ export function apply(ctx, config = {}) {
         restorePushed(agent)
         // 只扫「真人用户输入」：注入的（门控通知、审批、定时提醒、系统提示）一律跳过
         const text = (Array.isArray(list) ? list : [list]).filter(isUserNode).map(textOf).join('\n')
-        scan(agent, text)
+        scan(agent, text, 'inbox')
         // 工具说明变更：同一套通知通道发一条独立消息（不碰前缀）
         // 工具说明变更 / 解锁 / 闲话都按会话（sid）取自己那一桶
         const q = queueOf(agent)
@@ -578,7 +592,7 @@ export function apply(ctx, config = {}) {
           const msgs = Array.isArray(payload?.messages) ? payload.messages : []
           lastUser = [...msgs].reverse().find(isUserNode) || null
         }
-        if (lastUser) scan(agent, textOf(lastUser))
+        if (lastUser) scan(agent, textOf(lastUser), 'pre-step')
       } catch (error) {
         warn('pre-step 扫描失败：', error?.message || error)
       }
@@ -597,7 +611,7 @@ export function apply(ctx, config = {}) {
           const frame = payload?.frame ?? payload
           const kind = String(frame?.type || frame?.channel || '').toLowerCase()
           if (kind.includes('think') || kind.includes('reason')) return
-          scan(payload?.agent, textOf(frame, { thinking: false }))
+          scan(payload?.agent, textOf(frame, { thinking: false }), 'assistant')
         } catch {}
       })
     } catch (error) {
