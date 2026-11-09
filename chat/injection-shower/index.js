@@ -220,7 +220,7 @@ export function apply(ctx, config = {}) {
         save()
     }
 
-    function recordAssemble(agent, assembly) {
+    function recordAssemble(agent, assembly, origin, beforeSections) {
         const st = stateOf(agent)
         st.preset = presetOf(agent) || st.preset
         st.updatedAt = Date.now()
@@ -241,6 +241,19 @@ export function apply(ctx, config = {}) {
         const base = prevStep || last || null
         const sections = renderSections(assembly)
         const tools = Array.isArray(assembly?.tools) ? assembly.tools : []
+        // 原始工具表（tooldesc-control 过滤之前）；「已解锁」直接读它的 state.json，仅供展示
+        st.originTools = Array.isArray(origin) && origin.length ? origin : describeTools(tools)
+        st.unlocked = readUnlocked(st.sessionId)
+        // 门控前后对比：这次被摘掉的 section（prepend 已经留了一份带全文的）
+        // 只留“本来有内容”的段落：空段落被摘掉多半是别的插件在清理，不算锁定
+        const presentNames = new Set(sections.map((s) => s.name))
+        const droppedSections = (Array.isArray(beforeSections) ? beforeSections : []).filter(
+            (s) => s && s.name && !presentNames.has(s.name) && String(s.text || '').trim(),
+        )
+        st.droppedSections = droppedSections
+        const everDropped = new Set(Array.isArray(st.everDropped) ? st.everDropped : [])
+        for (const s of droppedSections) everDropped.add(s.name)
+        st.everDropped = [...everDropped]
         trackPrefix(st, turn, sections, tools)
         const contexts = renderContexts(assembly)
         // 和上一个 step（本轮第一步则和上一轮最后一步）对比，算出「这一步新注入了什么」
@@ -273,6 +286,39 @@ export function apply(ctx, config = {}) {
         save()
     }
 
+    /** 工具定义 → 展示用结构（保留描述全文，轮询时会裁掉 text） */
+    function describeTools(tools) {
+        return (Array.isArray(tools) ? tools : []).map((t, i) => ({
+            name: String(t?.name ?? ''),
+            length: String(t?.description ?? '').length,
+            order: i,
+            text: String(t?.description ?? ''),
+        }))
+    }
+
+    /** section 列表 → 展示用结构（门控前留档用） */
+    function describeSections(list) {
+        return (Array.isArray(list) ? list : []).map((s, i) => ({
+            name: String(s?.name ?? ''),
+            length: String(s?.text ?? '').length,
+            order: typeof s?.order === 'number' ? s.order : i,
+            text: String(s?.text ?? ''),
+        }))
+    }
+
+    /** tooldesc-control 记的「已解锁」工具名；读不到就返回空（只影响展示） */
+    function readUnlocked(sessionId) {
+        try {
+            const file = join(homeDir(), 'xykp', 'tooldesc-control', 'state.json')
+            if (!existsSync(file)) return []
+            const all = JSON.parse(readFileSync(file, 'utf8'))
+            const list = all && all[sessionId]
+            return Array.isArray(list) ? list.map(String) : []
+        } catch {
+            return []
+        }
+    }
+
     /** 系统前缀（section + tools）的版本跟踪：变了就记一条，用来定位「谁导致缓存失效」 */
     function trackPrefix(st, turn, sections, tools) {
         const toolSig = tools.map((t) => t.name + ':' + String(t.description ?? '').length).join('|')
@@ -291,6 +337,11 @@ export function apply(ctx, config = {}) {
                 sectionCount: sections.length,
                 toolCount: tools.length,
                 toolSig,
+                tools: tools.map((t, i) => ({
+                    name: String(t?.name ?? ''),
+                    length: String(t?.description ?? '').length,
+                    order: i,
+                })),
                 sections: sections.map((s) => ({ name: s.name, length: s.text.length, order: s.order })),
             }
             save()
@@ -325,6 +376,11 @@ export function apply(ctx, config = {}) {
             sectionCount: sections.length,
             toolCount: tools.length,
             toolSig,
+            tools: tools.map((t, i) => ({
+                name: String(t?.name ?? ''),
+                length: String(t?.description ?? '').length,
+                order: i,
+            })),
             sections: sections.map((s) => ({ name: s.name, length: s.text.length, order: s.order })),
         }
         save()
@@ -362,15 +418,22 @@ export function apply(ctx, config = {}) {
         if (!agent?.ctx) return
         const offs = []
         offs.push(
-            agent.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
-                const out = await next()
-                try {
-                    recordAssemble(context?.agent || agent, out || assembly)
-                } catch (e) {
-                    console.warn('[injection-shower] assemble 记录失败：', e)
-                }
-                return out
-            }),
+            agent.ctx.on(
+                'system-prompt/assemble',
+                async (assembly, context, next) => {
+                    // prepend：赶在 tooldesc-control 改写之前，留一份「门控前」的工具表和 section 表
+                    const origin = describeTools(assembly?.tools)
+                    const beforeSections = describeSections(assembly?.sections)
+                    const out = await next()
+                    try {
+                        recordAssemble(context?.agent || agent, out || assembly, origin, beforeSections)
+                    } catch (e) {
+                        console.warn('[injection-shower] assemble 记录失败：', e)
+                    }
+                    return out
+                },
+                { prepend: true },
+            ),
         )
         offs.push(
             agent.ctx.on('session/event', (_subject, event) => {
@@ -440,6 +503,31 @@ export function apply(ctx, config = {}) {
                 path: '/injection-shower',
                 handler: async (req, res) => {
                     const url = new URL(req.url || '/injection-shower', 'http://127.0.0.1')
+                    if (url.pathname === '/injection-shower/tools') {
+                        // 面板按需拉当前会话的工具表（原始 / 冻结 / 已解锁），避免 full=1 的全量
+                        const sid = url.searchParams.get('session') || ''
+                        const st = store.get(sid)
+                        const tools = st && Array.isArray(st.originTools) ? st.originTools : []
+                        const unlocked = st && Array.isArray(st.unlocked) ? st.unlocked : []
+                        res.writeHead(200, {
+                            'content-type': 'application/json; charset=utf-8',
+                            'cache-control': 'no-store',
+                        })
+                        res.end(
+                            JSON.stringify({
+                                ok: true,
+                                sessionId: sid,
+                                hash: (st && st.prefix && st.prefix.hash) || '',
+                                toolSig: (st && st.prefix && st.prefix.toolSig) || '',
+                                tools,
+                                unlocked,
+                                droppedSections:
+                                    st && Array.isArray(st.droppedSections) ? st.droppedSections : [],
+                                everDropped: st && Array.isArray(st.everDropped) ? st.everDropped : [],
+                            }),
+                        )
+                        return
+                    }
                     if (url.pathname === '/injection-shower/state') {
                         // 客户端带上当前会话 id：fork 出来的会话第一次被打开时，把父会话的快照继承过来
                         const hint = url.searchParams.get('session')
@@ -457,6 +545,17 @@ export function apply(ctx, config = {}) {
                             ? sessions
                             : sessions.map((s) => ({
                                   ...s,
+                                  // 原始工具表的描述全文只在 ?full=1 里给，轮询只留名字/字数/顺序
+                                  originTools: (s.originTools || []).map(({ name, length, order }) => ({
+                                      name,
+                                      length,
+                                      order,
+                                  })),
+                                  droppedSections: (s.droppedSections || []).map(({ name, length, order }) => ({
+                                      name,
+                                      length,
+                                      order,
+                                  })),
                                   snapshots: (s.snapshots || []).map((snap, i, arr) => {
                                       const { sections, contexts, ...rest } = snap
                                       // 悬浮的系统提示词面板展开时要看「最新一步」的 sections 全文，历史步不需要
@@ -554,6 +653,50 @@ function render(data) {
     }
 
     const snaps = (s.snapshots || []).slice().reverse()
+    // 工具表：初始（冻结表）/ 解锁（tooldesc-control 记命中过关键词的）/ 锁定（注册了但不在表内也没解锁）
+    const frozenTools = (s.prefix && Array.isArray(s.prefix.tools) ? s.prefix.tools : []).slice()
+    const originTools = Array.isArray(s.originTools) ? s.originTools : []
+    const unlockedTools = Array.isArray(s.unlocked) ? s.unlocked : []
+    if (frozenTools.length || originTools.length || unlockedTools.length) {
+      const frozenSet = new Set(frozenTools.map((t) => t && t.name))
+      const unlockedSet = new Set(unlockedTools)
+      const seen = new Set()
+      const rows = []
+      const addTool = (t, state) => {
+        if (!t || !t.name || seen.has(t.name)) return
+        seen.add(t.name)
+        rows.push({ name: t.name, length: t.length || 0, text: t.text || '', state })
+      }
+      for (const t of originTools) {
+        addTool(t, frozenSet.has(t && t.name) ? 'init' : unlockedSet.has(t && t.name) ? 'unlocked' : 'locked')
+      }
+      for (const t of frozenTools) addTool(t, 'init')
+      const originNameSet = new Set(originTools.map((t) => t && t.name))
+      for (const n of unlockedSet) {
+        // 解锁历史里可能有已经删掉的老工具（qq_send 之类），当前没注册就不显示
+        if (originNameSet.size && !originNameSet.has(n)) continue
+        addTool({ name: n }, 'unlocked')
+      }
+      const d = el('details')
+      d.appendChild(
+        el(
+          'summary',
+          '',
+          '工具表（初始 ' +
+            rows.filter((x) => x.state === 'init').length +
+            ' · 解锁 ' +
+            rows.filter((x) => x.state === 'unlocked').length +
+            ' · 锁定 ' +
+            rows.filter((x) => x.state === 'locked').length +
+            '）',
+        ),
+      )
+      for (const t of rows) {
+        const tag = t.state === 'init' ? '初始' : t.state === 'unlocked' ? '解锁' : '锁定'
+        d.appendChild(block('tool: ' + t.name + ' · ' + tag, t.text, t.length + ' 字'))
+      }
+      card.appendChild(d)
+    }
     for (let i = 0; i < snaps.length; i++) {
       const snap = snaps[i]
       const d = el('details')

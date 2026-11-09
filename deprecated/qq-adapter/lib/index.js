@@ -295,12 +295,15 @@ export async function apply(ctx, config = {}) {
   let lastSpawnAt = 0
   /** 壳活着但桥一直连不上的起点；超过 stuckShellSec 就把卡死的壳杀掉重拉（2026-10-31 加） */
   let stuckSince = 0
+  let lastStuckLogAt = 0
+  let lastBridgeOkAt = Date.now() // 启动先给 3 分钟缓冲，别一起来就抢着拉壳
   const stuckSec = () => Number(cfg.stuckShellSec) || 180
   async function ensureShell() {
     // 先看桥：活着就看登录态，挂了才去拉
     let st = null
     try { st = await bridge.status() } catch { st = null }
     if (st && st.ok) {
+      lastBridgeOkAt = Date.now()
       const ready = st.stage === 'ready' && st.ms === true
       // 2026-11-01：就绪也可能是「假在线」（监听器没挂上 / SSO 一直报错）。
       //   这种时候不推码（登录态还在），按卡死处理：超过 stuckShellSec 还是这样就把壳杀掉重拉。
@@ -309,16 +312,12 @@ export async function apply(ctx, config = {}) {
         wasReady = false
         if (!stuckSince) {
           stuckSince = Date.now()
-          warn('桥说 ready 但' + health.why + '，' + stuckSec() + 's 后杀壳重拉')
+          warn('桥说 ready 但' + health.why + '，先等（不主动杀，免得把刚登录的号顶掉）')
           return
         }
         const 哑了秒 = Math.round((Date.now() - stuckSince) / 1000)
         if (哑了秒 < stuckSec()) { warn('桥假在线 ' + 哑了秒 + 's（' + health.why + '），再等等'); return }
-        warn('桥假在线 ' + 哑了秒 + 's（' + health.why + '），杀掉 QQ 壳重拉')
-        await killQQShell('假在线')
-        stuckSince = 0
-        lastSpawnAt = 0
-        notifyCount = 0
+        warn('桥假在线 ' + 哑了秒 + 's（' + health.why + '），继续等（不主动杀；要重开就手动关掉 QQ）')
         return
       }
       if (ready) {
@@ -327,7 +326,6 @@ export async function apply(ctx, config = {}) {
         notifyCount = 0
         // 2026-11-01：登录后也一直挂着 /post 监听（keepAlive），主人随时能让插件查状态
         if (!postWatcher.running) postWatcher.start()
-        reapLaunchers()
         return
       }
       wasReady = false
@@ -345,25 +343,37 @@ export async function apply(ctx, config = {}) {
     await pushQrToNtfy(null)
     // 冷却：壳正在启动时 /status 还没起来，别每 15 秒又拉一个（两个实例会互相踢登录）
     if (Date.now() - lastSpawnAt < 120000) return
-    // 同一套安装目录里只要有 QQ.exe 在跑，就绝不能再拉一个：
-    // QQ.exe 是单实例的，后来的那个会把先跑的顶掉（2026-10-27 半夜就这么把樱和鲸鱼娘各顶掉一次）
-    // ⚠ 2026-10-31：壳活着但桥一直连不上（JS 卡死 / HTTP 挂了 / 假在线）时，以前只会「不重复拉」→ 永远不自愈。
-    //   现在超过 stuckShellSec（默认 180s）还连不上，就把这套目录里的 QQ 杀掉重拉。
+    // 2026-11-09 主人「一登上就被退」：登录成功那几秒 QQ 会短暂无响应/自重启，
+    //   以前这里立刻判「桥没在跑」→ 再拉一个壳 → 新壳把刚登录的那个顶掉。
+    //   现在桥刚还在（3 分钟内）就一律不重拉，先等它自己回来。
+    if (lastBridgeOkAt && Date.now() - lastBridgeOkAt < 180000) {
+      if (Date.now() - lastStuckLogAt > 60000) {
+        lastStuckLogAt = Date.now()
+        log('桥 ' + Math.round((Date.now() - lastBridgeOkAt) / 1000) + 's 前还在，先等它自己回来（不重拉壳）')
+      }
+      return
+    }
+    // 拉壳前先看两样，任何一样还在就等，绝不主动杀：
+    //   · QQ.exe 在跑（单实例，再拉会把它顶掉）
+    //   · NapCatWinBootMain.exe 在跑（它正在拉 QQ，再拉一个同样会顶号）
+    // 2026-11-09 主人「一登上就被退」：以前桥 180s 没响应就杀 QQ 重拉，登录/扫码期间正好会被杀掉 ✗
     try {
       const { execFileSync } = await import('node:child_process')
       const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
-      const psCmd = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Select-Object -First 1 -ExpandProperty Id"
-      const alive = String(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { encoding: 'utf8', windowsHide: true }) || '').trim()
-      if (alive) {
-        if (!stuckSince) { stuckSince = Date.now(); log('壳的 QQ 进程还在（pid=' + alive + '），先等它把桥起起来') ; return }
-        const downSec = Math.round((Date.now() - stuckSince) / 1000)
-        if (downSec < stuckSec()) { log('壳的 QQ 进程还在（pid=' + alive + '），桥 ' + downSec + 's 没响应，再等等') ; return }
-        warn('桥 ' + downSec + 's 都没起来，杀掉卡死的 QQ 壳（pid=' + alive + '）重拉')
-        const killCmd = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Stop-Process -Force"
-        try { execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', killCmd], { windowsHide: true }) } catch (e) { warn('杀壳失败：' + (e?.message || e)) }
-        stuckSince = 0
-        lastSpawnAt = 0
-      } else stuckSince = 0
+      const psQq = "Get-Process -Name QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '" + dirPrefix + "*' } | Select-Object -First 1 -ExpandProperty Id"
+      const qqAlive = String(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psQq], { encoding: 'utf8', windowsHide: true }) || '').trim()
+      let loaderAlive = ''
+      if (!qqAlive) {
+        const psLoader = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' } | Select-Object -First 1 -ExpandProperty ProcessId"
+        loaderAlive = String(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psLoader], { encoding: 'utf8', windowsHide: true }) || '').trim()
+      }
+      if (qqAlive || loaderAlive) {
+        const 谁 = qqAlive ? ('QQ pid=' + qqAlive) : ('启动器 pid=' + loaderAlive)
+        if (!stuckSince) { stuckSince = Date.now(); log('壳还在（' + 谁 + '），先等它把桥起起来（不主动杀）') ; return }
+        if (Date.now() - lastStuckLogAt > 60000) { lastStuckLogAt = Date.now(); log('壳还在（' + 谁 + '），桥 ' + Math.round((Date.now() - stuckSince) / 1000) + 's 没响应，继续等（不主动杀）') }
+        return
+      }
+      stuckSince = 0
     } catch { /* 查不到就按原来的走 */ }
     lastSpawnAt = Date.now()
     try {
@@ -385,28 +395,6 @@ export async function apply(ctx, config = {}) {
     } catch (err) { warn('拉起 QQ shell 失败：', err?.message || err) }
   }
 
-  // 启动器（NapCatWinBootMain.exe）起完 QQ 不会自己退，窗口就一直留着 ——
-  //   桥 ready 说明 QQ 已经起好了，这些启动器可以清掉（每 60 秒最多清一次）
-  let lastReapAt = 0
-  async function reapLaunchers() {
-    if (Date.now() - lastReapAt < 60000) return
-    lastReapAt = Date.now()
-    try {
-      const dirPrefix = String(cfg.shellDir || 'D:\\Program-Files\\QQ-shell')
-      // ⚠ 别用 `Get-Process -Name X -ErrorAction SilentlyContinue`：进程不存在时 powershell 退出码仍是 1，
-      //   会被当成「清理失败」写日志（2026-10-28 实测）。用 CIM 查，没有就静默返回空 ✓
-      const psCmd =
-        'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq ' + "'NapCatWinBootMain.exe'" +
-        ' -and $_.ExecutablePath -like ' + "'" + dirPrefix + "*'" +
-        ' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }'
-      const { execFile } = await import('node:child_process')
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { windowsHide: true }, (err, stdout) => {
-        const ids = String(stdout || '').trim().split(/\s+/).filter(Boolean)
-        if (ids.length) log('清掉 ' + ids.length + ' 个残留启动器（' + ids.join(',') + '）')
-        if (err) warn('清残留启动器失败：', err.message)
-      })
-    } catch { /* 清不掉就算了 */ }
-  }
   // ── 哨兵：桥没起来就去拉；起来了但没登录就把二维码推到 ntfy ──
   let lastNotifyAt = 0
   let notifyCount = 0
@@ -656,12 +644,39 @@ export async function apply(ctx, config = {}) {
     return chatCache.data
   }
 
-  async function setChatSession(key, sessionId, extra) {
-    const all = await chatsNow(true)
-    all[key] = { ...(all[key] || {}), sessionId, updatedAt: Date.now(), ...(extra || {}) }
-    await writeChats(all)
-    chatCache.data = all
-    chatCache.at = Date.now()
+  // ── 绑定同步到 Web 配置（映射 = 唯一真源）──────────────────────────
+  // 主人 2026-11-09：绑定改了配置也得跟着改，而且「映射」才是唯一真源。
+  //   绑会话 → mappings[chat] = s-<会话id>；绑预设 → mappings[chat] = p-<预设>（新建/压缩都保持绑预设，不钉死会话）
+  async function 写映射(key, target) {
+    const chat = normalizeKey(key)
+    const t = String(target || '').trim()
+    if (!chat || !t) return
+    try {
+      const all = readAll()
+      const row = all['qq-adapter'] && typeof all['qq-adapter'] === 'object' ? all['qq-adapter'] : {}
+      const maps = Array.isArray(row.mappings) ? row.mappings.map((m) => ({ ...m })) : []
+      const i = maps.findIndex((m) => normalizeKey(m.chat) === chat)
+      if (i >= 0) maps[i] = { ...maps[i], chat, target: t }
+      else maps.push({ chat, target: t })
+      all['qq-adapter'] = { ...row, mappings: maps }
+      writeAll(all)
+      cfg.mappings = maps
+      log('映射已同步：' + chat + ' → ' + t)
+    } catch (err) { warn('同步映射失败：', err?.message || err) }
+  }
+  async function 删映射(key) {
+    const chat = normalizeKey(key)
+    if (!chat) return
+    try {
+      const all = readAll()
+      const row = all['qq-adapter'] && typeof all['qq-adapter'] === 'object' ? all['qq-adapter'] : {}
+      const maps = Array.isArray(row.mappings) ? row.mappings.filter((m) => normalizeKey(m.chat) !== chat) : []
+      if (maps.length === (Array.isArray(row.mappings) ? row.mappings.length : 0)) return
+      all['qq-adapter'] = { ...row, mappings: maps }
+      writeAll(all)
+      cfg.mappings = maps
+      log('映射已删除：' + chat)
+    } catch (err) { warn('删映射失败：', err?.message || err) }
   }
 
   function splitKey(key) {
@@ -714,11 +729,8 @@ export async function apply(ctx, config = {}) {
     } catch (err) { warn('指令回复发送失败：', err?.message || err) }
   }
 
-  // ⚠ 2026-10-29 主人：「绑定的是预设，那在这里聊过之后，再发消息应该发到这个对话」——
-  //   以前投递目标只看 chats.json 里钉死的 sessionId，/new 之后那个聊天就永远停在那条会话，
-  //   哪怕 Web 里已经换到别的会话聊了（预设的活跃会话表 `home\xykp\preset-binder\preset-binder.json`
-  //   明明更新了）。现在改成：**只有 /session 明确绑会话才钉死**（boundBy='session'），
-  //   其余情况身份跟着预设走，每条消息现查一次预设的活跃会话 ✓
+  // 2026-11-09 起：投递目标只认 Web 配置里的映射。映射写 p-<预设> 就跟预设的活跃会话走，
+  //   /session、/new、/compact 换会话时会把映射一起改写，不再有 chats.json 里的旧会话绑定。
   async function 预设活跃会话(preset) {
     if (!preset) return ''
     try {
@@ -749,47 +761,18 @@ export async function apply(ctx, config = {}) {
     } catch (err) { warn('写预设活跃会话失败：', err?.message || err) }
   }
 
-  async function chatSessionId(key) {
-    const all = await chatsNow()
-    const rec = all[key] || {}
+  // 唯一真源：Web 配置里的映射（mappings → 名单 → defaultTarget）。
+  // 2026-11-09 主人：chats.json 里那套「单聊会话绑定」整个删掉，不再有第二套优先级。
+  async function 投递目标(key) {
     const route = resolveRoute(cfg, key)
-    if (rec.boundBy !== 'session') {
-      const preset = String(rec.preset || (rec.prefs && rec.prefs.preset) || presetOfTarget(route.target || '') || '')
-      if (preset) {
-        const act = await 预设活跃会话(preset)
-        if (act) return act
-      }
-    }
-    const bound = rec.sessionId
-    if (bound && findAgent(agentsSvc, bound)) return bound
-    if (!route.target) return ''
+    if (!route.target) return { sessionId: '', reason: route.reason || route.via }
     const t = await resolveTarget(route.target)
-    return t.sessionId || ''
+    return { ...t, routeTarget: route.target, via: route.via }
   }
 
-  // 真正的投递目标：**预设优先**（身份绑预设，跟着预设的活跃会话走），
-  // 只有 /session 明确绑了某条会话（boundBy='session'）才钉死那一条。
-  // 10-28 主人：「我明明 /new 了，为什么消息还到那边去」—— 那时候只有指令读 chats.json，
-  //   转发只看 mappings/defaultTarget；10-29 又发现问题反过来了：/new 钉死会话后，
-  //   Web 里换了活跃会话，QQ 还往里投 ✗
-  async function 投递目标(key) {
-    let chats = {}
-    try { chats = await chatsNow() } catch { /* 读不到就按路由走 */ }
-    const rec = chats[key] || {}
-    const route = resolveRoute(cfg, key)
-    const preset = rec.boundBy === 'session'
-      ? ''
-      : String(rec.preset || (rec.prefs && rec.prefs.preset) || presetOfTarget(route.target || '') || '')
-    if (preset) {
-      const act = await 预设活跃会话(preset)
-      const alive = act && findAgent(agentsSvc, act)
-      if (act && (alive || act)) return { sessionId: act, via: 'preset:' + preset, routeTarget: 'p-' + preset }
-    }
-    const bound = String(rec.sessionId || '')
-    if (bound) return { sessionId: bound, via: 'chats.json' }
-    if (!route.target) return { sessionId: '', reason: route.reason || route.via, route: null }
-    const t = await resolveTarget(route.target)
-    return { ...t, routeTarget: route.target, via: 'route' }
+  // 这个聊天现在指向哪条会话：就是映射算出来的那一条
+  async function chatSessionId(key) {
+    try { return (await 投递目标(key)).sessionId || '' } catch { return '' }
   }
 
   function presetOfTarget(target) {
@@ -912,7 +895,8 @@ export async function apply(ctx, config = {}) {
           else warn('没找到 cwd 对应的工作区（' + cwd + '），会话会显示未分组')
         }
       } catch (err) { warn('把新会话挂进工作区失败：', err?.message || err) }
-      await setChatSession(key, real, { preset, boundBy: 'preset' })
+      // 绑定改了，Web 配置里的映射也跟着改：绑预设 → p-<预设>（新建也固定绑预设，不钉死会话）；否则 → s-<会话id>
+      await 写映射(key, preset ? 'p-' + preset : 's-' + real)
       // 这个聊天里设过的权限预设，/new 出来的新会话也照用（没设就什么都不做）
       // ⚠ pp.set 要的是 session 对象（内部会 session.append + permissionState），给 id 会炸
       try {
@@ -970,12 +954,12 @@ export async function apply(ctx, config = {}) {
     if (spec.name === 'status') {
       const sid = await chatSessionId(key)
       const agent = sid ? findAgent(agentsSvc, sid) : null
-      const all = await chatsNow()
-      const bound = all[key] || {}
+      const routeNow = resolveRoute(cfg, key)
       await replyTo(key, [
         '聊天 ' + key,
-        '绑定会话 ' + (sid || '（没有）') + (bound.sessionId ? '（来自 chats.json）' : '（来自默认/映射）'),
-        '预设 ' + (bound.preset || presetOfTarget(resolveRoute(cfg, key).target) || '—'),
+        '映射 ' + (routeNow.target || '（没有）') + '（' + (routeNow.via || '') + '）',
+        '会话 ' + (sid || '（没有）'),
+        '预设 ' + (presetOfTarget(routeNow.target) || '—'),
         '状态 ' + (agent ? agent.status : '（找不到这个会话）'),
         '指令 ' + (cfg.commandsEnabled === false ? '关' : '开') + ' · 限流 ' + (cfg.coalesceSeconds > 0 ? cfg.coalesceSeconds + 's' : '关'),
       ].join('\n'))
@@ -1009,20 +993,14 @@ export async function apply(ctx, config = {}) {
       if (args.bad) { await replyTo(key, '看不懂这个参数：' + args.bad + '\n用法 /session [-[[offset,]n]] [-del]'); return }
       const current = await chatSessionId(key)
       const all = await listSessions()
-      // 2026-10-28 主人：看「这个私聊/群聊**现在**绑的是什么」——
-      //   · 明确绑了会话（chats.json 的 sessionId / 映射或默认目标写成 s-xxx）→ 列全部**未归档**会话
-      //   · 绑的是预设（聊天偏好 preset / 目标 p-xxx）→ 只列该预设池里的会话
-      // ⚠ 以前还加过一条「绑的会话正好在某个预设池里就当预设」的猜测 —— 主人 03:31 明确否掉了：
-      //   他特意映射成 s-xxx，结果 /session 还报预设，就是因为那条猜测 ✗ 已删掉。
+      // 这个聊天现在绑的是什么，只看 Web 配置里的映射：
+      //   · 映射成 s-xxx（或裸会话 id）→ 列全部未归档会话
+      //   · 映射成 p-xxx → 只列该预设池里的会话
       const pools = await presetPools()
-      const chatRec = (await chatsNow())[key] || {}
       const routeNow = resolveRoute(cfg, key)
       const refNow = parseTargetRef(routeNow.target)
-      let presetName = ''
-      let howBound = chatRec.sessionId ? '会话（chats.json）' : '会话（配置/映射）'
-      const prefPreset = String((chatRec.prefs && chatRec.prefs.preset) || '')
-      if (prefPreset) { presetName = prefPreset; howBound = '预设（聊天偏好）' }
-      else if (refNow.kind === 'preset') { presetName = String(refNow.value); howBound = '预设（配置/映射）' }
+      const presetName = refNow.kind === 'preset' ? String(refNow.value) : ''
+      const howBound = presetName ? '映射（预设）' : '映射（会话）'
       let mine = all
       if (presetName) {
         const ids = pools.get(presetName)
@@ -1043,10 +1021,11 @@ export async function apply(ctx, config = {}) {
           if (picked.id === current) { await replyTo(key, '不能删正在用的这条，先 /new 或切走'); return }
           const 删名 = 会话短名(await 会话标题(picked.id), picked.id)
           await deleteSessionDir(picked.workspace, picked.id)
-          const chats = await chatsNow(true)
-          for (const k of Object.keys(chats)) if (chats[k] && chats[k].sessionId === picked.id) delete chats[k]
-          await writeChats(chats)
-          chatCache.data = chats
+          // 映射里指向这条会话的也一起清掉，别留悬空目标
+          for (const m of [...(cfg.mappings || [])]) {
+            const ref = parseTargetRef(m.target || '')
+            if (ref.kind === 'session' && ref.value === picked.id) await 删映射(m.chat)
+          }
           await replyTo(key, '删了：' + 删名)
           return
         }
@@ -1055,11 +1034,11 @@ export async function apply(ctx, config = {}) {
         // ⚠ 2026-10-29 主人：「/session 如果绑定的预设，那切的也是**全局预设池的绑定**，不是改成绑会话」
         if (presetName) {
           await 记预设活跃(presetName, picked.id)
-          await setChatSession(key, picked.id, { preset: presetName, boundBy: 'preset' })
+          await 写映射(key, 'p-' + presetName)
           await replyTo(key, '切到（预设 ' + presetName + ' 的活跃会话）：' + 切名)
           return
         }
-        await setChatSession(key, picked.id, { boundBy: 'session' })
+        await 写映射(key, 's-' + picked.id)
         await replyTo(key, '切到：' + 切名)
         return
       }
@@ -1094,8 +1073,16 @@ export async function apply(ctx, config = {}) {
           const fresh = now.find((s) => !before.has(s.id))
           if (fresh) {
             clearInterval(timer)
-            await setChatSession(key, fresh.id, { preset: '', boundBy: 'session' })
-            await replyTo(key, '新会话接上了：' + fresh.id + '\n这个聊天已经绑过去')
+            const rec2 = (await chatsNow())[key] || {}
+            const curPreset = String((rec2.prefs && rec2.prefs.preset) || presetOfTarget(resolveRoute(cfg, key).target || '') || '')
+            if (curPreset) {
+              // 绑预设的：新会话变成预设的活跃会话，映射保持 p-<预设>（新建固定绑预设，不钉死会话）
+              await 记预设活跃(curPreset, fresh.id)
+              await 写映射(key, 'p-' + curPreset)
+            } else {
+              await 写映射(key, 's-' + fresh.id)
+            }
+            await replyTo(key, '新会话接上了：' + (await 会话标题(fresh.id) || fresh.id) + '\n这个聊天已经绑过去' + (curPreset ? '（跟着预设 ' + curPreset + '）' : ''))
             return
           }
         } catch { /* 继续等 */ }
@@ -1392,8 +1379,8 @@ export async function apply(ctx, config = {}) {
           return
         }
         const names = (Array.isArray(pp.names) ? pp.names.slice() : Object.keys(pp.presets || {}))
-        const chat = (await chatsNow(true))[key] || {}
-        const agent = chat.sessionId ? findAgent(agentsSvc, chat.sessionId) : null
+        const sid = await chatSessionId(key)
+        const agent = sid ? findAgent(agentsSvc, sid) : null
         let now = ''
         try {
           now = agent ? pp.current(agent.session) : (pp.defaultPreset || '')
@@ -1878,7 +1865,7 @@ export async function apply(ctx, config = {}) {
           seenSet.add(msgId)
           handled++
           lastDeliveredAt.set(key, Date.now())
-          log(`转发 ${key} → ${target.sessionId}（${target.via}${target.via === 'chats.json' ? ' 绑定' : ''}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
+          log(`转发 ${key} → ${target.sessionId}（映射 ${target.routeTarget || '?'}${target.via === 'preset' ? ':预设 ' + target.preset : ''}）`)
         } catch (err) {
           if (待回发.get(target.sessionId) === 本次回发) 待回发.delete(target.sessionId)
           warn('转发 ' + key + ' 失败（下轮再试）：', err?.message || err)
@@ -2230,5 +2217,3 @@ export async function apply(ctx, config = {}) {
 }
 
 export const _internal = { resolveTarget, deliver, SOURCE_KIND }
-
-

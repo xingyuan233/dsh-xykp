@@ -5,6 +5,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+/list.txt
+
 # Python（senses/ 下的 MCP server）
 __pycache__/
 *.pyc

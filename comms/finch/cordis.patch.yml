@@ -1,0 +1,5 @@
+# dsh-finch — bundle patch layer
+#
+# 和 dsh-qq-adapter 一样：装配只由 profile 的 cordis.patch.yml / 本 bundle 的
+# 根 cordis.patch.yml 决定，这里故意留空，避免同 id 双实例。
+[]

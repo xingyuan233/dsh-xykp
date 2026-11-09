@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-// tool-gate 的 registry 会在 import 时读 <DSH_HOME>/xykp/tool-gate.json，指到空目录免得被门控扣下
+// tool-gate 的 registry 会在 import 时读 <DSH_HOME>/xykp/config.yml，指到空目录（没有规则）免得被门控扣下
 const home = await mkdtemp(join(tmpdir(), 'bili-rove-comment-'))
 process.env.DSH_HOME = home
 
