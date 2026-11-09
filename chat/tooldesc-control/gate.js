@@ -109,6 +109,13 @@ export function apply(ctx, config = {}) {
     const lower = text.toLowerCase()
     return rule.lowerKeys.some((k) => lower.includes(k))
   }
+  /** 返回命中的那个关键词（消息里展示用）；没命中返回 '' */
+  const hitKey = (text, rule) => {
+    if (!text) return ''
+    const lower = text.toLowerCase()
+    const idx = rule.lowerKeys.findIndex((k) => lower.includes(k))
+    return idx < 0 ? '' : String(rule.keys[idx] || rule.lowerKeys[idx])
+  }
 
   // ── 推送状态落盘（2026-10-29）──
   // 重启会把门控状态清掉：同一个会话里本来已经推出来的工具又被扣回去 → 请求开头的 tools 少一个 →
@@ -134,7 +141,7 @@ export function apply(ctx, config = {}) {
       const list = new Set(Array.isArray(all[sid]) ? all[sid] : [])
       list.add(toolName)
       all[sid] = [...list]
-      fsx().mkdirSync(base + '\\xykp\\tooldesc-control', { recursive: true })
+      fsx().mkdirSync(statePath().replace(/[^\\/]+$/, ''), { recursive: true })
       fsx().writeFileSync(statePath(), JSON.stringify(all, null, 2))
     } catch (error) {
       warn('落盘推送状态失败：', error?.message || error)
@@ -156,7 +163,7 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  function tryPush(agent, toolName) {
+  function tryPush(agent, toolName, matchedKey) {
     const rule = compiled.get(toolName)
     const st = stateOf(agent)
     if (!rule || !st) return false
@@ -172,7 +179,10 @@ export function apply(ctx, config = {}) {
     log('推出 ' + toolName + '（第 ' + st.pushed[toolName] + ' 次，turn=' + st.turn + '）')
     persistPushed(agent, toolName)
     const q = queueOf(agent)
-    if (q && !q.unlocks.includes(toolName)) q.unlocks.push(toolName)
+    if (q && !q.unlocks.includes(toolName)) {
+      q.unlocks.push(toolName)
+      q.unlockKeys[toolName] = String(matchedKey || '')
+    }
 
     return true
   }
@@ -196,8 +206,9 @@ export function apply(ctx, config = {}) {
     text = stripInjected(agent, text)
     if (!text || (!compiled.size && !compiledNotes.size)) return
     for (const toolName of compiled.keys()) {
-      if (!hit(text, compiled.get(toolName))) continue
-      tryPush(agent, toolName)
+      const key = hitKey(text, compiled.get(toolName))
+      if (!key) continue
+      tryPush(agent, toolName, key)
     }
     // 说明（notes）：跟工具同理，命中 + 过了冷却就注入一次（可反复注入）
     for (const id of compiledNotes.keys()) {
@@ -259,7 +270,7 @@ export function apply(ctx, config = {}) {
     if (!q) {
       // 会话多了别无限涨；队头是最久没动的会话
       if (queues.size > 300) queues.delete(queues.keys().next().value)
-      q = { unlocks: [], notes: [], extras: [] }
+      q = { unlocks: [], unlockKeys: Object.create(null), notes: [], extras: [] }
       queues.set(sid, q)
     }
     return q
@@ -375,10 +386,14 @@ export function apply(ctx, config = {}) {
   }
   /** 工具名 -> 最近一次见到的定义（用于解锁消息） */
   const defs = new Map()
-  const unlockNotice = (name) => {
+  const unlockNotice = (name, matchedKey) => {
     const def = defs.get(name)
     const desc = typeof def?.description === 'string' ? def.description : ''
-    return ['〔已解锁工具 · ' + name + '〕', '关键词命中，这个工具现在可以用了，说明如下：', desc].filter(Boolean).join('\n')
+    const key = String(matchedKey || '').trim()
+    return [
+      '关键词「' + key + '」命中（不是必须要调用），已解锁工具 「' + name + '」（不在 tools 列表里，如果需要直接按格式调用即可）',
+      desc,
+    ].filter(Boolean).join('\n')
   }
   // ── 真正的门控点：请求组装时，把这个会话还没解锁的工具从工具表里摘掉 ──
   // 别的插件不用配合（照常 ctx.tools.register），规则里只写工具名。
@@ -401,16 +416,17 @@ export function apply(ctx, config = {}) {
         assembly.tools = snap
         return next()
       }
+      // 定义快照要抓「过滤前」的全量：被门控摘掉的工具也得有定义，否则解锁通知贴不出参数
+      for (const tool of assembly.tools) {
+        const name = nameOf(tool)
+        if (name) defs.set(name, { description: tool?.description, parameters: tool?.parameters })
+      }
       const declared = declaredOf(agent, st)
       const total = assembly.tools.length
       const kept = assembly.tools.filter((tool) => {
         const name = nameOf(tool)
         return !compiled.has(name) || declared.has(name)
       })
-      for (const tool of kept) {
-        const name = nameOf(tool)
-        if (name) defs.set(name, { description: tool?.description, parameters: tool?.parameters })
-      }
       __R.saveFrozenTools(sid, kept)
       assembly.tools = kept
       dbg('工具表快照 ' + kept.length + ' 条（原 ' + total + ' 条）· sid=' + sid)
@@ -455,7 +471,7 @@ export function apply(ctx, config = {}) {
           // 说明（note）排在工具解锁前面
           for (const text of noteTexts) parts.push(String(text))
           for (const name of unlocks) {
-            parts.push(unlockNotice(name))
+            parts.push(unlockNotice(name, q ? q.unlockKeys[name] : ''))
           }
           for (const change of notes) {
             parts.push(['〔工具说明已更新 · ' + change.name + '〕',
