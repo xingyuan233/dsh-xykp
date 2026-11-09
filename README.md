@@ -38,10 +38,11 @@ DeepSeek Harness 的个人插件集合：**一个 npm 包装二十来个子插�
 | `memory-layer` | `chat/memory-layer` | 概念联想记忆：`memory_ctrl` + 可视化 `http://127.0.0.1:3099/` |
 | `toolret-steward` | `chat/toolret-steward` | 工具结果去留管家（旧的 `toolret-forget` 已被它取代） |
 | `token-reporter` | `chat/token-reporter` | token 用量 / 余额查询 |
-| `tooldesc-control` | `chat/tooldesc-control` | 工具说明冻结/变更通知、工具懒加载、上下文重贴 |
+| `tooldesc-control` | `chat/tooldesc-control` | 工具门控（关键词解锁 + 会话工具表快照，保前缀缓存）、说明注入（notes）、上下文重贴 |
 | `injection-shower` | `chat/injection-shower` | 只读旁路：每轮注入的 context / section / 收件箱消息，看 `http://127.0.0.1:3080/injection-shower` |
 | `senses-screenshot` | `senses/screenshot` | 截屏（Python MCP，带窗口/区域） |
 | `senses-keymouse` | `senses/keymouse` | 鼠标键盘注入 |
+| `senses-balance-reporter` | `senses/balance-reporter` | 页面右下角的 VK-1 余额挂件 + `balance_report` |
 | `bili-reply` | `comms/bili-reply` | B 站评论 / 私信自动回复（含队列、去重） |
 | `bili-rove` | `comms/bili-rove` | B 站工具：搜索、视频、字幕、评论、弹幕、真帧、回复、三连 |
 | `bili-audio-live` | `comms/bili-audio-live` | 直播语音识别 + 弹幕攒批投递 |

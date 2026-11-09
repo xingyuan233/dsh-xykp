@@ -25,6 +25,10 @@ import Schema from '@deepseek-ai/schemastery'
 
 import * as __R from './registry.js'
 
+// 调试日志只有一份实现（写 <DSH_HOME>/xykp/tool-gate.log），放在 registry 里；
+// 以前 gate.js 直接写 dbg(...) 但没定义 → 每次 assemble 抛 ReferenceError，整个回合挂掉。
+const dbg = __R.dbg
+
 export const name = 'tool-gate'
 export const inject = ['tools', 'agents']
 
@@ -32,7 +36,6 @@ const log = (...a) => console.log('[tool-gate]', ...a)
 const warn = (...a) => console.warn('[tool-gate]', ...a)
 
 export const Config = Schema.object({
-  configPath: Schema.string().default('').description('额外配置（json，空 = 只用下面这份）'),
   rules: Schema.any().default({}).description('按工具名的规则表'),
   checkAssistant: Schema.boolean().default(true).description('也检查模型自己的输出/思考'),
 })
@@ -63,29 +66,41 @@ function textOf(node) {
 }
 
 export function apply(ctx, config = {}) {
-  // 规则和「被扣下的定义」都放 registry（bili-rove 是静态 import 它，跟加载顺序无关）
-  const rules = __R.loadRules(config.rules || {})
-
-  /** 工具名 -> 定义（被扣着的） */
-  const withheld = {
-    get: (n) => __R.taken(n),
-    keys: () => __R.withheldNames(),
-    has: (n) => !!__R.taken(n),
-    set: () => {},
-  }
-  /** 工具名 -> 规则的编译版 */
+  // 规则从 registry 读（Web 配置那一份）；门控不再扣工具定义，只在 system-prompt/assemble 里把没解锁的工具摘掉
+    /** 工具名 -> 规则的编译版 */
   const compiled = new Map()
-  for (const toolName of Object.keys(rules)) {
-    const cmp = __R.ruleOf(toolName)
-    if (cmp) compiled.set(toolName, cmp)
+  const compiledNotes = new Map()
+  let compiledVersion = -1
+  const rebuild = () => {
+    const rules = __R.loadRules(config.rules || {})
+    compiled.clear()
+    for (const toolName of Object.keys(rules)) {
+      const cmp = __R.ruleOf(toolName)
+      if (cmp) compiled.set(toolName, cmp)
+    }
+    const noteRules = __R.loadNotes(config.notes || {})
+    compiledNotes.clear()
+    for (const id of Object.keys(noteRules)) {
+      const n = __R.noteOf(id)
+      if (n) compiledNotes.set(id, n)
+    }
   }
+  // 规则是 Web 配置里现读的：config.yml 一改（mtime 变了）就重建，改规则不用重启
+  const ensureFresh = () => {
+    let v = 0
+    try { v = __R.rulesVersion() } catch { v = 0 }
+    if (v === compiledVersion) return
+    compiledVersion = v
+    rebuild()
+  }
+  ensureFresh()
 
   /** sid -> 状态 */
   const states = new Map()
   const stateOf = (agent) => {
     const sid = String(agent?.session?.id || agent?.id || '')
     if (!sid) return null
-    if (!states.has(sid)) states.set(sid, { turn: 0, pushed: {}, lastTurn: {}, registered: new Set(), systemCount: {} })
+    if (!states.has(sid)) states.set(sid, { turn: 0, pushed: {}, lastTurn: {}, registered: new Set(), declared: new Set(), notes: {}, noteTurn: {} })
     return states.get(sid)
   }
 
@@ -100,7 +115,7 @@ export function apply(ctx, config = {}) {
   // 前缀缓存整段作废。所以把「哪个会话推过哪些工具」写盘，重启后第一轮照旧推回来。
   const statePath = () => {
     const base = globalThis.process?.env?.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
-    return base + '\\xykp\\tool-gate-state.json'
+    return base + '\\xykp\\tooldesc-control\\state.json'
   }
   const fsx = () => globalThis.process?.getBuiltinModule?.('node:fs')
   const readStateFile = () => {
@@ -119,6 +134,7 @@ export function apply(ctx, config = {}) {
       const list = new Set(Array.isArray(all[sid]) ? all[sid] : [])
       list.add(toolName)
       all[sid] = [...list]
+      fsx().mkdirSync(base + '\\xykp\\tooldesc-control', { recursive: true })
       fsx().writeFileSync(statePath(), JSON.stringify(all, null, 2))
     } catch (error) {
       warn('落盘推送状态失败：', error?.message || error)
@@ -133,64 +149,69 @@ export function apply(ctx, config = {}) {
     if (!Array.isArray(saved)) return
     for (const name of saved) {
       if (st.registered.has(name)) continue
-      const def = withheld.get(name)
-      if (!def) continue
-      try {
-        agent.ctx.tools.register(def)
-        st.registered.add(name)
-        st.pushed[name] = st.pushed[name] || 1
-        log('恢复推过的 ' + name + '（重启后不抖工具表）')
-      } catch (error) {
-        warn('恢复 ' + name + ' 失败：', error?.message || error)
-      }
+      if (!compiled.has(name)) continue
+      st.registered.add(name)
+      st.pushed[name] = st.pushed[name] || 1
+      log('恢复已解锁的 ' + name + '（重启后不抖工具表）')
     }
   }
 
   function tryPush(agent, toolName) {
     const rule = compiled.get(toolName)
-    const def = withheld.get(toolName)
     const st = stateOf(agent)
-    if (!rule || !def || !st) return false
+    if (!rule || !st) return false
     if (st.registered.has(toolName)) return false
     const pushed = st.pushed[toolName] || 0
     if (pushed >= rule.limit) return false
     const last = st.lastTurn[toolName]
     if (last !== undefined && st.turn - last < rule.cooldown) return false
-    try {
-      agent.ctx.tools.register(def)
-    } catch (error) {
-      warn('注册 ' + toolName + ' 失败：', error?.message || error)
-      return false
-    }
     st.registered.add(toolName)
     st.pushed[toolName] = pushed + 1
     st.lastTurn[toolName] = st.turn
-    st.systemCount[toolName] = (st.systemCount[toolName] || 0) + 1
+
     log('推出 ' + toolName + '（第 ' + st.pushed[toolName] + ' 次，turn=' + st.turn + '）')
     persistPushed(agent, toolName)
     const q = queueOf(agent)
     if (q && !q.unlocks.includes(toolName)) q.unlocks.push(toolName)
-    // 2026-10-29：工具的「系统说明」也不再往 systemPrompt 里塞（那等于重写请求开头、废掉前缀缓存），
-    // 攒进下一轮那条消息通知里，跟「已解锁」一起说明。
-    if (q && rule.systemText && (st.systemCount[toolName] - 1) % rule.system === 0) {
-      q.texts[toolName] = String(rule.systemText)
-    }
+
     return true
   }
 
   function scan(agent, text) {
-    if (!text || !compiled.size) return
-    for (const toolName of withheld.keys()) {
-      if (!compiled.has(toolName)) continue
+    if (!text || (!compiled.size && !compiledNotes.size)) return
+    for (const toolName of compiled.keys()) {
       if (!hit(text, compiled.get(toolName))) continue
       tryPush(agent, toolName)
     }
+    // 说明（notes）：跟工具同理，命中 + 过了冷却就注入一次（可反复注入）
+    for (const id of compiledNotes.keys()) {
+      if (!hit(text, compiledNotes.get(id))) continue
+      tryNote(agent, id)
+    }
+  }
+
+  function tryNote(agent, id) {
+    const note = compiledNotes.get(id)
+    const st = stateOf(agent)
+    if (!note || !st) return false
+    const pushed = st.notes[id] || 0
+    if (pushed >= note.limit) return false
+    const last = st.noteTurn[id]
+    if (last !== undefined && st.turn - last < note.cooldown) return false
+    st.notes[id] = pushed + 1
+    st.noteTurn[id] = st.turn
+    log('注入说明 ' + id + '（第 ' + st.notes[id] + ' 次，turn=' + st.turn + '）')
+    const q = queueOf(agent)
+    if (q && !q.notes.includes(note.text)) q.notes.push(note.text)
+    return true
   }
 
   // ── 统一的通知通道（2026-10-29）──
   // 往当前会话 steer 一条消息：不碰请求开头（前缀缓存照旧），下一轮第一屏就能看到。
   // 注意：steer 会被宿主当成一次「收到执行请求」，凭空多一轮回复——所以**闲话一律走 queueNotice**，
   // 只有真的要立刻说的时候才用 notify。
+  let assembleSeen = false
+  const lastRemoved = new Map()
   const NOTICE_KIND = 'tool-gate:notice'
   async function notify(agent, text) {
     if (!agent || !text) return false
@@ -222,7 +243,7 @@ export function apply(ctx, config = {}) {
     if (!q) {
       // 会话多了别无限涨；队头是最久没动的会话
       if (queues.size > 300) queues.delete(queues.keys().next().value)
-      q = { unlocks: [], texts: Object.create(null), extras: [] }
+      q = { unlocks: [], notes: [], extras: [] }
       queues.set(sid, q)
     }
     return q
@@ -286,23 +307,13 @@ export function apply(ctx, config = {}) {
       if (!q || !text) return
       if (!q.extras.includes(String(text))) q.extras.push(String(text))
     },
-    /** 有规则就扣着（返回 true），没规则就返回 false 让调用方自己注册 */
-    offer(def) {
-      if (__R.offer(def)) return true
-      const toolName = String(def?.name || '').trim()
-      if (!toolName) return false
-      if (!compiled.has(toolName)) return false
-      withheld.set(toolName, def)
-      log('扣下 ' + toolName + '（关键词：' + compiled.get(toolName).keys.join(' / ') + '）')
-      return true
-    },
     /** 手动放行（调试用） */
     release(agent, toolName) {
       return tryPush(agent, toolName)
     },
-    /** 看看扣了哪些 */
+    /** 看看门控了哪些工具 */
     list() {
-      return Array.from(withheld.keys())
+      return Array.from(compiled.keys())
     },
   }
   // 暴露给别的插件：走全局变量最稳（cordis 各版本的服务注册 API 不一样，之前那行会抛，整个插件挂不上）
@@ -318,9 +329,86 @@ export function apply(ctx, config = {}) {
   // 重入守卫：发通知本身就是往收件箱插消息，会同步再触发本 handler
   let dispatching = false
 
+  // 「本会话已经给模型看过的工具」= 会话里所有 request/header 里出现过的工具名 ∪ tool-addition 事件。
+  // 这是单调集合：只增不减。所以只要某个工具在某个历史请求里出现过，就永远不再摘（保证前缀稳定）。
+  const declaredOf = (agent, st) => {
+    if (!st.declared) st.declared = new Set()
+    try {
+      const log = agent?.session?.snapshotEvents?.() || []
+      const from = typeof st.declaredCursor === 'number' ? st.declaredCursor : 0
+      for (let i = from; i < log.length; i += 1) {
+        const ev = log[i]
+        if (ev?.type === 'request/header') {
+          for (const tool of ev.data?.header?.tools || []) {
+            const name = tool?.name ?? tool?.function?.name
+            if (name) st.declared.add(String(name))
+          }
+        } else if (ev?.type === 'developer/message') {
+          const msg = ev.data?.message
+          if (msg?.source?.kind !== 'tool-registry') continue
+          for (const block of msg.content || []) {
+            if (block?.type === 'tool-addition' && block.toolName) st.declared.add(String(block.toolName))
+          }
+        }
+      }
+      st.declaredCursor = log.length
+    } catch {}
+    return st.declared
+  }
+  /** 工具名 -> 最近一次见到的定义（用于解锁消息） */
+  const defs = new Map()
+  const unlockNotice = (name) => {
+    const def = defs.get(name)
+    const desc = typeof def?.description === 'string' ? def.description : ''
+    return ['〔已解锁工具 · ' + name + '〕', '关键词命中，这个工具现在可以用了，说明如下：', desc].filter(Boolean).join('\n')
+  }
+  // ── 真正的门控点：请求组装时，把这个会话还没解锁的工具从工具表里摘掉 ──
+  // 别的插件不用配合（照常 ctx.tools.register），规则里只写工具名。
+  // 只影响「发给模型的那份 tools」；工具一直注册着，解锁后下一次请求就出现。
+  ctx.on('system-prompt/assemble', (assembly, context, next) => {
+    const agent = context?.agent
+    try {
+      ensureFresh()
+      const st = stateOf(agent)
+      if (!st || !assembly || !Array.isArray(assembly.tools)) return next()
+      const sid = sidOf(agent)
+      const nameOf = (tool) => String(tool?.name ?? tool?.function?.name ?? '')
+      // 会话级快照：第一次组装时按规则过滤一次、存盘；之后永远发这一份
+      const snap = __R.frozenTools(sid)
+      if (snap) {
+        for (const tool of snap) {
+          const name = nameOf(tool)
+          if (name) defs.set(name, { description: tool?.description, parameters: tool?.parameters })
+        }
+        assembly.tools = snap
+        return next()
+      }
+      const declared = declaredOf(agent, st)
+      const total = assembly.tools.length
+      const kept = assembly.tools.filter((tool) => {
+        const name = nameOf(tool)
+        return !compiled.has(name) || declared.has(name)
+      })
+      for (const tool of kept) {
+        const name = nameOf(tool)
+        if (name) defs.set(name, { description: tool?.description, parameters: tool?.parameters })
+      }
+      __R.saveFrozenTools(sid, kept)
+      assembly.tools = kept
+      dbg('工具表快照 ' + kept.length + ' 条（原 ' + total + ' 条）· sid=' + sid)
+      return next()
+    } catch (error) {
+      dbg('assemble 出错：' + (error?.message || error))
+      return next()
+    }
+  })
+
+  // 只认「真人用户输入」：role=user 且来源不是各种注入
+  const INJECT_KINDS = new Set([NOTICE_KIND, 'user-approval', 'schedule', 'reminder', 'system', 'system-reminder', 'agent-notice', 'host'])
+  const isUserNode = (node) => !!node && node.role === 'user' && !INJECT_KINDS.has(String(node?.source?.kind || ''))
   // ── 消息一进来就扫（比 pre-step 早：用户消息刚进收件箱那一刻，工具就能赶上同一轮的第一个请求）──
   try {
-    ctx.on('agent/inbox/inserted', (payload) => {
+  ctx.on('agent/inbox/inserted', (payload) => {
       try {
         if (dispatching) return
         const agent = payload?.agent
@@ -329,28 +417,27 @@ export function apply(ctx, config = {}) {
         // 事件 payload 是 { agent, message }（单数，挨条发）；以前写成 messages，扫到的是空串
         const list = payload?.messages || payload?.inserted || (payload?.message ? [payload.message] : [])
         restorePushed(agent)
-        const text = (Array.isArray(list) ? list : [list]).map(textOf).join('\n')
+        // 只扫「真人用户输入」：注入的（门控通知、审批、定时提醒、系统提示）一律跳过
+        const text = (Array.isArray(list) ? list : [list]).filter(isUserNode).map(textOf).join('\n')
         scan(agent, text)
         // 工具说明变更：同一套通知通道发一条独立消息（不碰前缀）
         // 工具说明变更 / 解锁 / 闲话都按会话（sid）取自己那一桶
         const q = queueOf(agent)
         const notes = pendingDescNotices(agent)
-        const unlocks = q ? q.unlocks.splice(0, q.unlocks.length) : []
+        // 解锁通知等「定义快照」到位再发（第一次请求之前还没抓过定义，参数贴不出来）
+        const unlocks = q ? q.unlocks.filter((n) => defs.has(n)) : []
+        if (q) q.unlocks = q.unlocks.filter((n) => !defs.has(n))
         const extras = q ? q.extras.splice(0, q.extras.length) : []
-        if (notes.length || unlocks.length || extras.length) {
+        const noteTexts = q ? q.notes.splice(0, q.notes.length) : []
+        if (notes.length || unlocks.length || extras.length || noteTexts.length) {
           // 同步占位：notify → steer 会同步插消息、再触发本 handler；
           // 说明变更的「已提示」标记在 pendingDescNotices() 里同步置位，二次进入不会重发（2026-10-29 爆栈）
           dispatching = true
           const parts = []
+          // 说明（note）排在工具解锁前面
+          for (const text of noteTexts) parts.push(String(text))
           for (const name of unlocks) {
-            const extra = q ? q.texts[name] : undefined
-            if (q) delete q.texts[name]
-            const def = withheld.get(name)
-            const desc = typeof def?.description === 'string' ? def.description : ''
-            parts.push(['〔已解锁工具 · ' + name + '〕',
-              '关键词命中，这个工具现在可以用了，说明如下：',
-              desc].join('\n'))
-            if (extra) parts.push(String(extra))
+            parts.push(unlockNotice(name))
           }
           for (const change of notes) {
             parts.push(['〔工具说明已更新 · ' + change.name + '〕',
@@ -361,6 +448,7 @@ export function apply(ctx, config = {}) {
             if (q) {
               q.unlocks.unshift(...unlocks)
               q.extras.unshift(...extras)
+              q.notes.unshift(...noteTexts)
             }
             releaseDescNotices(agent, notes)
           }
@@ -370,7 +458,7 @@ export function apply(ctx, config = {}) {
               requeue()
               return
             }
-            log('推送通知：解锁 ' + unlocks.length + ' 个，说明变更 ' + notes.length + ' 条')
+            log('推送通知：解锁 ' + unlocks.length + ' 个，说明 ' + noteTexts.length + ' 条，变更 ' + notes.length + ' 条')
           }).catch((error) => {
             dispatching = false
             requeue()
@@ -385,22 +473,23 @@ export function apply(ctx, config = {}) {
     warn('挂 inbox 失败：', error?.message || error)
   }
 
-  // ── 每步再扫一遍（工具结果回传、补漏）──
+  // ── 每步只补扫「最后一条真人用户消息」（工具结果、注入、历史一概不扫）──
   try {
     ctx.on('agent/pre-step', (payload, next) => {
       try {
         const agent = payload?.agent
         const st = stateOf(agent)
         if (st && Number.isFinite(payload?.turn) && payload.turn > st.turn) st.turn = Number(payload.turn)
-        const text = (payload?.messages || []).map(textOf).join('\n')
-        scan(agent, text)
-        // 2026-10-29：也扫一眼**自己上一轮说的话**（assistant-stream 的 payload 形状不一定稳，
-        // 从会话面上取最后几个节点更可靠）——这样「我自己的输出里提到关键词」也能触发
+        let lastUser = null
         try {
-          const nodes = agent?.session?.surface?.nodes || []
-          const tail = nodes.slice(-6).map((n) => textOf(n)).join('\n')
-          if (tail) scan(agent, tail)
+          const msgs = agent?.session?.deriveMessages?.() || []
+          lastUser = [...msgs].reverse().find(isUserNode) || null
         } catch {}
+        if (!lastUser) {
+          const msgs = Array.isArray(payload?.messages) ? payload.messages : []
+          lastUser = [...msgs].reverse().find(isUserNode) || null
+        }
+        if (lastUser) scan(agent, textOf(lastUser))
       } catch (error) {
         warn('pre-step 扫描失败：', error?.message || error)
       }
@@ -414,10 +503,8 @@ export function apply(ctx, config = {}) {
     try {
       ctx.on('agent/assistant-stream', (payload) => {
         try {
-          const frame = payload?.frame ?? payload
-          // 2026-10-29：思考（reasoning）帧的结构和正文不一样，textOf 只认几种 key，取不全；
-          // 再扫一遍原始 JSON，关键词藏在哪个字段里都能撞上。
-          scan(payload?.agent, textOf(frame) + '\n' + JSON.stringify(frame ?? {}))
+          // 只扫模型自己产出的文本/思考；不 dump 原始帧 JSON（会把工具定义、上下文里的字一起带进来）
+          scan(payload?.agent, textOf(payload?.frame ?? payload))
         } catch {}
       })
     } catch (error) {
