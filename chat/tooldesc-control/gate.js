@@ -100,7 +100,7 @@ export function apply(ctx, config = {}) {
   const stateOf = (agent) => {
     const sid = String(agent?.session?.id || agent?.id || '')
     if (!sid) return null
-    if (!states.has(sid)) states.set(sid, { turn: 0, pushed: {}, lastTurn: {}, registered: new Set(), declared: new Set(), notes: {}, noteTurn: {} })
+    if (!states.has(sid)) states.set(sid, { turn: 0, pushed: {}, lastTurn: {}, registered: new Set(), declared: new Set(), notes: {}, noteTurn: {}, injected: [] })
     return states.get(sid)
   }
 
@@ -177,7 +177,23 @@ export function apply(ctx, config = {}) {
     return true
   }
 
+  // 剔除我们自己注入的文本（解锁通知 / 说明变更 / notes / 上下文提醒）：
+  // 它们里面带工具名和关键词，模型转述或通知被拼进同一条消息时，会把「说明里的词」当成关键词 → 连锁自解锁。
+  const INJECTED_MARK = /〔(?:已解锁工具 · |工具说明已更新 · |上下文提醒)[\s\S]*?(?=\n\n|$)/g
+  function stripInjected(agent, text) {
+    if (!text) return ''
+    let out = String(text)
+    try {
+      const st = stateOf(agent)
+      for (const sent of (st?.injected || [])) {
+        if (sent && out.includes(sent)) out = out.split(sent).join('\n')
+      }
+    } catch {}
+    return out.replace(INJECTED_MARK, '\n')
+  }
+
   function scan(agent, text) {
+    text = stripInjected(agent, text)
     if (!text || (!compiled.size && !compiledNotes.size)) return
     for (const toolName of compiled.keys()) {
       if (!hit(text, compiled.get(toolName))) continue
@@ -454,7 +470,15 @@ export function apply(ctx, config = {}) {
             }
             releaseDescNotices(agent, notes)
           }
-          notify(agent, parts.concat(extras).join('\n\n')).then((ok) => {
+          const sentText = parts.concat(extras).join('\n\n')
+          {
+            const st = stateOf(agent)
+            if (st && sentText) {
+              st.injected.unshift(sentText)
+              if (st.injected.length > 20) st.injected.length = 20
+            }
+          }
+          notify(agent, sentText).then((ok) => {
             dispatching = false
             if (!ok) {
               requeue()
