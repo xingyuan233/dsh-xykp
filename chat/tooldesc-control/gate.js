@@ -410,13 +410,38 @@ export function apply(ctx, config = {}) {
       const sid = sidOf(agent)
       const nameOf = (tool) => String(tool?.name ?? tool?.function?.name ?? '')
       // 会话级快照：第一次组装时按规则过滤一次、存盘；之后永远发这一份
+      // 系统提示词里 `tool:<名字>` 那段说明，对「被门控且不在快照里」的工具要一起摘掉：
+      // 否则模型照着说明直接按名字调用 —— 工具其实注册着，调用会成功（绕过门控）。
+      // section 名和工具名不是一一对应：`tool:goal` 管 create_goal/get_goal/update_goal，
+      // `tool:jobs` 管 job_*，`tool:subagent` 管 subagent_fork 等。所以按「有没有相关工具可见」判断。
+      const hasRelatedTool = (sectionName, visibleNames) => {
+        const x = sectionName.slice(5)
+        const base = x.replace(/s$/, '')
+        for (const n of visibleNames) {
+          if (n === x || n === base) return true
+          if (n.includes(x) || n.includes(base)) return true
+        }
+        return false
+      }
+      const dropSections = (list, visibleNames) => {
+        if (!Array.isArray(list)) return list
+        return list.filter((section) => {
+          const name = String(section?.name || '')
+          if (!name.startsWith('tool:')) return true
+          return hasRelatedTool(name, visibleNames)
+        })
+      }
       const snap = __R.frozenTools(sid)
       if (snap) {
+        const visible = new Set()
         for (const tool of snap) {
           const name = nameOf(tool)
-          if (name) defs.set(name, { description: tool?.description, parameters: tool?.parameters })
+          if (!name) continue
+          visible.add(name)
+          defs.set(name, { description: tool?.description, parameters: tool?.parameters })
         }
         assembly.tools = snap
+        assembly.sections = dropSections(assembly.sections, visible)
         return next()
       }
       // 定义快照要抓「过滤前」的全量：被门控摘掉的工具也得有定义，否则解锁通知贴不出参数
@@ -431,6 +456,10 @@ export function apply(ctx, config = {}) {
         return !compiled.has(name) || declared.has(name)
       })
       __R.saveFrozenTools(sid, kept)
+      {
+        const visible = new Set(kept.map(nameOf).filter(Boolean))
+        assembly.sections = dropSections(assembly.sections, visible)
+      }
       assembly.tools = kept
       dbg('工具表快照 ' + kept.length + ' 条（原 ' + total + ' 条）· sid=' + sid)
       return next()
