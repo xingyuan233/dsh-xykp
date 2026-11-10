@@ -49,23 +49,23 @@ const IMAGE_VALUE_SCHEMA = {
 }
 
 const parameters = {
-  window: { type: 'string', description: '窗口标题子串或 hwnd（被遮挡也能截）；留空=整屏' },
-  region: { type: 'string', description: '"x,y,w,h" 物理像素，相对主屏左上角。与 window 二选一' },
+  window: { type: 'string', description: '标题子串或 hwnd；缺省=整屏' },
+  region: { type: 'string', description: '"x,y,w,h" 物理像素' },
   capture: {
     type: 'string',
     enum: ['auto', 'desktop', 'window'],
-    description: 'auto（默认，先窗口后退桌面）/ desktop / window',
+    description: '默认 auto（先窗口后退桌面）',
   },
   client: { type: 'boolean', description: '只取客户区，默认 true' },
-  child: { type: 'boolean', description: '直接抓最大子窗口（模拟器）' },
+  child: { type: 'boolean', description: '抓最大子窗口' },
   fmt: {
     type: 'string',
     enum: ['png', 'jpg', 'auto'],
-    description: '默认 auto（文字/UI 用 png，照片/视频用 jpg）',
+    description: '默认 auto',
   },
-  quality: { type: 'number', description: 'jpg 质量 1-100，默认 95' },
-  max_side: { type: 'integer', description: '长边上限，默认 1568；<=0 不缩' },
-  list_windows: { type: 'boolean', description: '只列可见窗口，不截图' },
+  quality: { type: 'number', description: 'jpg 质量，默认 95' },
+  max_side: { type: 'integer', description: '长边上限，默认 1568' },
+  list_windows: { type: 'boolean', description: '只列窗口，不截图' },
 }
 
 const output = {
@@ -122,8 +122,8 @@ export function apply(ctx) {
     defineTool({
       name: 'screenshot_acquire',
       description:
-        '截屏并直接返回图片（不落盘）。window=窗口标题子串（或 hwnd）抓窗口，region="x,y,w,h" 裁区域，都不给是整屏。' +
-        '格式默认自动选（一般不用给 fmt）。返回文本带 region 和 scale：图上坐标 × 1/scale + region 原点 = 屏幕坐标。',
+        '截屏返回图片，不落盘。window=标题/hwnd，region="x,y,w,h"，都不给=整屏。' +
+        '图上坐标 × 1/scale + region 原点 = 屏幕坐标。',
       parameters,
       output,
       isConcurrencySafe: () => true,
