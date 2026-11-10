@@ -43,6 +43,7 @@ import Schema from '@deepseek-ai/schemastery'
 import { WebError } from '@deepseek-ai/dsh-web'
 import { DEFAULT_UA, ENGINES, engineIds, searchEngine } from './engines.js'
 import { createFetchProvider } from './reader.js'
+import { enhanceResults } from './ranking.js'
 
 export const name = 'search-engine'
 export const inject = ['web']
@@ -254,13 +255,29 @@ export function createSearchProvider(rawConfig = {}) {
       }),
     )
 
-    // 结果按引擎顺序（= 优先级）交替合并：google 的 1 名、bing 的 1 名、baidu 的 1 名……
-    const merged = mergeResults(results, limit)
+    // 结果重排 + 富化：对齐官方 search 的 rerank / summary / date 能力。
+    // 内部失败会降级回 merge 顺序，绝不让结果变空。
+    let enhanced
+    try {
+      enhanced = await enhanceResults({
+        buckets: results,
+        query,
+        limit,
+        config: cfg,
+        signal,
+      })
+    } catch (error) {
+      log(cfg, `结果重排失败，回退原始顺序：${error instanceof Error ? error.message : String(error)}`)
+    }
+    const merged = enhanced?.sources ?? mergeResults(results, limit)
 
     if (merged.length) {
       // truncated 是 WebSearchResult 的必填字段：dsh-tool-web 会把 provider 的返回值原样
       // 交给工具输出校验，缺了它（undefined）会被判成「不是无损 JSON」。
-      return { sources: merged, truncated: results.some((bucket) => bucket.length > limit) }
+      return {
+        sources: merged,
+        truncated: enhanced?.truncated ?? results.some((bucket) => bucket.length > limit),
+      }
     }
     throw new WebError(
       `免费搜索没有结果（${failures.join('；') || '引擎没有返回可解析的结果'}）`,

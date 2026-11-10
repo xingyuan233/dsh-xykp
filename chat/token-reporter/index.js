@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from 'node:fs'
+
+
 import { configFor } from '../../ui/store.js'
 // dsh-xykp · chat/token-reporter
 //
@@ -221,8 +224,8 @@ function promptLine(agent, config) {
 
   const parts = []
   const fields = config.prompt.fields || {}
-  const totals = usage?.totals
-  const last = usage?.last?.buckets
+  const totals = usage?.totals ?? usage
+  const last = usage?.last?.buckets ?? usage?.last ?? usage
 
   if (fields.turn && last) {
     parts.push(`上一步 in ${fmt(last.uncachedInputTokens)} / out ${fmt(last.outputTokens)} / cacheRead ${fmt(last.cacheReadTokens)}`)
@@ -437,6 +440,14 @@ function toolDefinition(ctx, config) {
   }
 }
 
+const debug = (line) => {
+  try {
+    const dir = join(process.env.DSH_HOME || 'D:/AI/DeepseekHarness/home', 'xykp', 'token-reporter')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'inject.log'), new Date().toISOString() + ' ' + line + '\n')
+  } catch {}
+}
+
 export function apply(ctx, rawConfig = {}) {
   rawConfig = configFor('token-reporter', rawConfig)
   const config = pickConfig(rawConfig)
@@ -456,26 +467,40 @@ export function apply(ctx, rawConfig = {}) {
 
   /** 摘要按预设生效：白名单里列出的才注入；黑名单模式反过来，列出的不注入。 */
   const allowed = (agent) => {
-    try {
-      const id = ctx.agentPresets?.composedPreset?.(agent.ctx)
-      if (!id) return false
-      return blacklist ? !presetList.has(id) : presetList.has(id)
-    } catch {
-      return false
-    }
+    const presetId = (() => {
+      try {
+        const fromProjection = agent.ctx.get?.('sessionProjections')?.stateOf?.(agent.session, 'agentPreset')
+        if (typeof fromProjection === 'string' && fromProjection) return fromProjection
+      } catch {}
+      try {
+        const composed = ctx.agentPresets?.composedPreset?.(agent.ctx)
+        if (typeof composed === 'string' && composed) return composed
+        const id = composed?.id ?? composed?.preset?.id
+        if (typeof id === 'string' && id) return id
+      } catch {}
+      return ''
+    })()
+    debug(`allowed presetId=${presetId || '(none)'} blacklist=${blacklist} list=[${[...presetList].join(',')}]`)
+    if (!presetId) return blacklist && presetList.size === 0
+    return blacklist ? !presetList.has(presetId) : presetList.has(presetId)
   }
 
   const watch = (agent) => {
     if (!agent || watched.has(agent)) return
     if (scopeEmpty || !allowed(agent)) return
     watched.add(agent)
+    debug(`attached agent=${agent?.session?.id ?? agent?.id ?? '?'}`)
     const mine = []
     try {
       mine.push(
         agent.ctx.systemPrompt.section({
           name: 'token-reporter',
           order: config.prompt.order,
-          text: () => promptLine(agent, config),
+          text: () => {
+          const line = promptLine(agent, config)
+          debug(`render ${line ? line.length + 'B' : '(empty)'} ${line.slice(0, 160)}`)
+          return line
+        },
         }),
       )
       perAgent.set(agent, mine)

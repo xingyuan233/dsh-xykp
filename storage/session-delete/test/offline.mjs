@@ -194,12 +194,16 @@ async function main() {
     descriptor !== undefined && descriptor.value.version === 1,
   )
   check(
-    '描述符导出了 deleteSession（direct）',
-    descriptor.value.methods.length === 1 &&
-      descriptor.value.methods[0].method === 'deleteSession' &&
-      descriptor.value.methods[0].invocation.kind === 'direct',
+    '描述符导出了 deleteSession / previewTurns / deleteTurnsFrom（direct）',
+    descriptor.value.methods.length === 3 &&
+      descriptor.value.methods.every((entry) => entry.invocation.kind === 'direct') &&
+      ['deleteSession', 'previewTurns', 'deleteTurnsFrom'].every((method) =>
+        descriptor.value.methods.some((entry) => entry.method === method),
+      ),
   )
   check('deleteSession 是原型方法', typeof service.deleteSession === 'function')
+  check('previewTurns 是原型方法', typeof service.previewTurns === 'function')
+  check('deleteTurnsFrom 是原型方法', typeof service.deleteTurnsFrom === 'function')
   await host4.ctx.fiber.dispose()
 
   console.log(`\n结果：${passed} 项通过，${failed} 项失败`)

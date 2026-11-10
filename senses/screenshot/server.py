@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import json
 import sys
 import threading
 import time
@@ -526,6 +527,81 @@ def _encode(img, fmt: str, quality: int) -> tuple[bytes, str]:
     return buf.tobytes(), out_fmt
 
 
+_AUTO_DEFAULTS = {
+    "png_max_uniq": 0.12,   # 唯一色占比低于它 ⇒ UI/文字/图表，png
+    "jpg_min_uniq": 0.55,   # 高于它 ⇒ 照片/视频帧，jpg
+    "flat_text": 0.45,      # 中间段：平坦像素占比高于它 ⇒ 仍按 UI 处理
+    "edge_dense": 0.02,     # 中间段：边缘占比高且 uniq 低 ⇒ 文字，png
+    "uniq_mid": 0.35,
+    "thumb": 256,           # 判定用的缩略图长边
+}
+
+
+def _auto_stats(img, thumb=256):
+    """缩略图上算三个廉价指标：唯一色占比 uniq、平坦占比 flat、边缘占比 edge。"""
+    h, w = img.shape[:2]
+    if max(h, w) > thumb:
+        k = thumb / float(max(h, w))
+        small = cv2.resize(
+            img, (max(1, round(w * k)), max(1, round(h * k))), interpolation=cv2.INTER_AREA
+        )
+    else:
+        small = img
+    if small.ndim == 2:
+        small = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
+    elif small.shape[2] == 4:
+        small = cv2.cvtColor(small, cv2.COLOR_BGRA2BGR)
+    bgr = np.ascontiguousarray(small[:, :, :3])
+    flat_px = bgr.reshape(-1, 3)
+    packed = (
+        (flat_px[:, 0].astype(np.uint32) << 16)
+        | (flat_px[:, 1].astype(np.uint32) << 8)
+        | flat_px[:, 2].astype(np.uint32)
+    )
+    uniq = float(np.unique(packed).size) / float(flat_px.shape[0])
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    lap = cv2.Laplacian(gray, cv2.CV_16S, ksize=3)
+    flat = float((np.abs(lap) < 2).mean())
+    edge = float((cv2.Canny(gray, 60, 160) > 0).mean())
+    return uniq, flat, edge
+
+
+def _pick_fmt(img, fmt, auto=None):
+    """fmt=auto 时按画面内容选 png/jpg；返回 (fmt, 说明文字)。"""
+    fmt = (fmt or "png").strip().lower()
+    if fmt != "auto":
+        if fmt not in ("png", "jpg", "jpeg"):
+            raise ValueError("fmt 只能是 png / jpg / auto")
+        return ("jpg" if fmt == "jpeg" else fmt), ""
+
+    cfg = dict(_AUTO_DEFAULTS)
+    over = auto
+    if isinstance(over, str):
+        try:
+            over = json.loads(over) if over.strip() else {}
+        except Exception:  # noqa: BLE001
+            over = {}
+    if isinstance(over, dict):
+        for key, val in over.items():
+            if key in cfg:
+                try:
+                    cfg[key] = type(cfg[key])(val)
+                except Exception:  # noqa: BLE001
+                    pass
+    uniq, flat, edge = _auto_stats(img, int(cfg["thumb"]))
+    if uniq < cfg["png_max_uniq"]:
+        pick, why = "png", "ui"
+    elif flat > cfg["flat_text"]:
+        pick, why = "png", "flat"
+    elif uniq > cfg["jpg_min_uniq"]:
+        pick, why = "jpg", "photo"
+    elif uniq < cfg["uniq_mid"] and edge > cfg["edge_dense"]:
+        pick, why = "png", "text"
+    else:
+        pick, why = "jpg", "mid"
+    return pick, f"auto->{pick}({why} uniq={uniq:.2f} flat={flat:.2f} edge={edge:.3f})"
+
+
 @mcp.tool()
 def screenshot(
     region: str | None = None,
@@ -533,21 +609,23 @@ def screenshot(
     capture: str = "auto",
     client: bool = True,
     child: bool = False,
-    fmt: str = "png",
+    fmt: str = "auto",
     quality: int = 95,
     max_side: int = 1568,
+    auto: str = "",
 ) -> list:
     """截一张图并直接返回图片（不落盘）。
 
     Args:
         region: "x,y,w,h"（物理像素，相对主屏左上角）。为空且 window 也为空时截主屏全屏。
         window: 窗口标题子串（大小写不敏感）或纯数字 hwnd；多个命中取面积最大的。与 region 二选一。
-        capture: "auto"（默认）/ "desktop"（裁桌面，被遮挡就截到遮挡物）/ "window"（直接读窗口画面，被遮挡也能截）。
-        client: window 模式下只取客户区（游戏内容区），默认 True。
-        child: window 模式下直接抓最大的子窗口（模拟器/内嵌画面）。
-        fmt: "png"（默认，适合文字/UI）或 "jpg"（快，适合追帧）。
+        capture: auto（默认，先窗口后退桌面）/ desktop / window。
+        client: 只取客户区。
+        child: 直接抓最大子窗口（模拟器）。
+        fmt: auto（默认，按内容自选）/ png / jpg。
         quality: jpg 质量 1-100。
-        max_side: 长边上限，超过则用 INTER_AREA 缩小；<=0 表示不缩。
+        max_side: 长边上限。
+        auto: auto 的阈值覆盖（JSON 字符串，由插件按配置传入）。
     """
     t0 = time.perf_counter()
     mode = (capture or "auto").lower()
@@ -615,10 +693,14 @@ def screenshot(
             interpolation=cv2.INTER_AREA,
         )
 
+    fmt, auto_note = _pick_fmt(img, fmt, auto)
+    if auto_note:
+        note = f"{note}；{auto_note}" if note else auto_note
     data, out_fmt = _encode(img, fmt, quality)
 
     parts = [
         f"capture={'window' if method else 'desktop'}",
+        f"fmt={out_fmt}",
         f"region={origin[0]},{origin[1]},{crop_w},{crop_h}",
         f"image={img.shape[1]}x{img.shape[0]}",
         f"scale={scale:.4f}",

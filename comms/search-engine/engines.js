@@ -185,79 +185,129 @@ export function parseBaidu(html) {
 // 只有 google 能把结果直接吐成 HTML 才谈得上解析；当前这个 IP 拿到的都是
 // enablejs / captcha 页，解析出 0 条 → 上层降级并冷却。
 
-export function parseGoogle(html) {
-  const source = String(html)
-  if (NO_RESULTS.test(source)) return []
-  const results = []
-  const seen = new Set()
-  for (const heading of source.matchAll(/<h3[^>]*>([\s\S]*?)<\/h3>/g)) {
-    const before = source.slice(Math.max(0, heading.index - 900), heading.index)
-    const hrefs = [...before.matchAll(/href="([^"]+)"/g)]
-    if (!hrefs.length) continue
-    const raw = decodeEntities(hrefs[hrefs.length - 1][1])
-    const title = plainText(heading[1])
-    if (!title) continue
-    // 现在 Google 对无登录客户端会把结果链接改写成 /goto?url=<加密串>，
-    // 真网址要再请求一次（它会 302 过去），所以先记下 href 留到 resolve 阶段。
-    const pending = raw.startsWith('/') ? raw : ''
-    const url = pending ? '' : absolute(raw)
-    if (!pending && !url) continue
-    const after = source.slice(heading.index + heading[0].length, heading.index + heading[0].length + 2000)
-    const snippet =
-      after.match(/<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
-      after.match(/<span[^>]*class="[^"]*(?:aCOpRe|st)[^"]*"[^>]*>([\s\S]*?)<\/span>/i)
-    const item = { title, url, snippet: snippet ? plainText(snippet[1]) : '' }
-    if (pending) item.pending = pending
-    results.push(item)
-  }
-  const unique = []
-  for (const item of results) {
-    const key = item.url || item.pending
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    unique.push(item)
-  }
-  return unique
+const MONTHS = {
+  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
 }
 
-// 把 /goto?url=... 这类相对跳转换成真实地址：Google 会 302 到目标站点，
-// 读 Location 就行，不需要带 cookie，也不用再开浏览器。
+function googleDate(text) {
+  const cn = text.match(/(20\d{2})[年\/.](\d{1,2})[月\/.]?(\d{1,2})?/)
+  if (cn) return { y: +cn[1], m: +cn[2], d: +(cn[3] || 1) }
+  const en = text.match(/([A-Z][a-z]{2})[a-z]*\.?\s+(\d{1,2}),?\s+(20\d{2})/)
+  if (en) return { y: +en[3], m: +MONTHS[en[1].toLowerCase()] || 1, d: +en[2] }
+  return null
+}
+
+export function parseGoogle(html) {
+  const items = []
+  const anchorRe = /<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
+  let m
+  while ((m = anchorRe.exec(html))) {
+    const href = decodeEntities(m[1])
+    const inner = m[2]
+    if (!/\/url\?|\/goto\?/i.test(href)) continue
+    if (!/<h3/i.test(inner)) continue
+    const heading = inner.match(/<h3[^>]*>([\s\S]*?)<\/h3>/i)
+    const title = plainText(heading ? heading[1] : inner)
+    if (!title) continue
+
+    const tailStart = anchorRe.lastIndex
+    const nextH3 = html.indexOf('<h3', tailStart)
+    const tailEnd = nextH3 > 0 ? nextH3 : tailStart + 2200
+    const tail = html.slice(tailStart, tailEnd)
+    const tailText = plainText(tail)
+
+    const snippetBlock =
+      tail.match(/<div[^>]+class="[^"]*(?:InXCmc|VwiC3b|IsZvec|lyLwlc)[^"]*"[^>]*>([\s\S]*?)<\/div>/i) ||
+      null
+    let snippet = snippetBlock ? plainText(snippetBlock[1]) : tailText
+
+    const date = googleDate(tailText.slice(0, 80))
+    if (date) {
+      const dateStr = `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`
+      snippet = snippet
+        .replace(/^[A-Z][a-z]{2}[a-z]*\.?\s+\d{1,2},?\s+20\d{2}\s*[·•-]?\s*/, '')
+        .replace(/^20\d{2}[年\/.]\d{1,2}[月\/.]?\d{0,2}日?\s*[·•-]?\s*/, '')
+      items.push({
+        title,
+        url: '',
+        snippet: snippet.slice(0, 300),
+        pending: href,
+        published: dateStr,
+        cite: '',
+        display: tailText.slice(0, 80),
+      })
+    } else {
+      items.push({
+        title,
+        url: '',
+        snippet: snippet.slice(0, 300),
+        pending: href,
+        published: '',
+        cite: '',
+        display: tailText.slice(0, 80),
+      })
+    }
+    if (items.length >= 20) break
+  }
+
+  const seen = new Set()
+  return items.filter((item) => {
+    const key = item.title.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export async function resolveGoogleLinks(items, options) {
   const { userAgent, locale, timeoutMs, signal, fetchImpl } = options
   const doFetch = fetchImpl || globalThis.fetch
-  const resolved = await Promise.all(
-    items.map(async (item) => {
-      if (!item.pending) return item
-      const target = new URL(item.pending, 'https://www.google.com').toString()
-      try {
-        const timeout = AbortSignal.timeout(Math.min(timeoutMs, 8000))
-        const res = await doFetch(target, {
-          method: 'GET',
-          redirect: 'manual',
-          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-          headers: {
-            'user-agent': userAgent,
-            'accept-language': locale ? `${locale},en;q=0.8` : 'en;q=0.9',
-          },
-        })
-        const location = res.headers.get('location')
-        let destination = location || ''
-        if (!destination) {
-          // 有时它是「302 Moved」的 HTML 壳：<A HREF="真实地址">here</A>
-          const body = await res.text()
-          const moved = body.match(/<a[^>]+href="(https?:\/\/[^"]+)"/i)
-          const refresh = body.match(/url=(['"]?)(https?:\/\/[^'">]+)/i)
-          destination = moved ? moved[1] : refresh ? refresh[2] : ''
-        } else {
-          await res.body?.cancel?.()
-        }
-        return destination ? { ...item, url: absolute(destination), pending: '' } : null
-      } catch {
-        return null
-      }
-    }),
-  )
-  return resolved.filter((item) => item && item.url)
+  const hopTimeout = Math.min(timeoutMs ?? 8000, 8000)
+
+  const follow = async (startUrl) => {
+    let target = startUrl
+    for (let hop = 0; hop < 3; hop += 1) {
+      const timeout = AbortSignal.timeout(hopTimeout)
+      const res = await doFetch(target, {
+        redirect: 'manual',
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+        headers: {
+          'user-agent': userAgent,
+          'accept-language': locale ? `${locale},en;q=0.8` : 'en;q=0.9',
+        },
+      })
+      const location = res.headers.get('location')
+      if (location) return new URL(location, target).toString()
+      const body = await res.text()
+      const meta = body.match(/<meta[^>]+content=["']\s*\d+\s*;\s*url=([^"']+)/i) || body.match(/url=(https?:[^"'&]+)/i)
+      if (!meta) return ''
+      target = new URL(decodeEntities(meta[1].trim()), 'https://www.google.com').toString()
+    }
+    return ''
+  }
+
+  const resolveOne = async (item) => {
+    if (!item.pending) return item.url ? item : null
+    const startUrl = new URL(item.pending, 'https://www.google.com').toString()
+    let destination = ''
+    try {
+      destination = await follow(startUrl)
+    } catch {}
+    if (destination) return { ...item, url: absolute(destination), pending: '' }
+
+    const domain = item.display && item.display.match(/^((?:[a-z0-9-]+\.)+[a-z]{2,})/i)
+    if (domain) return { ...item, url: `https://${domain[1]}`, pending: '' }
+    return null
+  }
+
+  const out = []
+  for (let i = 0; i < items.length; i += 3) {
+    const chunk = items.slice(i, i + 3)
+    const settled = await Promise.all(chunk.map((item) => resolveOne(item).catch(() => null)))
+    out.push(...settled.filter((item) => item && item.url))
+  }
+  return out
 }
 
 // ── 请求 ────────────────────────────────────────────────────────────────────

@@ -105,3 +105,37 @@ profile 的 `cordis.patch.yml` 里把 `web` 行指过来（两个 provider 都�
 node probe\final.mjs "sqlite wal checkpoint"           # 搜索
 node probe\fetch.mjs "https://www.sqlite.org/wal.html" # 抓正文
 ```
+
+## 结果重排与富化（ranking.js）
+
+抓完 SERP 后不再直接按引擎名次交替输出，而是做一轮本地「rerank」，尽量对齐官方
+`api-docs.deepseek.com/zh-cn/guides/search` 的返回形态（rerank + summary + date）：
+
+1. **关键词覆盖度**：中英文分词（拉丁词 + 中文 bigram），用文档频率算 IDF——品牌词
+   （deepseek / cloudflare）权重自动变低，「发布 / release / 特定函数名」这类区分词权重变高。
+2. **站点权威度**：docs.*、github、MDN、wikipedia、gov/edu 加分；CSDN 下载页、文库、
+   聚合站、淘宝京东等降权，低于阈值的直接丢。
+3. **导航页降权**：首页、GitHub 组织主页、GitHub 仓库主页（`/user/repo`，且 query 没有
+   找库意图）基本不参与排位。
+4. **同域限流**：默认每站最多 2 条（`perHost`），避免整屏 CSDN。
+5. **字段富化**：抓前 N 条页面（`enrichLimit`，默认 min(limit,6)，并发、4.5s 超时），从
+   meta / JSON-LD / URL / 正文里补 `publishedAt`，并把 snippet 换成「与 query 相关的那段
+   正文」；页面抓不到就保持原 SERP snippet，不会变空。
+6. **降级**：富化/重排任何一步失败，回退到旧的交替合并顺序，保证工具永远有结果。
+
+重排/富化的阈值都是**代码内置默认**（enrich 开、top 6 条、4.5s 超时、每站 2 条），不新增配置项。
+插件参数统一还是走 Web 设置页（写入 `home\xykp\config.yml` 的 `search-engine` 段），没有第二份配置文件。
+
+已知限制：
+
+- Google 结果链接是加密 `/url?q=`，需要逐条 302 + meta-refresh 解出真实地址，并把
+  并发压到 3；单次通常只能稳定解出 5–10 条（Google 有速率限制），标题/摘要/日期本身是准的。
+- Bing 在 CN 出口下长尾质量很差（只按首个词给结果），现在基本只做候选池补充。
+- 语义层面的「X 和 Y 的区别」类查询仍不如官方模型级 rerank；但在「查文档/查数值/查发布」上
+  已能给出官方风格的 4–8 条：干净 URL + 相关摘要 + 日期。
+
+本地评测（不经过 dsh web）：
+
+```powershell
+node bench.mjs "cloudflare workers durable objects limit" "DeepSeek V4.1 Flash 发布"
+```

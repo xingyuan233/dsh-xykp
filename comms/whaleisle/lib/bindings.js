@@ -102,6 +102,37 @@ export async function archivedIds() {
   return set
 }
 
+/**
+ * 归档（删除）一条对话：
+ * 1. 把 id 写进 storages/workspace.json 的 global.archivedSessionIds —— /session 列表和 GUI 都不再显示；
+ * 2. 尽量把落盘的会话目录挪到 sessions-archive/<workspace-slug>/<id>，真的腾出空间（挪不动只留归档标记）。
+ */
+export async function archiveSession(sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) throw new Error('会话 id 是空的')
+  const wsFile = join(homeDir(), 'storages', 'workspace.json')
+  let json = {}
+  try { json = JSON.parse(await readFile(wsFile, 'utf8')) || {} } catch { json = {} }
+  json.global = json.global || {}
+  const ids = Array.isArray(json.global.archivedSessionIds) ? json.global.archivedSessionIds : []
+  if (!ids.includes(id)) ids.push(id)
+  json.global.archivedSessionIds = ids
+  await writeFile(wsFile, JSON.stringify(json, null, 2), 'utf8')
+
+  const root = join(homeDir(), 'sessions')
+  try {
+    for (const d of await readdir(root, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue
+      const from = join(root, d.name, id)
+      try { await stat(from) } catch { continue }
+      const targetDir = join(homeDir(), 'sessions-archive', d.name)
+      await mkdir(targetDir, { recursive: true })
+      await rename(from, join(targetDir, id))
+    }
+  } catch { /* 挪不动就算了，归档标记已经生效 */ }
+  return true
+}
+
 /** 扫出所有会话（目录名就是 session id），按最后修改时间倒序，归档的不算 */
 export async function listSessions() {
   const root = join(homeDir(), 'sessions')
@@ -136,6 +167,27 @@ export async function readSessionTitle(sessionId) {
   } catch {
     return ''
   }
+}
+
+/** 会话记录的模型选择（宿主投影缓存 modelSelection.lastUsed），没有就 null
+ *  宿主只在 GUI 路径用 agent/request 兜底补 model，插件直接 resume 出来的 agent 是空的，
+ *  所以这里把会话自己的模型读出来，resume/create 时显式传下去。 */
+export async function readSessionModel(sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) return null
+  const p = join(homeDir(), 'storages', 'session_projcache', 'sessions', `${id}.json`)
+  try {
+    const j = JSON.parse(await readFile(p, 'utf8'))
+    const val = j && j.record && j.record.rows
+      && j.record.rows.modelSelection && j.record.rows.modelSelection.val
+    const used = val && val.lastUsed
+    if (used && used.provider && used.model) {
+      const out = { provider: String(used.provider), model: String(used.model) }
+      if (used.reasoningEffort) out.reasoningEffort = String(used.reasoningEffort)
+      return out
+    }
+  } catch { /* 读不到就算了 */ }
+  return null
 }
 
 export function ago(ms) {

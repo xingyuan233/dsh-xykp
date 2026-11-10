@@ -4,7 +4,8 @@
 //   mouse_input    —— 移动/点击/连点/长按/拖曳/滚轮/窗口聚焦/查光标
 //   keyboard_input —— 组合键、输入文本
 //
-// 后端沿用同目录 server.py（ctypes 调 SendInput），
+// mode 参数选投递方式：sendinput 走系统输入队列（旧行为）；给了 window 时 auto 先
+// PostMessage 直投（不动光标、不抢前台），点击没反应再回退真实输入。
 // 通过 lib/mcp-bridge.mjs 走 stdio，工具名对外是干净的 mouse_input / keyboard_input。
 
 import { mkdirSync } from 'node:fs'
@@ -37,7 +38,7 @@ const mouseParameters = {
     required: true,
     description:
       'move 移动 / click 点击（count>1 即连点）/ multi_click 连点 / long_press 长按 / drag 拖曳 / ' +
-      'scroll 滚轮 / focus_window 窗口切前台 / info 查光标与前台窗口',
+      'scroll 滚轮 / focus_window 窗口切前台 / info 查光标与前台窗口；传 window 时默认直投窗口消息（不动光标）',
   },
   x: { type: 'number', description: '目标点 x；传 window 时是客户区坐标，否则虚拟桌面物理像素' },
   y: { type: 'number' },
@@ -56,6 +57,16 @@ const mouseParameters = {
   window: {
     type: 'string',
     description: '窗口标题子串（纯数字当 hwnd）：按该窗口客户区坐标算，且发送前不强制切前台',
+  },
+  mode: {
+    type: 'string',
+    enum: ['auto', 'post', 'sendinput'],
+    description:
+      'auto 给了 window 时先直投窗口消息（不动光标），没反应再真实点击（默认）；post 只直投（需 window）；sendinput 只真实输入',
+  },
+  child: {
+    type: 'boolean',
+    description: '直投时是否下钻到该点子窗口（默认 true；只认顶层窗口的程序传 false）',
   },
 }
 
@@ -80,7 +91,20 @@ const keyboardParameters = {
   keys: { type: 'string', description: 'key 动作的键，组合键用 + 连接，如 "ctrl+shift+s"；默认 enter' },
   hold: { type: 'number', description: '每个键按住秒数，默认 0.05' },
   text: { type: 'string', description: 'type_text 要输入的文本' },
-  interval: { type: 'number', description: 'type_text 每个字符的间隔秒，默认 0.02' },
+  interval: { type: 'number', description: '输入每个字符的间隔秒，默认 0.02' },
+  window: {
+    type: 'string',
+    description: '标题子串（纯数字当 hwnd）：给了就直投该窗口、不切前台，auto 下优先于真实输入',
+  },
+  mode: {
+    type: 'string',
+    enum: ['auto', 'post', 'sendinput'],
+    description: 'auto 给了 window 就直投（默认）；post 只直投（需 window）；sendinput 只真实输入',
+  },
+  child: {
+    type: 'boolean',
+    description: '直投时是否下钻到目标窗口的焦点/中心子窗口（默认 true）',
+  },
 }
 
 const keyboardOutput = {
@@ -142,22 +166,22 @@ async function runMouse(bridge, args) {
       break
     case 'click':
       need(args, ['x', 'y'], action)
-      raw = ['click', pick(args, ['x', 'y', 'button', 'count', 'interval', 'hold', 'window'])]
+      raw = ['click', pick(args, ['x', 'y', 'button', 'count', 'interval', 'hold', 'window', 'mode', 'child'])]
       break
     case 'multi_click':
       need(args, ['x', 'y'], action)
-      raw = ['multi_click', pick(args, ['x', 'y', 'count', 'interval', 'button', 'window'])]
+      raw = ['multi_click', pick(args, ['x', 'y', 'count', 'interval', 'button', 'window', 'mode', 'child'])]
       break
     case 'long_press':
       need(args, ['x', 'y'], action)
-      raw = ['long_press', pick(args, ['x', 'y', 'duration', 'button', 'window'])]
+      raw = ['long_press', pick(args, ['x', 'y', 'duration', 'button', 'window', 'mode', 'child'])]
       break
     case 'drag':
       need(args, ['x1', 'y1', 'x2', 'y2'], action)
       raw = ['drag', pick(args, ['x1', 'y1', 'x2', 'y2', 'duration', 'steps', 'button', 'window'])]
       break
     case 'scroll':
-      raw = ['scroll', pick(args, ['amount', 'x', 'y', 'horizontal', 'window'])]
+      raw = ['scroll', pick(args, ['amount', 'x', 'y', 'horizontal', 'window', 'mode', 'child'])]
       break
     case 'focus_window':
       need(args, ['window'], action)
@@ -177,16 +201,20 @@ async function runKeyboard(bridge, args) {
   const action = args.action
   let raw
   if (action === 'key') {
-    raw = ['key', pick(args, ['keys', 'hold'])]
+    raw = ['key', pick(args, ['keys', 'hold', 'window', 'mode', 'child'])]
     if (!raw[1].keys) raw[1].keys = 'enter'
   } else if (action === 'type_text') {
     need(args, ['text'], action)
-    raw = ['type_text', pick(args, ['text', 'interval'])]
+    raw = ['type_text', pick(args, ['text', 'interval', 'window', 'mode', 'child'])]
   } else {
     throw new Error(`未知的 keyboard_input 动作：${action}`)
   }
   const result = await bridge.callTool(raw[0], raw[1])
-  const summary = action === 'key' ? `按键 ${raw[1].keys}` : `输入文本（${String(args.text).length} 字）`
+  const where = raw[1].window ? ` → ${raw[1].window}` : ''
+  const summary =
+    action === 'key'
+      ? `按键 ${raw[1].keys}${where}`
+      : `输入文本（${String(args.text).length} 字）${where}`
   return { text: `${summary}\n${contentToText(result)}`.trim() }
 }
 
@@ -210,8 +238,10 @@ export function apply(ctx) {
       name: 'mouse_input',
       description:
         '操作鼠标：move 移动 / click 点击（count 即连点）/ long_press 长按 / drag 拖曳 / scroll 滚轮 / ' +
-        'focus_window 窗口切前台 / info 查光标与前台窗口。坐标默认虚拟桌面物理像素，' +
-        '传 window 时是该窗口客户区坐标。截图缩小过就用返回的 scale 换算；没有撤销，先 move 确认再 click。',
+        'focus_window 窗口切前台 / info 查光标与前台窗口。' +
+        '传 window 时坐标按该窗口客户区算，且 click/long_press/scroll 默认 mode=auto：先直投窗口消息' +
+        '（不动光标、不抢前台），点击没反应再回退真实输入。坐标默认虚拟桌面物理像素；' +
+        '截图缩小过就用返回的 scale 换算；没有撤销，先 move 确认再 click。',
       parameters: mouseParameters,
       output: mouseOutput,
       async execute(args = {}) {
@@ -225,7 +255,9 @@ export function apply(ctx) {
       name: 'keyboard_input',
       description:
         '操作键盘：key 按单个键或组合键（"ctrl+c"、"alt+tab"、"enter"），' +
-        'type_text 输入一段文本（Unicode，支持中文）。要激活目标窗口先用 mouse_input(action="focus_window")。',
+        'type_text 输入一段文本（Unicode，支持中文）。' +
+        '要激活目标窗口先用 mouse_input(action="focus_window")；' +
+        '给了 window 就默认直投该窗口（不切前台），要真实按键就 mode="sendinput"。',
       parameters: keyboardParameters,
       output: keyboardOutput,
       async execute(args = {}) {

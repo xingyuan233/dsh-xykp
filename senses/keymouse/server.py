@@ -1,8 +1,15 @@
 #!/usr/bin/env python
-"""input-mcp — 鼠标/键盘操作 MCP server（SendInput，不依赖第三方库）。
+"""input-mcp — 鼠标/键盘操作 MCP server（不依赖第三方库）。
+
+两种投递方式：
+    SendInput  —— move / click / multi_click / long_press / drag / scroll / key / type_text
+                  会真的移动光标，事件进系统输入队列、跟着前台焦点走。
+    PostMessage —— post_click / post_scroll / post_key / post_text
+                  直接把消息发给指定窗口，光标不动、不抢前台，可操作后台窗口。
 
 工具：
     move / click / multi_click / long_press / drag / scroll / key / type_text
+    post_click / post_scroll / post_key / post_text
     focus_window / input_info
 
 坐标默认是虚拟桌面物理像素；传 window 时 x,y 相对该窗口客户区。
@@ -94,6 +101,52 @@ BUTTONS = {
     "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
     "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
 }
+
+# ── 窗口消息常量（PostMessage 直投，不动光标）─────────────────────────
+
+WM_MOUSEMOVE = 0x0200
+WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK = 0x0201, 0x0202, 0x0203
+WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RBUTTONDBLCLK = 0x0204, 0x0205, 0x0206
+WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MBUTTONDBLCLK = 0x0207, 0x0208, 0x0209
+WM_MOUSEWHEEL, WM_MOUSEHWHEEL = 0x020A, 0x020E
+WM_KEYDOWN, WM_KEYUP, WM_CHAR = 0x0100, 0x0101, 0x0102
+MK_LBUTTON, MK_RBUTTON, MK_MBUTTON = 0x0001, 0x0002, 0x0010
+CWP_SKIPINVISIBLE, CWP_SKIPDISABLED, CWP_SKIPTRANSPARENT = 0x0001, 0x0002, 0x0004
+
+BTN_MSG = {
+    "left": (WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, MK_LBUTTON),
+    "right": (WM_RBUTTONDOWN, WM_RBUTTONUP, WM_RBUTTONDBLCLK, MK_RBUTTON),
+    "middle": (WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MBUTTONDBLCLK, MK_MBUTTON),
+}
+
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wt.DWORD),
+        ("flags", wt.DWORD),
+        ("hwndActive", wt.HWND),
+        ("hwndFocus", wt.HWND),
+        ("hwndCapture", wt.HWND),
+        ("hwndMenuOwner", wt.HWND),
+        ("hwndMoveSize", wt.HWND),
+        ("hwndCaret", wt.HWND),
+        ("rcCaret", wt.RECT),
+    ]
+
+
+user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.PostMessageW.restype = wt.BOOL
+user32.ChildWindowFromPointEx.argtypes = [wt.HWND, wt.POINT, wt.UINT]
+user32.ChildWindowFromPointEx.restype = wt.HWND
+user32.MapWindowPoints.argtypes = [wt.HWND, wt.HWND, ctypes.POINTER(wt.POINT), wt.UINT]
+user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
+user32.MapVirtualKeyW.restype = wt.UINT
+user32.GetGUIThreadInfo.argtypes = [wt.DWORD, ctypes.POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = wt.BOOL
+user32.IsChild.argtypes = [wt.HWND, wt.HWND]
+user32.WindowFromPoint.argtypes = [wt.POINT]
+user32.WindowFromPoint.restype = wt.HWND
+user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
 
 VK = {
     "backspace": 0x08, "tab": 0x09, "enter": 0x0D, "return": 0x0D,
@@ -248,6 +301,349 @@ def _press(button: str, hold: float) -> None:
     _send(_mouse(up))
 
 
+# ── 直投窗口消息（PostMessage）──────────────────────────────────────
+
+def _lparam(x: int, y: int) -> int:
+    v = ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+    return v - 0x100000000 if v >= 0x80000000 else v
+
+
+def _msg(hwnd: int, msg: int, wparam: int = 0, lparam: int = 0) -> None:
+    """PostMessage 一条窗口消息（不阻塞、不移动光标）。"""
+    if not user32.PostMessageW(hwnd, msg, wparam & 0xFFFFFFFF, lparam):
+        raise OSError(f"PostMessageW 失败（msg=0x{msg:04X}），窗口可能已销毁或权限更高（UIPI）")
+
+
+def _deepest_child(hwnd: int, x: int, y: int) -> tuple[int, int, int]:
+    """从 hwnd 客户区坐标 (x,y) 往下钻到最深的可见子窗口，返回目标窗口自己的客户区坐标。"""
+    target, px, py = hwnd, x, y
+    for _ in range(16):
+        child = user32.ChildWindowFromPointEx(
+            target, wt.POINT(px, py), CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT
+        )
+        if not child or child == target:
+            break
+        pt = (wt.POINT * 1)(wt.POINT(px, py))
+        user32.MapWindowPoints(target, child, pt, 1)
+        px, py = pt[0].x, pt[0].y
+        target = child
+    return target, px, py
+
+
+def _target_client(
+    window: str, x: int, y: int, child: bool = True
+) -> tuple[int, int, str, int, int, int, int]:
+    """window 客户区坐标 (x,y) → (顶层 hwnd, 收消息 hwnd, 标题, 目标客户区 x,y, 屏幕 x,y)。"""
+    top, title = _find_window(window)
+    cx, cy, cw, ch = _client_rect(top)
+    x, y = int(x), int(y)
+    if not (0 <= x < cw and 0 <= y < ch):
+        raise ValueError(f"窗口 {title!r} 客户区只有 {cw}x{ch}，({x},{y}) 越界")
+    sx, sy = cx + x, cy + y
+    target, tx, ty = top, x, y
+    if child:
+        target, tx, ty = _deepest_child(top, x, y)
+    return top, target, title, tx, ty, sx, sy
+
+
+def _gui_focus(hwnd: int) -> int | None:
+    """窗口所在线程的焦点子窗口（编辑框、浏览器渲染控件等）；没有焦点就返回 None。"""
+    tid = user32.GetWindowThreadProcessId(hwnd, None)
+    if not tid:
+        return None
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if not user32.GetGUIThreadInfo(tid, ctypes.byref(gti)) or not gti.hwndFocus:
+        return None
+    f = gti.hwndFocus
+    return f if f == hwnd or user32.IsChild(hwnd, f) else None
+
+
+def _input_target(hwnd: int) -> tuple[int, str]:
+    """键盘消息目标：线程焦点子窗口 → 客户区中心的深层子窗口 → 顶层窗口。"""
+    focus = _gui_focus(hwnd)
+    if focus and focus != hwnd:
+        return focus, "焦点子窗口"
+    _, _, cw, ch = _client_rect(hwnd)
+    if cw > 1 and ch > 1:
+        child, _, _ = _deepest_child(hwnd, cw // 2, ch // 2)
+        if child != hwnd:
+            return child, "客户区中心子窗口"
+    return focus or hwnd, "窗口本身"
+
+
+def _key_lparam(vk: int, up: bool = False) -> int:
+    scan = user32.MapVirtualKeyW(vk, 0) & 0xFF
+    lp = 1 | (scan << 16)
+    return lp | 0xC0000000 if up else lp
+
+
+# ── 直投效果探测（auto：先直投，没反应再动鼠标）─────────────────────
+
+gdi32 = ctypes.windll.gdi32
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wt.DWORD),
+        ("biWidth", wt.LONG),
+        ("biHeight", wt.LONG),
+        ("biPlanes", wt.WORD),
+        ("biBitCount", wt.WORD),
+        ("biCompression", wt.DWORD),
+        ("biSizeImage", wt.DWORD),
+        ("biXPelsPerMeter", wt.LONG),
+        ("biYPelsPerMeter", wt.LONG),
+        ("biClrUsed", wt.DWORD),
+        ("biClrImportant", wt.DWORD),
+    ]
+
+
+class BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wt.DWORD * 3)]
+
+
+def _check_mode(mode: str) -> None:
+    if mode not in ("auto", "post", "sendinput"):
+        raise ValueError("mode 只能是 auto / post / sendinput")
+
+
+def _win_pid(hwnd: int) -> int:
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def _grab(x: int, y: int, size: int = 160) -> bytes:
+    """以 (x,y) 为中心截一块屏幕（物理像素），供直投效果探测比像素。"""
+    left, top = int(x) - size // 2, int(y) - size // 2
+    src = user32.GetDC(0)
+    mem = gdi32.CreateCompatibleDC(src)
+    bmp = gdi32.CreateCompatibleBitmap(src, size, size)
+    old = gdi32.SelectObject(mem, bmp)
+    try:
+        gdi32.BitBlt(mem, 0, 0, size, size, src, left, top, 0x00CC0020)  # SRCCOPY
+        bi = BITMAPINFO()
+        bi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bi.bmiHeader.biWidth = size
+        bi.bmiHeader.biHeight = -size
+        bi.bmiHeader.biPlanes = 1
+        bi.bmiHeader.biBitCount = 32
+        buf = ctypes.create_string_buffer(size * size * 4)
+        if not gdi32.GetDIBits(mem, bmp, 0, size, buf, ctypes.byref(bi), 0):
+            return b""
+        return buf.raw
+    finally:
+        gdi32.SelectObject(mem, old)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(mem)
+        user32.ReleaseDC(0, src)
+
+
+def _pixels_changed(a: bytes, b: bytes, tolerance: int = 15) -> bool:
+    if not a or not b or len(a) != len(b):
+        return False
+    changed = 0
+    for i in range(0, len(a), 4):
+        if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > tolerance * 3:
+            changed += 1
+            if changed > 3:
+                return True
+    return False
+
+
+def _process_windows(pid: int) -> set[int]:
+    found: set[int] = set()
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _lp):
+        if _win_pid(hwnd) == pid and user32.IsWindowVisible(hwnd):
+            found.add(hwnd)
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return found
+
+
+def _thread_capture(tid: int) -> int:
+    if not tid:
+        return 0
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if user32.GetGUIThreadInfo(tid, ctypes.byref(gti)):
+        return int(gti.hwndCapture or 0)
+    return 0
+
+
+def _hit_window(x: int, y: int) -> int:
+    """屏幕点上真正可见的最上层窗口（用于判断像素探测是否读到目标自己）。"""
+    return int(user32.WindowFromPoint(wt.POINT(int(x), int(y))) or 0)
+
+
+def _probe(top: int, target: int, sx: int, sy: int, before_px: bytes, before_win: set[int]) -> bool:
+    """直投有没有反应：目标线程鼠标捕获 / 目标自己露出来的局部像素变化 / 进程冒出新窗口。"""
+    if _thread_capture(user32.GetWindowThreadProcessId(target, None)):
+        return True
+    hit = _hit_window(sx, sy)
+    on_top = bool(hit) and (hit == top or hit == target or user32.IsChild(top, hit))
+    if on_top and _pixels_changed(before_px, _grab(sx, sy)):
+        return True
+    return bool(_process_windows(_win_pid(top)) - before_win)
+
+
+def _direct_click(
+    x: int,
+    y: int,
+    button: str = "left",
+    count: int = 1,
+    interval: float = 0.05,
+    hold: float = 0.0,
+    window: str | None = None,
+    child: bool = True,
+) -> tuple[bool, str]:
+    if button not in BTN_MSG:
+        raise ValueError(f"button 只能是 {list(BTN_MSG)}")
+    if not window:
+        raise ValueError("直投点击必须给 window（标题子串或 hwnd）：消息只能发给具体窗口")
+    top, target, title, tx, ty, sx, sy = _target_client(window, x, y, child)
+    down, up, dbl, mk = BTN_MSG[button]
+    lp = _lparam(tx, ty)
+    count = max(1, int(count))
+    hold = max(0.0, float(hold))
+    before_px = _grab(sx, sy)
+    before_win = _process_windows(_win_pid(top))
+    _msg(target, WM_MOUSEMOVE, 0, lp)
+    _msg(target, down, mk, lp)
+    time.sleep(max(0.05, hold))
+    effect = _probe(top, target, sx, sy, before_px, before_win)
+    _msg(target, up, 0, lp)
+    if count == 2:  # 双击：第二下用 DBLCLK 序列
+        _msg(target, dbl, mk, lp)
+        time.sleep(max(0.05, hold))
+        _msg(target, up, 0, lp)
+    else:
+        for _ in range(1, count):
+            time.sleep(max(0.0, float(interval)))
+            _msg(target, down, mk, lp)
+            if hold:
+                time.sleep(hold)
+            _msg(target, up, 0, lp)
+    return effect, f"{button} click x{count} at client {tx},{ty} of {title!r} (hwnd={target})"
+
+
+def _direct_long_press(
+    x: int,
+    y: int,
+    duration: float = 0.6,
+    button: str = "left",
+    window: str | None = None,
+    child: bool = True,
+) -> tuple[bool, str]:
+    if button not in BTN_MSG:
+        raise ValueError(f"button 只能是 {list(BTN_MSG)}")
+    if not window:
+        raise ValueError("直投长按必须给 window")
+    top, target, title, tx, ty, sx, sy = _target_client(window, x, y, child)
+    down, up, _dbl, mk = BTN_MSG[button]
+    lp = _lparam(tx, ty)
+    before_px = _grab(sx, sy)
+    before_win = _process_windows(_win_pid(top))
+    _msg(target, WM_MOUSEMOVE, 0, lp)
+    _msg(target, down, mk, lp)
+    time.sleep(0.06)
+    effect = _probe(top, target, sx, sy, before_px, before_win)
+    rest = max(0.0, float(duration)) - 0.06
+    if rest:
+        time.sleep(rest)
+    _msg(target, up, 0, lp)
+    return effect, f"{button} long_press {duration}s at client {tx},{ty} of {title!r} (hwnd={target})"
+
+
+def _direct_scroll(
+    amount: int = 1,
+    x: int | None = None,
+    y: int | None = None,
+    horizontal: bool = False,
+    window: str | None = None,
+    child: bool = True,
+) -> tuple[bool, str]:
+    if not window:
+        raise ValueError("直投滚轮必须给 window")
+    hwnd, title = _find_window(window)
+    cx, cy, cw, ch = _client_rect(hwnd)
+    if x is None or y is None:
+        p = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(p))
+        sx, sy = p.x, p.y
+        target = hwnd
+    else:
+        if not (0 <= int(x) < cw and 0 <= int(y) < ch):
+            raise ValueError(f"窗口 {title!r} 客户区只有 {cw}x{ch}，({x},{y}) 越界")
+        sx, sy = cx + int(x), cy + int(y)
+        target = _deepest_child(hwnd, int(x), int(y))[0] if child else hwnd
+    before_px = _grab(sx, sy, 220)
+    delta = int(amount) * 120
+    msg = WM_MOUSEHWHEEL if horizontal else WM_MOUSEWHEEL
+    _msg(target, msg, (delta << 16) & 0xFFFF0000, _lparam(sx, sy))
+    time.sleep(0.06)
+    effect = _pixels_changed(before_px, _grab(sx, sy, 220))
+    return effect, (
+        f"scroll {'horizontal' if horizontal else 'vertical'} {amount} "
+        f"at screen {sx},{sy} -> {title!r} (hwnd={target})"
+    )
+
+
+def _direct_key(
+    keys: str = "enter",
+    window: str | None = None,
+    hold: float = 0.05,
+    child: bool = True,
+) -> tuple[bool, str]:
+    if not window:
+        raise ValueError("直投按键必须给 window")
+    parts = [p for p in keys.replace(" ", "").split("+") if p]
+    if not parts:
+        raise ValueError("keys 不能为空")
+    vks = [_vk_for(p) for p in parts]
+    hwnd, title = _find_window(window)
+    target, via = _input_target(hwnd) if child else (hwnd, "顶层窗口")
+    for vk in vks:
+        _msg(target, WM_KEYDOWN, vk, _key_lparam(vk))
+        time.sleep(0.01)
+    time.sleep(max(0.0, float(hold)))
+    for vk in reversed(vks):
+        _msg(target, WM_KEYUP, vk, _key_lparam(vk, True))
+        time.sleep(0.01)
+    return True, f"key {keys} -> {title!r} (hwnd={target}, {via})"
+
+
+def _direct_text(
+    text: str,
+    window: str | None = None,
+    interval: float = 0.02,
+    child: bool = True,
+) -> tuple[bool, str]:
+    if not window:
+        raise ValueError("直投文本必须给 window")
+    hwnd, title = _find_window(window)
+    target, via = _input_target(hwnd) if child else (hwnd, "顶层窗口")
+    data = text.encode("utf-16-le")
+    count = 0
+    for i in range(0, len(data), 2):
+        unit = data[i] | (data[i + 1] << 8)
+        if unit == 10:  # \n
+            vk = 0x0D
+            _msg(target, WM_KEYDOWN, vk, _key_lparam(vk))
+            _msg(target, WM_CHAR, vk, _key_lparam(vk))
+            _msg(target, WM_KEYUP, vk, _key_lparam(vk, True))
+        else:
+            _msg(target, WM_CHAR, unit, 1)
+        count += 1
+        if interval:
+            time.sleep(max(0.0, float(interval)))
+    return True, f"text {count} units -> {title!r} (hwnd={target}, {via})"
+
+
 # ── MCP ───────────────────────────────────────────────────────────────
 
 mcp = MCPServer(
@@ -257,7 +653,10 @@ mcp = MCPServer(
         "physical pixels, or window-client-relative when `window` is given. "
         "Use click for taps, multi_click for rapid repeated taps, long_press for hold, "
         "drag for movement with the button down. Call focus_window before sending keys "
-        "if the target is not already focused."
+        "if the target is not already focused. When `window` is given, mouse and keyboard "
+        "tools default to mode=auto: events are posted as window messages (no cursor "
+        "movement, no focus steal); clicks fall back to real input if the target ignores "
+        "them, keyboard does not. mode=post forces posting, mode=sendinput forces real input."
     ),
 )
 
@@ -299,10 +698,22 @@ def click(
     interval: float = 0.08,
     hold: float = 0.0,
     window: str | None = None,
+    mode: str = "auto",
+    child: bool = True,
 ) -> TextContent:
-    """在 (x, y) 点击。count 是连点次数，interval 是间隔秒；hold 是每次按下保持时间。"""
+    """在 (x, y) 点击。count 是连点次数，interval 是间隔秒；hold 是每次按下保持时间。
+    mode：auto=给了 window 时先直投窗口消息（不动光标），没反应再真实点击；post=只直投；sendinput=只真实输入。"""
     if button not in BUTTONS:
         raise ValueError(f"button 只能是 {list(BUTTONS)}")
+    _check_mode(mode)
+    if mode == "post" and not window:
+        raise ValueError("mode=post 需要 window（消息只能发给具体窗口）")
+    note = ""
+    if window and mode != "sendinput":
+        effect, info = _direct_click(x, y, button, count, interval, hold, window, child)
+        if mode == "post" or effect:
+            return TextContent(type="text", text=f"{info}；直投窗口消息，光标未移动")
+        note = "；直投无反应，已回退真实点击"
     ax, ay, title = _point(x, y, window)
     _move(ax, ay)
     time.sleep(0.01)
@@ -313,7 +724,8 @@ def click(
     return TextContent(
         type="text",
         text=f"{button} click x{max(1, count)} at {ax},{ay}"
-        + (f" ({title})" if title else ""),
+        + (f" ({title})" if title else "")
+        + note,
     )
 
 
@@ -325,9 +737,13 @@ def multi_click(
     interval: float = 0.08,
     button: str = "left",
     window: str | None = None,
+    mode: str = "auto",
+    child: bool = True,
 ) -> TextContent:
     """连点：在 (x, y) 快速点 count 次。"""
-    return click(x=x, y=y, button=button, count=count, interval=interval, window=window)
+    return click(
+        x=x, y=y, button=button, count=count, interval=interval, window=window, mode=mode, child=child,
+    )
 
 
 @mcp.tool()
@@ -337,10 +753,21 @@ def long_press(
     duration: float = 0.6,
     button: str = "left",
     window: str | None = None,
+    mode: str = "auto",
+    child: bool = True,
 ) -> TextContent:
-    """长按：在 (x, y) 按下并保持 duration 秒后松开。"""
+    """长按：在 (x, y) 按下并保持 duration 秒后松开。mode 同 click。"""
     if button not in BUTTONS:
         raise ValueError(f"button 只能是 {list(BUTTONS)}")
+    _check_mode(mode)
+    if mode == "post" and not window:
+        raise ValueError("mode=post 需要 window（消息只能发给具体窗口）")
+    note = ""
+    if window and mode != "sendinput":
+        effect, info = _direct_long_press(x, y, duration, button, window, child)
+        if mode == "post" or effect:
+            return TextContent(type="text", text=f"{info}；直投窗口消息，光标未移动")
+        note = "；直投无反应，已回退真实点击"
     ax, ay, title = _point(x, y, window)
     _move(ax, ay)
     time.sleep(0.01)
@@ -348,7 +775,8 @@ def long_press(
     return TextContent(
         type="text",
         text=f"{button} long_press {duration}s at {ax},{ay}"
-        + (f" ({title})" if title else ""),
+        + (f" ({title})" if title else "")
+        + note,
     )
 
 
@@ -398,15 +826,29 @@ def scroll(
     y: int | None = None,
     horizontal: bool = False,
     window: str | None = None,
+    mode: str = "auto",
+    child: bool = True,
 ) -> TextContent:
-    """滚轮：amount 正数向上/向右，负数向下/向左；给了 x,y 会先移过去。"""
+    """滚轮：amount 正数向上/向右，负数向下/向左；给了 x,y 会先移过去。mode 同 click。"""
+    _check_mode(mode)
+    if mode == "post" and not window:
+        raise ValueError("mode=post 需要 window（消息只能发给具体窗口）")
+    note = ""
+    if window and mode != "sendinput":
+        effect, info = _direct_scroll(amount, x, y, horizontal, window, child)
+        if mode == "post" or effect:
+            return TextContent(type="text", text=f"{info}；直投窗口消息，光标未移动")
+        note = "；直投无反应，已回退真实滚轮"
     if x is not None and y is not None:
         ax, ay, _ = _point(x, y, window)
         _move(ax, ay)
         time.sleep(0.01)
     flags = MOUSEEVENTF_HWHEEL if horizontal else MOUSEEVENTF_WHEEL
     _send(_mouse(flags, 0, 0, int(amount) * 120))
-    return TextContent(type="text", text=f"scroll {'horizontal' if horizontal else 'vertical'} {amount}")
+    return TextContent(
+        type="text",
+        text=f"scroll {'horizontal' if horizontal else 'vertical'} {amount}{note}",
+    )
 
 
 def _vk_for(name: str) -> int:
@@ -426,8 +868,21 @@ def _vk_for(name: str) -> int:
 
 
 @mcp.tool()
-def key(keys: str = "enter", hold: float = 0.05) -> TextContent:
-    """按一个键或组合键，如 "enter"、"a"、"ctrl+c"、"alt+tab"。"""
+def key(
+    keys: str = "enter",
+    hold: float = 0.05,
+    window: str | None = None,
+    mode: str = "auto",
+    child: bool = True,
+) -> TextContent:
+    """按一个键或组合键，如 "enter"、"a"、"ctrl+c"、"alt+tab"。
+    不给 window 走真实输入（目标要在前台）；给了 window 且 mode=auto/post 就直接投给该窗口，不切前台。"""
+    _check_mode(mode)
+    if mode == "post" and not window:
+        raise ValueError("mode=post 需要 window（消息只能发给具体窗口）")
+    if window and mode in ("auto", "post"):
+        _ok, info = _direct_key(keys, window, hold, child)
+        return TextContent(type="text", text=f"{info}；直投窗口消息，未切前台")
     parts = [p for p in keys.replace(" ", "").split("+") if p]
     if not parts:
         raise ValueError("keys 不能为空")
@@ -443,8 +898,21 @@ def key(keys: str = "enter", hold: float = 0.05) -> TextContent:
 
 
 @mcp.tool()
-def type_text(text: str, interval: float = 0.02) -> TextContent:
-    """输入一段文本（SendInput Unicode，支持中文）。"""
+def type_text(
+    text: str,
+    interval: float = 0.02,
+    window: str | None = None,
+    mode: str = "auto",
+    child: bool = True,
+) -> TextContent:
+    """输入一段文本（SendInput Unicode，支持中文）。
+    不给 window 走真实输入；给了 window 且 mode=auto/post 就直接投给该窗口，不切前台。"""
+    _check_mode(mode)
+    if mode == "post" and not window:
+        raise ValueError("mode=post 需要 window（消息只能发给具体窗口）")
+    if window and mode in ("auto", "post"):
+        _ok, info = _direct_text(text, window, interval, child)
+        return TextContent(type="text", text=f"{info}；直投窗口消息，未切前台")
     data = text.encode("utf-16-le")
     count = 0
     for i in range(0, len(data), 2):
@@ -478,5 +946,43 @@ def focus_window(window: str) -> TextContent:
     return TextContent(type="text", text=f"focused {title!r} client {w}x{h} @ {x},{y}")
 
 
+# ── 命令行入口：改完直接调，不用重启宿主 ──────────────────────────────
+#
+#   python server.py --cli click '{"x":120,"y":80,"window":"记事本"}'
+#   python server.py --cli type_text '{"text":"hello","window":"记事本"}'
+#   python server.py --cli click '{"x":1,"y":1,"window":"记事本","mode":"post"}'
+
+_CLI = {
+    "click": click,
+    "multi_click": multi_click,
+    "long_press": long_press,
+    "scroll": scroll,
+    "key": key,
+    "type_text": type_text,
+}
+
+
+def _run_cli(argv: list[str]) -> int:
+    import json
+
+    if not argv:
+        print(f"用法: python server.py --cli <{'|'.join(_CLI)}> '<json 参数>'", file=sys.stderr)
+        return 2
+    fn = _CLI.get(argv[0])
+    if fn is None:
+        print(f"未知工具 {argv[0]!r}；可用：{', '.join(_CLI)}", file=sys.stderr)
+        return 2
+    try:
+        kwargs = json.loads(argv[1]) if len(argv) > 1 else {}
+        out = fn(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - CLI 只回报错误
+        print(f"出错：{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(getattr(out, "text", out))
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--cli":
+        raise SystemExit(_run_cli(sys.argv[2:]))
     mcp.run(transport="stdio")

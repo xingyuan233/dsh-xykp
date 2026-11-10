@@ -37,35 +37,40 @@ const warn = (...a) => console.warn('[tool-gate]', ...a)
 
 export const Config = Schema.object({
   rules: Schema.any().default({}).description('按工具名的规则表'),
-  checkAssistant: Schema.boolean().default(true).description('也检查模型自己的输出/思考'),
+  checkAssistant: Schema.boolean().default(true).description('也检查模型自己的输出（不含思考/工具调用）'),
 })
 
-function textOf(node, opts = {}) {
-  // 从消息节点里尽量把可读文本抠出来（块结构 / 纯字符串都照顾）
+// 只取「人写 / 模型说」的文本：纯字符串，或 type=text 的块。
+// 工具调用的参数、工具结果、思考块、注入内容一律不算（它们会被当成"顺手提了一嘴"误触发）。
+function blockText(block) {
+  if (!block) return ''
+  if (typeof block === 'string') return block
+  if (Array.isArray(block)) return block.map(blockText).filter(Boolean).join('\n')
+  if (typeof block !== 'object') return ''
+  const type = typeof block.type === 'string' ? block.type.toLowerCase() : ''
+  if (type.includes('think') || type.includes('reason') || type.includes('tool')) return ''
+  if ('arguments' in block || 'args' in block || 'toolName' in block) return ''
+  if (typeof block.text === 'string') return block.text
+  if (typeof block.content === 'string') return block.content
+  if (Array.isArray(block.content)) return block.content.map(blockText).filter(Boolean).join('\n')
+  return ''
+}
+
+function textOf(node) {
   if (!node) return ''
   if (typeof node === 'string') return node
-  const out = []
-  const walk = (v, depth) => {
-    if (depth > 6 || v == null) return
-    if (typeof v === 'string') {
-      out.push(v)
-      return
-    }
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x, depth + 1)
-      return
-    }
-    if (typeof v === 'object') {
-      const keys = opts.thinking === false
-        ? ['text', 'content', 'delta', 'message', 'messages', 'frame', 'chunk']
-        : ['text', 'content', 'thinking', 'delta', 'message', 'messages', 'frame', 'chunk']
-      for (const key of keys) {
-        if (key in v) walk(v[key], depth + 1)
-      }
-    }
-  }
-  walk(node, 0)
-  return out.join('\n')
+  if (typeof node !== 'object') return ''
+  const type = typeof node.type === 'string' ? node.type.toLowerCase() : ''
+  if (type.includes('think') || type.includes('reason') || type.includes('tool')) return ''
+  if ('arguments' in node || 'args' in node || 'toolName' in node) return ''
+  if (Array.isArray(node.content)) return node.content.map(blockText).filter(Boolean).join('\n')
+  if (node.message && node.message !== node) return textOf(node.message)
+  if (node.frame && node.frame !== node) return textOf(node.frame)
+  if (node.chunk && node.chunk !== node) return textOf(node.chunk)
+  if (typeof node.text === 'string') return node.text
+  if (typeof node.delta === 'string') return node.delta
+  if (node.delta && typeof node.delta === 'object') return blockText(node.delta)
+  return ''
 }
 
 export function apply(ctx, config = {}) {
@@ -107,16 +112,33 @@ export function apply(ctx, config = {}) {
     return states.get(sid)
   }
 
+  // 短英文键（≤3 字符）必须带词边界：BV 不该命中 oBVious；长词/中文仍按子串（schedule 能匹配 schedule_list）
+  const shortKeyRe = new Map()
+  const keyRe = (key) => {
+    let re = shortKeyRe.get(key)
+    if (!re) {
+      re = new RegExp('(^|[^a-z0-9])' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])')
+      shortKeyRe.set(key, re)
+    }
+    return re
+  }
+  const matchKey = (lower, key) => {
+    if (!key) return false
+    const k = String(key).toLowerCase()
+    if (k.length > 3 || /[^\x00-\x7f]/.test(k)) return lower.includes(k)
+    return keyRe(k).test(lower)
+  }
+
   const hit = (text, rule) => {
     if (!text) return false
     const lower = text.toLowerCase()
-    return rule.lowerKeys.some((k) => lower.includes(k))
+    return rule.lowerKeys.some((k) => matchKey(lower, k))
   }
   /** 返回命中的那个关键词（消息里展示用）；没命中返回 '' */
   const hitKey = (text, rule) => {
     if (!text) return ''
     const lower = text.toLowerCase()
-    const idx = rule.lowerKeys.findIndex((k) => lower.includes(k))
+    const idx = rule.lowerKeys.findIndex((k) => matchKey(lower, k))
     return idx < 0 ? '' : String(rule.keys[idx] || rule.lowerKeys[idx])
   }
 
@@ -136,6 +158,11 @@ export function apply(ctx, config = {}) {
     }
   }
   const sidOf = (agent) => String(agent?.session?.id || agent?.id || '')
+  /** 分支/复制会话的父 sid（宿主的 header.parentSession），没有就是 '' */
+  const parentSidOf = (agent) => {
+    const header = agent?.session?.header || agent?.session?.meta || {}
+    return String(header?.parentSession || header?.parent || '')
+  }
   const persistPushed = (agent, toolName) => {
     const sid = sidOf(agent)
     if (!sid) return
@@ -227,7 +254,8 @@ export function apply(ctx, config = {}) {
   function logHit(source, text, key, target) {
     try {
       const lower = String(text).toLowerCase()
-      const idx = lower.indexOf(String(key).toLowerCase())
+      const raw = lower.indexOf(String(key).toLowerCase())
+      const idx = raw < 0 ? 0 : raw
       const from = Math.max(0, idx - 40)
       const snippet = String(text).slice(from, Math.min(String(text).length, idx + key.length + 40)).replace(/\s+/g, ' ')
       dbg('[hit] src=' + source + ' key=' + key + ' target=' + target + ' :: ' + snippet)
@@ -511,7 +539,25 @@ export function apply(ctx, config = {}) {
         })
       }
 
-      const snap = __R.frozenTools(sid)
+      // 分支/复制出来的会话：它继承的历史就是父会话的前缀，工具表和分段都必须原样继承。
+      // 否则第一次组装会按当前注册表重建 → 继承来的整条历史缓存当场全废。
+      let snap = __R.frozenTools(sid)
+      if (!snap) {
+        const parentSid = parentSidOf(agent)
+        if (parentSid && parentSid !== sid) {
+          const inherited = __R.frozenTools(parentSid)
+          const inheritedSections = __R.frozenSections(parentSid)
+          if (inherited?.tools?.length) {
+            __R.saveFrozenTools(sid, inherited.tools, inherited.dropped || [])
+            if (inheritedSections?.length) __R.saveFrozenSections(sid, inheritedSections)
+            snap = inherited
+            dbg('分支继承前缀 ' + inherited.tools.length + ' 条 · sid=' + sid + ' <- ' + parentSid)
+          } else if (inheritedSections?.length) {
+            __R.saveFrozenSections(sid, inheritedSections)
+            dbg('分支继承分段 ' + inheritedSections.length + ' 段 · sid=' + sid + ' <- ' + parentSid)
+          }
+        }
+      }
       if (snap) {
         const visible = new Set()
         for (const tool of snap.tools) {
@@ -680,8 +726,11 @@ export function apply(ctx, config = {}) {
           // 只看正式输出：思考帧整帧跳过（流式思考的正文在 delta 里，光排 thinking 键不够）
           const frame = payload?.frame ?? payload
           const kind = String(frame?.type || frame?.channel || '').toLowerCase()
-          if (kind.includes('think') || kind.includes('reason')) return
-          scan(payload?.agent, textOf(frame, { thinking: false }), 'assistant')
+          // 只认正经的文本帧：其它帧（工具、附件、状态）一律不看
+          if (kind && !/(text|content|delta|message|assistant)/.test(kind)) return
+          if (kind.includes('think') || kind.includes('reason') || kind.includes('tool')) return
+          if (frame?.toolName || frame?.arguments || frame?.args) return
+          scan(payload?.agent, textOf(frame), 'assistant')
         } catch {}
       })
     } catch (error) {

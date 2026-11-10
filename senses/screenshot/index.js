@@ -12,9 +12,22 @@ import { fileURLToPath } from 'node:url'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import { McpBridge, contentToText, firstImage } from '../lib/mcp-bridge.mjs'
+import { configFor } from '../../ui/store.js'
 
 export const name = 'senses-screenshot'
 export const inject = ['tools']
+
+// fmt=auto 的判定阈值；home/xykp/config.yml 的 senses-screenshot.auto 会覆盖这里的默认值。
+const CONFIG_FALLBACK = {
+  auto: {
+    png_max_uniq: 0.12,
+    jpg_min_uniq: 0.55,
+    flat_text: 0.45,
+    edge_dense: 0.02,
+    uniq_mid: 0.35,
+    thumb: 256,
+  },
+}
 
 const PYTHON = process.env.DSH_SENSES_PYTHON || 'D:\\Program-Files\\Python\\312\\python.exe'
 const SERVER = fileURLToPath(new URL('./server.py', import.meta.url))
@@ -36,34 +49,23 @@ const IMAGE_VALUE_SCHEMA = {
 }
 
 const parameters = {
-  window: {
-    type: 'string',
-    description: '窗口标题子串（不分大小写；纯数字当 hwnd）。留空且无 region = 整屏',
-  },
-  region: {
-    type: 'string',
-    description: '"x,y,w,h"，物理像素，相对主屏左上角。与 window 二选一',
-  },
+  window: { type: 'string', description: '窗口标题子串或 hwnd（被遮挡也能截）；留空=整屏' },
+  region: { type: 'string', description: '"x,y,w,h" 物理像素，相对主屏左上角。与 window 二选一' },
   capture: {
     type: 'string',
     enum: ['auto', 'desktop', 'window'],
-    description:
-      'desktop 裁桌面（被遮挡就截到遮挡物）；window 直接读窗口画面（被遮挡/在后台也能截）；' +
-      'auto 有 window 时先试 window，失败退回 desktop。默认 auto',
+    description: 'auto（默认，先窗口后退桌面）/ desktop / window',
   },
-  client: { type: 'boolean', description: 'window 模式只取客户区（游戏内容区），默认 true' },
-  child: {
-    type: 'boolean',
-    description: 'window 模式直接抓最大的子窗口（模拟器、内嵌画面）；默认 false = 先顶层，读不到再试子窗口',
-  },
+  client: { type: 'boolean', description: '只取客户区，默认 true' },
+  child: { type: 'boolean', description: '直接抓最大子窗口（模拟器）' },
   fmt: {
     type: 'string',
-    enum: ['png', 'jpg'],
-    description: 'png 无损，适合文字/UI（默认）；jpg 体积小，适合连续追帧',
+    enum: ['png', 'jpg', 'auto'],
+    description: '默认 auto（文字/UI 用 png，照片/视频用 jpg）',
   },
-  quality: { type: 'number', description: 'jpg 质量 1-100，默认 95；png 忽略' },
-  max_side: { type: 'integer', description: '长边上限，超过就等比缩小，默认 1568；<=0 表示不缩' },
-  list_windows: { type: 'boolean', description: 'true 时只列可见窗口（标题/hwnd/位置/大小），不截图' },
+  quality: { type: 'number', description: 'jpg 质量 1-100，默认 95' },
+  max_side: { type: 'integer', description: '长边上限，默认 1568；<=0 不缩' },
+  list_windows: { type: 'boolean', description: '只列可见窗口，不截图' },
 }
 
 const output = {
@@ -120,9 +122,8 @@ export function apply(ctx) {
     defineTool({
       name: 'screenshot_acquire',
       description:
-        '截屏并直接把图片返回（不落盘）。window=标题子串（或 hwnd）抓窗口，region="x,y,w,h" 裁区域，都不给是整屏。' +
-        'capture=window 读窗口自身画面，被遮挡也能截；独占全屏/GPU 合成窗口可能空白，auto 会退回桌面裁剪。' +
-        '返回文本带 region 和 scale：图上坐标 × 1/scale + region 原点 = 屏幕坐标；client 模式下就是 mouse_input(window=…) 的客户区坐标。',
+        '截屏并直接返回图片（不落盘）。window=窗口标题子串（或 hwnd）抓窗口，region="x,y,w,h" 裁区域，都不给是整屏。' +
+        '格式默认自动选（一般不用给 fmt）。返回文本带 region 和 scale：图上坐标 × 1/scale + region 原点 = 屏幕坐标。',
       parameters,
       output,
       isConcurrencySafe: () => true,
@@ -140,6 +141,11 @@ export function apply(ctx) {
         }
         if (args.child === true) call.child = true
         if (args.fmt === 'png' || args.fmt === 'jpg') call.fmt = args.fmt
+        else {
+          // 不传 fmt 就走 auto：按画面内容自选，阈值来自配置
+          call.fmt = 'auto'
+          call.auto = JSON.stringify(configFor('senses-screenshot', CONFIG_FALLBACK).auto)
+        }
         if (Number.isFinite(args.quality)) call.quality = Math.max(1, Math.min(100, Math.trunc(args.quality)))
         if (Number.isFinite(args.max_side)) call.max_side = Math.trunc(args.max_side)
 

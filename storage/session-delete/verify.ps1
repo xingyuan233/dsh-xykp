@@ -1,82 +1,71 @@
-# dsh-session-delete 升级后自检。
+# dsh-session-delete 安装自检。
 #
-# 用途：dsh 本体或 profile 依赖升级之后，一条命令确认「删除会话」插件仍然在位、仍能工作。
-# 只读检查 + 跑离线测试，不会修改 dsh 本体、profile 数据或任何会话。
+# 检查内容：
+#   1. 离线单元测试（永久删除 + 末尾截断）；
+#   2. profile 里的安装布局（dsh-xykp 子插件）；
+#   3. 包级 client.js 是否包含本插件的浏览器端（含新菜单/Remote）；
+#   4. xykp 的 cordis.patch.yml 里是否有注册行。
 #
-# 用法：
-#   pwsh -File D:\devoding\dsh-session-delete\verify.ps1
-#   pwsh -File D:\devoding\dsh-session-delete\verify.ps1 -ProfileDir 'D:\AI\DeepseekHarness\home\profiles\web'
+# 用法：pwsh -File verify.ps1 [-ProfileDir <path>]
 
 param(
-    [string]$ProfileDir = 'D:\AI\DeepseekHarness\home\profiles\web',
-    [string]$DshHome = 'D:\AI\DeepseekHarness\home',
-    [string]$DshEntry = 'D:\AI\DeepseekHarness\npm\node_modules\@deepseek-ai\dsh\lib\bin.js'
+    [string]$ProfileDir = 'D:\AI\DeepseekHarness\home\profiles\web'
 )
 
-$ErrorActionPreference = 'Continue'
-$source = $PSScriptRoot
-$target = Join-Path $ProfileDir 'node_modules\dsh-session-delete'
-$patch = Join-Path $ProfileDir 'cordis.patch.yml'
-$failures = 0
-
-function Pass([string]$label) { Write-Host "  [通过] $label" -ForegroundColor Green }
-function Fail([string]$label, [string]$detail) {
-    Write-Host "  [失败] $label" -ForegroundColor Red
-    if ($detail) { Write-Host "         $detail" -ForegroundColor DarkYellow }
-    $script:failures += 1
+$ErrorActionPreference = 'Stop'
+$pluginDir = $PSScriptRoot
+$failed = 0
+function Check([string]$label, [bool]$ok) {
+    if ($ok) {
+        Write-Host "  ✓ $label"
+    } else {
+        $script:failed += 1
+        Write-Host "  ✗ $label" -ForegroundColor Red
+    }
 }
 
-Write-Host "== 1. 插件文件 =="
-foreach ($file in @('package.json', 'lib\index.js', 'lib\client.js')) {
-    $path = Join-Path $target $file
-    if (Test-Path $path) { Pass "部署副本存在：$file" } else { Fail "缺少部署副本：$path" '重新运行 deploy.ps1' }
-}
-foreach ($file in @('lib\index.js', 'lib\client.js')) {
-    $path = Join-Path $source $file
-    if (Test-Path $path) { Pass "源码存在：$file" } else { Fail "缺少源码：$path" }
+Write-Host '== 1. 离线单元测试 =='
+& node (Join-Path $pluginDir 'test\offline.mjs')
+Check '永久删除离线测试通过' ($LASTEXITCODE -eq 0)
+& node (Join-Path $pluginDir 'test\tail.mjs')
+Check '末尾截断离线测试通过' ($LASTEXITCODE -eq 0)
+
+Write-Host '== 2. profile 安装布局 =='
+$target = Join-Path $ProfileDir 'node_modules\dsh-xykp\storage\session-delete'
+$bundle = Join-Path $ProfileDir 'node_modules\dsh-xykp\client.js'
+$patch = Join-Path $ProfileDir 'node_modules\dsh-xykp\cordis.patch.yml'
+Check "存在 $target\lib\index.js" (Test-Path (Join-Path $target 'lib\index.js'))
+Check "存在 $target\lib\client.js" (Test-Path (Join-Path $target 'lib\client.js'))
+Check "存在 $bundle" (Test-Path $bundle)
+
+Write-Host '== 3. 浏览器 bundle 内容 =='
+if (Test-Path $bundle) {
+    $text = Get-Content $bundle -Raw
+    Check 'bundle 含 deleteSession' ($text.Contains('deleteSession'))
+    Check 'bundle 含 previewTurns' ($text.Contains('previewTurns'))
+    Check 'bundle 含 deleteTurnsFrom' ($text.Contains('deleteTurnsFrom'))
+    Check 'bundle 含「删除末尾对话」菜单文案' ($text.Contains('删除末尾对话'))
 }
 
-Write-Host "`n== 2. profile 补丁 =="
+Write-Host '== 4. xykp 注册行 =='
 if (Test-Path $patch) {
     $hits = @(Select-String -Path $patch -Pattern 'dsh-session-delete' -SimpleMatch)
-    if ($hits.Count -ge 2) { Pass "cordis.patch.yml 含 dsh-session-delete 条目（$($hits.Count) 处）" }
-    else { Fail 'cordis.patch.yml 缺少 dsh-session-delete 的 insert 条目' '按 README 补一条 - insert: [{ id: dsh-session-delete, name: ''dsh-session-delete'' }]' }
+    Check 'cordis.patch.yml 含 dsh-session-delete' ($hits.Count -gt 0)
 }
-else { Fail "找不到 profile 补丁：$patch" }
 
-Write-Host "`n== 3. 宿主能否组合出该条目 =="
-if (Test-Path $DshEntry) {
-    $env:DSH_HOME = $DshHome
-    $dump = & node $DshEntry --profile web --dump-config 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Fail 'dump-config 执行失败（补丁语法或组合有错）' (($dump | Select-Object -Last 5) -join ' | ')
-    }
-    elseif (($dump -join "`n") -match 'id:\s*dsh-session-delete') {
-        Pass 'dump-config 输出中存在 dsh-session-delete'
-    }
-    else {
-        Fail 'dump-config 输出中没有 dsh-session-delete' '检查补丁是否被覆盖/条目是否 disabled'
-    }
+Write-Host '== 5. 核心补丁（agents.close） =='
+$agentFile = 'D:\AI\DeepseekHarness\npm\node_modules\@deepseek-ai\dsh-agent\lib\index.js'
+if (Test-Path $agentFile) {
+    $agentText = Get-Content $agentFile -Raw
+    Check 'dsh-agent 已打 agent-close 补丁（async close(id)）' ($agentText.Contains('async close(id)') -and $agentText.Contains('this.handles'))
+} else {
+    Check "存在 $agentFile" $false
 }
-else { Fail "找不到 dsh 入口：$DshEntry" }
-
-Write-Host "`n== 4. 插件自身逻辑（离线测试）=="
-$test = Join-Path $source 'test\offline.mjs'
-if (Test-Path $test) {
-    $output = & node $test 2>&1
-    if ($LASTEXITCODE -eq 0) { Pass (($output | Select-Object -Last 1)) }
-    else { Fail '离线测试未通过' (($output | Select-Object -Last 8) -join ' | ') }
-}
-else { Fail "找不到离线测试：$test" }
 
 Write-Host ''
-if ($failures -eq 0) {
-    Write-Host '结论：插件在位且自测通过。' -ForegroundColor Green
-    Write-Host '如果界面里还看不到「永久删除会话」，请重启 dsh web 并强制刷新页面。'
+if ($failed -eq 0) {
+    Write-Host '自检通过。改过代码后记得：deploy.ps1 → 重启 dsh web。'
     exit 0
 }
-else {
-    Write-Host "结论：有 $failures 项需要处理。" -ForegroundColor Red
-    Write-Host '常见修复：重新运行 deploy.ps1，再重启 dsh web（restart-dsh.ps1）。'
-    exit 1
-}
+Write-Host "自检失败：$failed 项" -ForegroundColor Red
+exit 1
