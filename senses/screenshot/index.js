@@ -54,18 +54,20 @@ const parameters = {
   capture: {
     type: 'string',
     enum: ['auto', 'desktop', 'window'],
-    description: '默认 auto（先窗口后退桌面）',
+    default: 'auto',
+    description: '先窗口后退桌面',
   },
-  client: { type: 'boolean', description: '只取客户区，默认 true' },
-  child: { type: 'boolean', description: '抓最大子窗口' },
+  client: { type: 'boolean', default: true, description: '只取客户区' },
+  child: { type: 'boolean', default: false, description: '抓最大子窗口' },
   fmt: {
     type: 'string',
     enum: ['png', 'jpg', 'auto'],
-    description: '默认 auto',
+    default: 'auto',
+    description: 'png 文字/UI，jpg 照片',
   },
-  quality: { type: 'number', description: 'jpg 质量，默认 95' },
-  max_side: { type: 'integer', description: '长边上限，默认 1568' },
-  list_windows: { type: 'boolean', description: '只列窗口，不截图' },
+  quality: { type: 'number', default: 95, description: 'jpg 质量 1-100' },
+  max_side: { type: 'integer', default: 1568, description: '长边上限，<=0 不缩' },
+  list_windows: { type: 'boolean', default: false, description: '只列窗口，不截图' },
 }
 
 const output = {
