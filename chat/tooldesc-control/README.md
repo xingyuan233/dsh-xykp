@@ -70,6 +70,9 @@ tooldesc-control:
 - **tools**：改描述、改参数、删工具、改名、插件重载——请求里的 `tools` 都是那一份；描述变更走消息通知（`pendingDescNotices`）。
 - **sections**：系统提示词段落（人格、说明、`tool:*`、`whaleisle:channel` 之类）也在请求开头，改一个字整条前缀就作废。所以第一次组装后整段 sections 快照落盘，之后永远发冻结版；live 里的新增/修改/删除一律只发**变更通知**（走 `queueNotice`，追加在对话里，和工具解锁通知同一条路），永不写回前缀。
 - **没有手动刷新**：前缀在会话生命周期内不会重建；模型永远按“冻结的旧前缀 + 后续变更通知”工作（通知里写明“以这段为准”/“请忽略这一段”）。要真正换掉整段前缀，只能开新会话。
+- **说明 / 参数变更**：非门控工具变了 → 下一条用户消息开头插一条「〔工具说明已更新 · 名字〕+ 完整新说明（参数变了再带 JSON）」；
+  被门控（规则 / `tool:<名字>` 注记）的工具不发这条，等下一次解锁注入时直接带最新定义（`__ykpToolLive`）。
+- **新会话重新读**：快照按 sid 落盘，新会话没有快照 → 第一轮直接按当前工具定义取前缀，也不会补发旧会话的变更通知。
 
 「第一次组装」的过滤判据是**并集**：
 
@@ -127,7 +130,7 @@ declared = 会话里所有 request/header 出现过的工具 ∪ 所有 tool-add
 
 | 改动 | 请求前缀 | 说明 |
 |---|---|---|
-| 改 description | 不变 | 快照优先；`tool-desc-pin` 是第二道保险 |
+| 改 description | 不变 | 快照优先；`tool-desc-pin` 只负责按会话发变更通知 |
 | 改 parameters | 不变 | 但模型按旧 schema 调用，可能校验失败 |
 | 删工具 / 改名 | 不变 | 旧名字与旧定义照发；运行时可能「工具不存在」 |
 | 新增工具 | 不变 | 不进快照，只靠消息追加 |
@@ -147,7 +150,7 @@ declared = 会话里所有 request/header 出现过的工具 ∪ 所有 tool-add
 |---|---|---|
 | `core/tool-wire-slim.mjs` | 把工具 schema 压成 `params: (…)` 一行 + 散文 | 决定了通知里 `description` 的样子（装配层的版本） |
 | `core/tool-wire-trims.mjs` | 内置工具的文案精简表 | 同上 |
-| `core/tool-desc-pin.mjs` | 按工具名冻结**第一次注册**的 description 并落盘 | 第二道保险；只管 description，不管 parameters/name |
+| `core/tool-desc-pin.mjs` | 只监视 description / parameters 变更，完整记进 `__ykpToolDescChanges` / `__ykpToolLive`，**不冻结** | 前缀固定由本插件按会话做；新会话因此能读到最新定义 |
 
 ## 11. 排障速查
 

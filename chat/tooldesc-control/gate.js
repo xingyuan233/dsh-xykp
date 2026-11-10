@@ -338,6 +338,7 @@ export function apply(ctx, config = {}) {
     }
   }
   const descSent = new Map() // sid -> Set(变更 key)，同一个会话同一条说明只提示一次
+  const hijacked = (name) => compiled.has(name) || compiledNotes.has('tool:' + name)
   const pendingDescNotices = (agent) => {
     const pending = globalThis.__ykpToolDescChanges
     if (!Array.isArray(pending) || pending.length === 0) return []
@@ -345,23 +346,30 @@ export function apply(ctx, config = {}) {
     const sid = sidOf(agent) || '?'
     let seen = descSent.get(sid)
     if (!seen) {
+      // 新会话：第一次请求本来就按当前（最新）工具定义取前缀，历史变更不该补发
       seen = new Set()
+      for (const change of pending) if (change) seen.add(descKeyOf(change))
       descSent.set(sid, seen)
+      return []
     }
     const ignore = new Set(config.descNoticeIgnore || [])
     return pending.filter((change) => {
       if (!change) return false
-      if (ignore.has(change.name)) return false
-      // 内置工具（pwsh/read/edit…）的文案会被 wire 精简改写，冻结补丁会给它们打 builtin，跳过
+      const name = String(change.name || '')
+      if (ignore.has(name)) return false
+      // 被 control 接管（门控/注记）的工具不在这里提示：等下一次注入时直接带最新定义
+      if (hijacked(name)) return false
+      // 内置工具（pwsh/read/edit…）的文案会被 wire 精简改写，跳过
       if (change.builtin) return false
       const at = Date.parse(change.at || '')
       if (!(Number.isFinite(at) ? Date.now() - at < DESC_WINDOW_MS : true)) return false
-      const key = String(change.at || '') + '|' + String(change.name || '')
+      const key = descKeyOf(change)
       if (seen.has(key)) return false
       seen.add(key)
       return true
     })
   }
+
   const descKeyOf = (change) => String(change?.at || '') + '|' + String(change?.name || '')
   const releaseDescNotices = (agent, notes) => {
     const seen = descSent.get(sidOf(agent) || '?')
@@ -500,12 +508,15 @@ export function apply(ctx, config = {}) {
   /** 工具名 -> 最近一次见到的定义（用于解锁消息） */
   const defs = new Map()
   const unlockNotice = (name, matchedKey) => {
-    const def = defs.get(name)
+    const liveDef = globalThis.__ykpToolLive
+    const def = (liveDef && typeof liveDef.get === 'function' ? liveDef.get(name) : null) || defs.get(name)
     const desc = typeof def?.description === 'string' ? def.description : ''
+    const params = def?.parameters ? JSON.stringify(def.parameters) : ''
     const key = String(matchedKey || '').trim()
     return [
       '关键词「' + key + '」命中（不是必须要调用），已解锁工具 「' + name + '」（不在 tools 列表里，如果需要直接按格式调用即可）',
       desc,
+      params ? '参数：\n```json\n' + params + '\n```' : '',
     ].filter(Boolean).join('\n')
   }
   // ── 真正的门控点：请求组装时，把这个会话还没解锁的工具从工具表里摘掉 ──
@@ -559,12 +570,17 @@ export function apply(ctx, config = {}) {
         }
       }
       if (snap) {
+        // 前缀（tools/sections）继续锁死用快照；但「注入用定义」要按当前注册表刷新：
+        // 被门控工具下一次解锁注入时才带最新说明/参数。
+        for (const tool of assembly.tools) {
+          const name = nameOf(tool)
+          if (name) defs.set(name, { description: tool?.description, parameters: tool?.parameters })
+        }
         const visible = new Set()
         for (const tool of snap.tools) {
           const name = nameOf(tool)
           if (!name) continue
           visible.add(name)
-          defs.set(name, { description: tool?.description, parameters: tool?.parameters })
         }
         assembly.tools = snap.tools
         assembly.sections = dropSections(assembly.sections, visible, snap.dropped)
@@ -647,7 +663,7 @@ export function apply(ctx, config = {}) {
           for (const change of notes) {
             parts.push(['〔工具说明已更新 · ' + change.name + '〕',
               '请求开头的工具定义保持不变（为了复用缓存），以这段为新说明：',
-              String(change.after || '')].join('\n'))
+              String(change.after || '') + (change.params ? '\n\n参数定义：\n```json\n' + String(change.params) + '\n```' : '')].join('\n'))
           }
           const requeue = () => {
             if (q) {
