@@ -2594,6 +2594,10 @@ var sessionDeleteUI = (function () {
                     .map((x) => x && x.name)
                     .join(','),
                   secKey: (Array.isArray(d.everDropped) ? d.everDropped : []).join(','),
+                  changed: d.changed && typeof d.changed === 'object' ? d.changed : {},
+                  round: Number.isFinite(d.round) ? d.round : 0,
+                  fadeRounds: Number.isFinite(d.fadeRounds) && d.fadeRounds > 0 ? d.fadeRounds : 3,
+                  fetchedAt: Date.now(),
                 })
                 lastSig = ''
                 const el = document.getElementById('xykp-prefix-panel')
@@ -2714,8 +2718,24 @@ var sessionDeleteUI = (function () {
               (toolsOk && cachedTools.everDropped.length ? cachedTools.everDropped : null) ||
               s.everDropped ||
               []
+            const changedInfo =
+              (toolsOk && cachedTools.changed && typeof cachedTools.changed === 'object' ? cachedTools.changed : null) ||
+              (sectOk && cachedSecs.changed && typeof cachedSecs.changed === 'object' ? cachedSecs.changed : null) ||
+              (s.descChanged && typeof s.descChanged === 'object' ? s.descChanged : null) ||
+              {}
+            const roundNow =
+              (toolsOk && cachedTools && Number.isFinite(cachedTools.round) && cachedTools.round) ||
+              (sectOk && cachedSecs && Number.isFinite(cachedSecs.round) && cachedSecs.round) ||
+              (Number.isFinite(s.rounds) ? s.rounds : 0)
+            const fadeRounds =
+              (toolsOk && cachedTools && Number.isFinite(cachedTools.fadeRounds) && cachedTools.fadeRounds > 0)
+                ? cachedTools.fadeRounds
+                : 3
             if (!collapsed && !sect.length && !sectOk) loadSections(s.sessionId)
-            if (!collapsed && !toolsOk && !toolUnavailable) loadTools(s.sessionId)
+            const toolsFresh = cachedTools && Number.isFinite(cachedTools.fetchedAt)
+              ? Date.now() - cachedTools.fetchedAt < 4000
+              : false
+            if (!collapsed && (!toolsOk || !toolsFresh) && !toolUnavailable) loadTools(s.sessionId)
             const changedCount = latest
               ? latest.changed.length + latest.added.length + latest.removed.length
               : 0
@@ -2733,6 +2753,10 @@ var sessionDeleteUI = (function () {
               unlockedNames.length +
               '|' +
               (toolsOk ? 1 : 0) +
+              '|' +
+              Object.keys(changedInfo).join(',') +
+              '|' +
+              roundNow +
               '|' +
               droppedSections.length +
               '|' +
@@ -2949,16 +2973,32 @@ var sessionDeleteUI = (function () {
                 'font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;color:rgba(200,215,240,.8)'
               const slot = document.createElement('span')
               const style = tags[t.state] || tags.locked
+              // 解锁的工具：说明刚变过 → 紫色 [解锁]，随轮次渐隐回蓝（fadeRounds 轮内）
+              let tagColor = style[1]
+              let tagBg = style[2]
+              let fresh = 0
+              if (t.state === 'unlocked') {
+                const ch = changedInfo[t.name]
+                if (ch && Number.isFinite(Number(ch.round))) {
+                  const age = roundNow - Number(ch.round)
+                  fresh = fadeRounds > 0 && age >= 0 && age < fadeRounds ? 1 - age / fadeRounds : 0
+                }
+              }
+              if (fresh > 0) {
+                tagColor = 'rgba(224,196,255,' + (0.8 + 0.2 * fresh).toFixed(2) + ')'
+                tagBg = 'rgba(150,92,255,' + (0.16 + 0.42 * fresh).toFixed(2) + ')'
+              }
               slot.textContent = style[0]
               slot.style.cssText =
                 'flex:none;width:44px;box-sizing:border-box;text-align:center;font-size:9px;line-height:14px;' +
                 'border-radius:999px;overflow:hidden;color:' +
-                style[1] +
+                tagColor +
                 ';background:' +
-                style[2]
+                tagBg
               const nm = document.createElement('span')
               nm.textContent = t.name
-              nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'
+              nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' +
+                (fresh > 0 ? ';color:rgba(214,188,255,.95)' : '')
               const len = document.createElement('span')
               len.textContent = t.length + ' 字'
               len.style.cssText = 'flex:none;font-size:10px;color:rgba(160,180,205,.5)'

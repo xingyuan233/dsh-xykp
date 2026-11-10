@@ -580,6 +580,26 @@ export function apply(ctx, config = {}) {
             __R.saveFrozenSections(sid, inheritedSections)
             dbg('分支继承分段 ' + inheritedSections.length + ' 段 · sid=' + sid + ' <- ' + parentSid)
           }
+          // 分支/复制会话：父会话「已解锁」的工具状态也一起带过来，
+          // 否则面板会退回「锁定」，解锁过的工具也不按已解锁处理。
+          try {
+            const parentState = readStateFile()[parentSid]
+            if (Array.isArray(parentState) && parentState.length) {
+              const all = readStateFile()
+              const merged = new Set([...(Array.isArray(all[sid]) ? all[sid] : []), ...parentState])
+              all[sid] = [...merged]
+              fsx().writeFileSync(statePath(), JSON.stringify(all, null, 2))
+              const stNow = stateOf(agent)
+              if (stNow) {
+                for (const name of parentState) {
+                  if (!compiled.has(name)) continue
+                  stNow.registered.add(name)
+                  stNow.pushed[name] = stNow.pushed[name] || 1
+                }
+              }
+              dbg('分支继承已解锁 ' + parentState.length + ' 条 · sid=' + sid + ' <- ' + parentSid)
+            }
+          } catch {}
         }
       }
       if (snap) {

@@ -255,6 +255,30 @@ export function apply(ctx, config = {}) {
         for (const s of droppedSections) everDropped.add(s.name)
         st.everDropped = [...everDropped]
         trackPrefix(st, turn, sections, tools)
+        // 轮次 + 说明变更（给面板紫色渐隐用）
+        const turnKey = turn && typeof turn === 'object' ? String(turn.id ?? turn.index ?? '') : String(turn ?? '')
+        if (st.lastTurnKey !== turnKey) {
+            st.rounds = (Number(st.rounds) || 0) + 1
+            st.lastTurnKey = turnKey
+        }
+        const frozenText = new Map()
+        for (const tool of tools) {
+            const n = String(tool && tool.name || '')
+            if (n && typeof tool.description === 'string') frozenText.set(n, tool.description)
+        }
+        if (!st.frozenText || typeof st.frozenText !== 'object') st.frozenText = {}
+        for (const [n, text] of frozenText) if (!(n in st.frozenText)) st.frozenText[n] = text
+        const liveText = new Map((Array.isArray(st.originTools) ? st.originTools : []).map((x) => [x.name, String(x.text || '')]))
+        const descChanged = st.descChanged && typeof st.descChanged === 'object' ? st.descChanged : {}
+        for (const [n, baseText] of Object.entries(st.frozenText)) {
+            if (!liveText.has(n)) continue
+            if (liveText.get(n) !== baseText) {
+                if (!descChanged[n]) descChanged[n] = { round: st.rounds || 1, at: Date.now() }
+            } else {
+                delete descChanged[n]
+            }
+        }
+        st.descChanged = descChanged
         const contexts = renderContexts(assembly)
         // 和上一个 step（本轮第一步则和上一轮最后一步）对比，算出「这一步新注入了什么」
         const baseCtx = new Map(((base && base.contexts) || []).map((c) => [c.name, c.text]))
@@ -507,8 +531,19 @@ export function apply(ctx, config = {}) {
                         // 面板按需拉当前会话的工具表（原始 / 冻结 / 已解锁），避免 full=1 的全量
                         const sid = url.searchParams.get('session') || ''
                         const st = store.get(sid)
-                        const tools = st && Array.isArray(st.originTools) ? st.originTools : []
+                        // 说明用「当前注册表」的最新文本（tool-desc-pin 维护的 __ykpToolLive）；
+                        // 这样面板不会停在旧会话冻结时的文案上。
+                        const live = globalThis.__ykpToolLive instanceof Map ? globalThis.__ykpToolLive : null
+                        const tools = (st && Array.isArray(st.originTools) ? st.originTools : []).map((tool) => {
+                            const d = live && tool && tool.name ? live.get(tool.name) : null
+                            const text = d && typeof d.description === 'string' ? d.description : (tool && tool.text) || ''
+                            return { ...tool, text, length: text.length }
+                        })
                         const unlocked = st && Array.isArray(st.unlocked) ? st.unlocked : []
+                        const td = configFor('tooldesc-control', {}) || {}
+                        const fadeRounds = Math.max(1, Math.floor(Number(td.fadeRounds) || 3))
+                        const round = st && Number.isFinite(st.rounds) ? st.rounds : 0
+                        const changed = st && st.descChanged && typeof st.descChanged === 'object' ? st.descChanged : {}
                         res.writeHead(200, {
                             'content-type': 'application/json; charset=utf-8',
                             'cache-control': 'no-store',
@@ -518,7 +553,10 @@ export function apply(ctx, config = {}) {
                                 ok: true,
                                 sessionId: sid,
                                 hash: (st && st.prefix && st.prefix.hash) || '',
-                                toolSig: (st && st.prefix && st.prefix.toolSig) || '',
+                                changed,
+                            round,
+                            fadeRounds,
+                            toolSig: (st && st.prefix && st.prefix.toolSig) || '',
                                 tools,
                                 unlocked,
                                 droppedSections:
