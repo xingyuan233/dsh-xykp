@@ -2452,7 +2452,11 @@ var sessionDeleteUI = (function () {
       const [open, setOpen] = React.useState(false)
       React.useEffect(() => injectionSubscribe(setState), [])
 
-      const s = state && state.sessions && state.sessions[0]
+      const sessions = (state && state.sessions) || []
+      const hinted = injectionHint ? sessions.find((x) => x && x.sessionId === injectionHint) : null
+      // 当前对话还没装配（刚 fork / 刚开新对话）：别拿别的会话的状态冒充
+      if (injectionHint && !hinted) return null
+      const s = hinted || sessions[0]
       if (!s || !s.prefix) return null
       const p = s.prefix
       const versions = s.prefixVersions || []
@@ -2575,6 +2579,7 @@ var sessionDeleteUI = (function () {
           const toolCache = new Map()
           let toolLoading = false
           let toolUnavailable = false
+    let lastToolSid = ''
           const loadTools = (sid) => {
             if (toolLoading || toolUnavailable) return
             toolLoading = true
@@ -2676,6 +2681,15 @@ var sessionDeleteUI = (function () {
             const withPrefix = sessions
               .filter((x) => x && x.prefix)
               .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+            // 当前对话刚 fork / 刚开、还没装配数据：显示占位，别拿别的会话冒充
+            if (injectionHint && !hinted) {
+              const waitKey = 'wait:' + injectionHint
+              if (lastSig !== waitKey) {
+                lastSig = waitKey
+                panel.textContent = '注入面板：当前会话还没有装配数据，发一条消息后显示'
+              }
+              return
+            }
             const s = hinted || withPrefix[0]
             if (!s) {
               if (lastSig !== 'none') {
@@ -2684,7 +2698,16 @@ var sessionDeleteUI = (function () {
               }
               return
             }
+            if (lastToolSid !== s.sessionId) { lastToolSid = s.sessionId; toolUnavailable = false }
             const p = s.prefix
+            if (!p || !p.hash) {
+              const waitKey2 = 'wait-hash:' + (s.sessionId || '')
+              if (lastSig !== waitKey2) {
+                lastSig = waitKey2
+                panel.textContent = '注入面板：前缀还没采集（发一条消息后显示）'
+              }
+              return
+            }
             const versions = s.prefixVersions || []
             const latest = versions[versions.length - 1]
             const collapsed = panel.dataset.collapsed === '1'
