@@ -30,7 +30,7 @@ import * as __R from './registry.js'
 const dbg = __R.dbg
 
 export const name = 'tool-gate'
-export const inject = ['tools', 'agents']
+export const inject = ['tools', 'agents', 'sessionProjections']
 
 const log = (...a) => console.log('[tool-gate]', ...a)
 const warn = (...a) => console.warn('[tool-gate]', ...a)
@@ -158,6 +158,16 @@ export function apply(ctx, config = {}) {
     }
   }
   const sidOf = (agent) => String(agent?.session?.id || agent?.id || '')
+  // 会话当前轮次（turn/start 投影，每开一轮 +1）；读不到就 undefined
+  const lastTurnOf = (agent) => {
+    try {
+      const s = ctx.sessionProjections.stateOf(agent?.session, 'turnBoundary')
+      const n = Number(s?.lastTurn)
+      return Number.isFinite(n) ? n : undefined
+    } catch {
+      return undefined
+    }
+  }
   /** 分支/复制会话的父 sid（宿主的 header.parentSession），没有就是 '' */
   const parentSidOf = (agent) => {
     const header = agent?.session?.header || agent?.session?.meta || {}
@@ -640,9 +650,13 @@ export function apply(ctx, config = {}) {
         // 事件 payload 是 { agent, message }（单数，挨条发）；以前写成 messages，扫到的是空串
         const list = payload?.messages || payload?.inserted || (payload?.message ? [payload.message] : [])
         const nodes = Array.isArray(list) ? list : [list]
-        // 回合数只按「真人用户消息」算：一条用户消息 = 一轮
-        // （工具结果、注入通知、assistant 步骤都不算，否则 8 轮冷却一两步就被跳过去了）
-        if (st && nodes.some(isUserNode)) st.turn += 1
+        // 轮次用会话当前轮次（turn/start 投影）：一批插入的真人消息算同一轮，
+        // 工具结果 / 注入通知 / 步骤都不算；要开始的那一轮 = 当前轮 + 1。
+        if (st && nodes.some(isUserNode)) {
+          const base = lastTurnOf(agent)
+          if (Number.isFinite(base)) st.lastTurnNo = base
+          st.turn = Number(st.lastTurnNo || 0) + 1
+        }
         restorePushed(agent)
         // 只扫「真人用户输入」：注入的（门控通知、审批、定时提醒、系统提示）一律跳过
         const text = (Array.isArray(list) ? list : [list]).filter(isUserNode).map(textOf).join('\n')
@@ -722,7 +736,11 @@ export function apply(ctx, config = {}) {
       try {
         const agent = payload?.agent
         const st = stateOf(agent)
-        // st.turn 只由 agent/inbox/inserted 里的「真人用户消息」推进，这里别再拿循环步数覆盖
+        // payload.turn 是会话真实的轮次号（agent-loop 每开一轮 +1），以它为准
+        if (st && Number.isFinite(payload?.turn)) {
+          st.turn = Number(payload.turn)
+          st.lastTurnNo = st.turn
+        }
         let lastUser = null
         try {
           const msgs = agent?.session?.deriveMessages?.() || []
