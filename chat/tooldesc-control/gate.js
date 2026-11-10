@@ -189,6 +189,8 @@ export function apply(ctx, config = {}) {
       if (!compiled.has(name)) continue
       st.registered.add(name)
       st.pushed[name] = st.pushed[name] || 1
+      // 重启后冷却从现在重新算，避免刚启动就再推一遍
+      if (st.lastTurn[name] === undefined) st.lastTurn[name] = st.turn
       log('恢复已解锁的 ' + name + '（重启后不抖工具表）')
     }
   }
@@ -197,11 +199,15 @@ export function apply(ctx, config = {}) {
     const rule = compiled.get(toolName)
     const st = stateOf(agent)
     if (!rule || !st) return false
-    if (st.registered.has(toolName)) return false
     const pushed = st.pushed[toolName] || 0
     if (pushed >= rule.limit) return false
     const last = st.lastTurn[toolName]
-    if (last !== undefined && st.turn - last < rule.cooldown) return false
+    if (last !== undefined) {
+      // 同一轮不重复推；已经推过的工具冷却（默认 8 轮）过了也允许再推：
+      // 只重发「已解锁」通知，不动 tools 表，前缀照样不变。
+      if (st.turn <= last) return false
+      if (st.turn - last < rule.cooldown) return false
+    }
     st.registered.add(toolName)
     st.pushed[toolName] = pushed + 1
     st.lastTurn[toolName] = st.turn
