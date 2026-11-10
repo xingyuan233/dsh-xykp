@@ -5,8 +5,9 @@
 - **工具 `token_report` 是全局的**，一直可用，没有开关——工具定义只占系统提示词一次
   （KV 缓存友好），关掉反而会让工具集变化、整段提示词重传，纯浪费。
 - **`presets` 决定「哪些预设想在每轮系统提示里看到 token 用量摘要」**：
-  不填 = 都不注入摘要；填 `[alive]` 就只有 alive 的会话带摘要。
-- 摘要**字段默认全开**（`turn/session/cache/context/cost`），要收窄用 `prompt.fields`。
+  `presets.blacklist: false`（默认）是**白名单**，只有 `presets.list` 里的预设带摘要，
+  `list` 空 = 都不注入；`blacklist: true` 是**黑名单**，`list` 里的预设不注入，其余都有。
+- 摘要**每个字段一个开关**（`prompt.fields` 下的 bool），默认全开，想关哪个就设成 `false`。
 
 ## 配置
 
@@ -15,11 +16,18 @@
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
       config:
-        presets: [alive]         # 哪些预设注入提示摘要；不填 = 都不注入（工具照样可用）
-        prompt:                  # 摘要格式，字段默认全开，一般不用配
+        presets:                 # 注入范围；工具照样全局可用
+          list: [alive]          # 预设 id，白名单/黑名单里意思见上
+          blacklist: false       # false = 白名单（只注入 list）；true = 黑名单（list 不注入）
+        prompt:                  # 摘要格式，字段每个一个开关，默认全开
           order: 880             # 提示里的顺序（越大越靠后）
           header: '[token]'
-          fields: [turn, session, cache, context, cost]
+          fields:
+            turn: true           # 上一步 in/out/cacheRead
+            session: true        # 会话累计
+            cache: true          # 缓存命中率
+            context: true        # 上下文占用
+            price: true          # 估算花费
         cost:                    # 可选：元 / 百万 token，用来估算（0 = 不显示费用）
           input: 2
           cacheRead: 0.2
@@ -35,9 +43,11 @@
 | `session` | 本会话累计（input + cacheRead + cacheWrite + output） |
 | `cache` | 缓存命中率（cacheRead / prompt 总量） |
 | `context` | 上下文占用 / 窗口大小（contextPressure） |
-| `cost` | 按 `cost` 单价估算的会话费用（单价为 0 时不显示） |
+| `price` | 按 `cost` 单价估算的会话费用（单价为 0 时不显示） |
 
-`fields` 留空 = 不注入任何东西。余额不放进摘要（每轮联网查太贵），只在工具里查。
+> `price` 叫 `price` 不叫 `cost`，是为了和上面 `cost` 单价那组不撞名（界面标签按字段名走）。
+> 每个字段都是 bool：`true` 显示、`false` 隐藏，默认全开。
+> 老写法（`fields: [turn, cost]` 列表）也还认——列出来的开，没列的关。
 
 > 摘要每轮都会被新的一份替换（system prompt 节点是 replace 语义，不会累加），
 > 所以不需要额外「折叠」；会被 `toolret-forget` 抹掉的是**工具结果**，见下。

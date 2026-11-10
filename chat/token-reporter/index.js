@@ -14,11 +14,18 @@ import { configFor } from '../../ui/store.js'
 //     config:
 //       enabled: true
 //       tool: true                 # 注册 token_report 工具
-//       prompt:                    # 每轮塞进系统提示的摘要（默认关）
-//         enabled: true
+//       presets:                   # 注入范围（白名单默认空 = 不注入）
+//         list: [standard]
+//         blacklist: false         # 勾上 = 黑名单：list 里的预设不注入，其余都注入
+//       prompt:                    # 每轮塞进系统提示的摘要
 //         order: 880
 //         header: '[token]'
-//         fields: [turn, session, context, cache, cost]
+//         fields:                  # 每个字段一个开关
+//           turn: true             # 上一步 in/out/cacheRead
+//           session: true          # 会话累计
+//           cache: true            # 缓存命中率
+//           context: true          # 上下文占用
+//           price: true            # 估算花费
 //       cost:                      # 可选：元 / 百万 token，用于估算
 //         input: 1
 //         cacheRead: 0.02
@@ -32,11 +39,11 @@ export const name = 'token-reporter'
 export const inject = ['tools', 'agents']
 
 const DEFAULTS = {
-  presets: [],
+  presets: { list: [], blacklist: false },
   prompt: {
     order: 880,
     header: '[token]',
-    fields: ['turn', 'session', 'cache', 'context', 'cost'],
+    fields: { turn: true, session: true, cache: true, context: true, price: true },
     // ⭐ 2026-10-27（主人想的）：上下文用到多少就提醒「该转移了」。
     //   at = 占比（0.5 = 50%）。理由：太长之后注意力被稀释，到后面很容易丢角色。
     transferHint: { enabled: true, at: 0.5, text: '' },
@@ -49,14 +56,40 @@ function log(message) {
   console.error(`[token-reporter] ${message}`)
 }
 
+/** presets 两种写法都认：老的列表（= 白名单），或 { list, blacklist }。 */
+function normalizePresets(input) {
+  const listOf = (value) =>
+    [...new Set((Array.isArray(value) ? value : []).map((v) => String(v || '').trim()).filter(Boolean))]
+  if (Array.isArray(input)) return { list: listOf(input), blacklist: false }
+  const raw = input && typeof input === 'object' ? input : {}
+  return { list: listOf(raw.list), blacklist: raw.blacklist === true }
+}
+
+/** prompt.fields 两种写法都认：老的列表（填了就开），或每个字段一个 bool；缺省全开。 */
+function normalizeFields(input) {
+  const out = { ...DEFAULTS.prompt.fields }
+  if (Array.isArray(input)) {
+    for (const key of Object.keys(out)) out[key] = input.includes(key)
+    return out
+  }
+  if (input && typeof input === 'object') {
+    for (const key of Object.keys(out)) {
+      if (typeof input[key] === 'boolean') out[key] = input[key]
+    }
+  }
+  return out
+}
+
 function pickConfig(raw = {}) {
   const rawPrompt = raw.prompt || {}
   return {
     ...DEFAULTS,
     ...raw,
+    presets: normalizePresets(raw.presets),
     prompt: {
       ...DEFAULTS.prompt,
       ...rawPrompt,
+      fields: normalizeFields(rawPrompt.fields),
       // transferHint 是嵌在 prompt 里的对象，要单独再合一层，不然只填 at 会把 enabled 丢掉
       transferHint: { ...DEFAULTS.prompt.transferHint, ...(rawPrompt.transferHint || {}) },
     },
@@ -181,26 +214,26 @@ function promptLine(agent, config) {
   if (!usage && !pressure) return ''
 
   const parts = []
-  const fields = new Set(config.prompt.fields || [])
+  const fields = config.prompt.fields || {}
   const totals = usage?.totals
   const last = usage?.last?.buckets
 
-  if (fields.has('turn') && last) {
+  if (fields.turn && last) {
     parts.push(`上一步 in ${fmt(last.uncachedInputTokens)} / out ${fmt(last.outputTokens)} / cacheRead ${fmt(last.cacheReadTokens)}`)
   }
-  if (fields.has('session') && totals) {
+  if (fields.session && totals) {
     parts.push(`会话累计 ${fmt(totals.uncachedInputTokens + totals.cacheReadTokens + totals.cacheWriteTokens + totals.outputTokens)}`)
   }
-  if (fields.has('cache') && totals) {
+  if (fields.cache && totals) {
     const promptAll = totals.uncachedInputTokens + totals.cacheReadTokens + totals.cacheWriteTokens
     const rate = promptAll > 0 ? (totals.cacheReadTokens / promptAll) * 100 : 0
     parts.push(`缓存命中 ${rate.toFixed(0)}%`)
   }
-  if (fields.has('context') && pressure) {
+  if (fields.context && pressure) {
     const used = pressure.projectedTokens ?? pressure.pressureTokens
     if (used !== undefined) parts.push(`上下文 ${fmt(used)}${pressure.contextWindow ? `/${fmt(pressure.contextWindow)}` : ''}`)
   }
-  if (fields.has('cost') && totals) {
+  if (fields.price && totals) {
     const money = costOf(
       { input: totals.uncachedInputTokens, cacheRead: totals.cacheReadTokens, output: totals.outputTokens },
       config.cost,
@@ -401,7 +434,11 @@ function toolDefinition(ctx, config) {
 export function apply(ctx, rawConfig = {}) {
   rawConfig = configFor('token-reporter', rawConfig)
   const config = pickConfig(rawConfig)
-  const presets = new Set(config.presets || [])
+  const presets = config.presets
+  const presetList = new Set(presets.list)
+  const blacklist = presets.blacklist === true
+  // 白名单 + 空列表 = 谁都不注入（默认）；黑名单 + 空列表 = 谁都不拦。
+  const scopeEmpty = !blacklist && presetList.size === 0
 
   const watched = new Set()
   const perAgent = new Map()
@@ -411,11 +448,12 @@ export function apply(ctx, rawConfig = {}) {
   // 开关它反而会因为工具集变化让整个提示词重传，纯浪费。
   disposers.push(ctx.tools.register(toolDefinition(ctx, config)))
 
-  /** 摘要按预设生效：presets 里列出的预设有提示摘要，其余没有。 */
+  /** 摘要按预设生效：白名单里列出的才注入；黑名单模式反过来，列出的不注入。 */
   const allowed = (agent) => {
     try {
       const id = ctx.agentPresets?.composedPreset?.(agent.ctx)
-      return !!id && presets.has(id)
+      if (!id) return false
+      return blacklist ? !presetList.has(id) : presetList.has(id)
     } catch {
       return false
     }
@@ -423,7 +461,7 @@ export function apply(ctx, rawConfig = {}) {
 
   const watch = (agent) => {
     if (!agent || watched.has(agent)) return
-    if (!presets.size || !allowed(agent)) return
+    if (scopeEmpty || !allowed(agent)) return
     watched.add(agent)
     const mine = []
     try {
@@ -498,9 +536,15 @@ export function apply(ctx, rawConfig = {}) {
 
   const hintOn = config.prompt.transferHint?.enabled !== false
   const hintAt = Number(config.prompt.transferHint?.at)
+  const enabledFields = Object.entries(config.prompt.fields)
+    .filter(([, on]) => on)
+    .map(([key]) => key)
+  const scope = blacklist
+    ? `黑名单（排除 ${presetList.size ? [...presetList].join('/') : '无'}）`
+    : `白名单（${presetList.size ? [...presetList].join('/') : '空'}）`
   log(
-    `已启用：工具 token_report（全局）；提示摘要 ${
-      presets.size ? `预设 ${[...presets].join('/')}（${config.prompt.fields.join('/')}）` : '不注入（presets 为空）'
-    }` + (hintOn ? `；上下文 ≥${Math.round((Number.isFinite(hintAt) && hintAt > 0 ? hintAt : 0.5) * 100)}% 时提醒转移` : ''),
+    `已启用：工具 token_report（全局）；提示摘要 ${scopeEmpty ? '不注入' : scope}（${
+      enabledFields.length ? enabledFields.join('/') : '字段全关'
+    }）` + (hintOn ? `；上下文 ≥${Math.round((Number.isFinite(hintAt) && hintAt > 0 ? hintAt : 0.5) * 100)}% 时提醒转移` : ''),
   )
 }
