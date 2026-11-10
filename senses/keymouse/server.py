@@ -315,11 +315,15 @@ def _msg(hwnd: int, msg: int, wparam: int = 0, lparam: int = 0) -> None:
 
 
 def _deepest_child(hwnd: int, x: int, y: int) -> tuple[int, int, int]:
-    """从 hwnd 客户区坐标 (x,y) 往下钻到最深的可见子窗口，返回目标窗口自己的客户区坐标。"""
+    """从 hwnd 客户区坐标 (x,y) 往下钻到最深的可见子窗口，返回目标窗口自己的客户区坐标。
+
+    不能用 CWP_SKIPTRANSPARENT：Chromium/WebView2 会铺一层 WS_EX_TRANSPARENT 的
+    Intermediate D3D Window，带这个标志会在半路停住，消息根本到不了渲染窗口。
+    """
     target, px, py = hwnd, x, y
     for _ in range(16):
         child = user32.ChildWindowFromPointEx(
-            target, wt.POINT(px, py), CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT
+            target, wt.POINT(px, py), CWP_SKIPINVISIBLE | CWP_SKIPDISABLED
         )
         if not child or child == target:
             break

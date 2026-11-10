@@ -217,6 +217,32 @@ function transferHintLine(pressure, config) {
     .replace(/\{window\}/g, fmt(win))
 }
 
+const lastSeen = new Map()
+
+function deltaOf(agent, totals) {
+  if (!totals) return undefined
+  const key = agent?.session?.id ?? 'default'
+  const cur = {
+    uncachedInputTokens: totals.uncachedInputTokens || 0,
+    outputTokens: totals.outputTokens || 0,
+    cacheReadTokens: totals.cacheReadTokens || 0,
+    cacheWriteTokens: totals.cacheWriteTokens || 0,
+  }
+  const prev = lastSeen.get(key)
+  if (!prev) {
+    lastSeen.set(key, cur)
+    return cur
+  }
+  const delta = {
+    uncachedInputTokens: Math.max(0, cur.uncachedInputTokens - prev.uncachedInputTokens),
+    outputTokens: Math.max(0, cur.outputTokens - prev.outputTokens),
+    cacheReadTokens: Math.max(0, cur.cacheReadTokens - prev.cacheReadTokens),
+    cacheWriteTokens: Math.max(0, cur.cacheWriteTokens - prev.cacheWriteTokens),
+  }
+  if (delta.uncachedInputTokens + delta.outputTokens + delta.cacheReadTokens > 0) lastSeen.set(key, cur)
+  return delta
+}
+
 function promptLine(agent, config) {
   const usage = projectUsage(agent.ctx, agent.session)
   const pressure = projectPressure(agent.ctx, agent.session)
@@ -225,7 +251,7 @@ function promptLine(agent, config) {
   const parts = []
   const fields = config.prompt.fields || {}
   const totals = usage?.totals ?? usage
-  const last = usage?.last?.buckets ?? usage?.last ?? usage
+  const last = usage?.last?.buckets ?? deltaOf(agent, totals)
 
   if (fields.turn && last) {
     parts.push(`上一步 in ${fmt(last.uncachedInputTokens)} / out ${fmt(last.outputTokens)} / cacheRead ${fmt(last.cacheReadTokens)}`)
@@ -493,7 +519,7 @@ export function apply(ctx, rawConfig = {}) {
     const mine = []
     try {
       mine.push(
-        agent.ctx.systemPrompt.section({
+        agent.ctx.systemPrompt.context({
           name: 'token-reporter',
           order: config.prompt.order,
           text: () => {
