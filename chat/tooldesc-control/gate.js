@@ -637,9 +637,12 @@ export function apply(ctx, config = {}) {
         if (dispatching) return
         const agent = payload?.agent
         const st = stateOf(agent)
-        if (st) st.turn += 1
         // 事件 payload 是 { agent, message }（单数，挨条发）；以前写成 messages，扫到的是空串
         const list = payload?.messages || payload?.inserted || (payload?.message ? [payload.message] : [])
+        const nodes = Array.isArray(list) ? list : [list]
+        // 回合数只按「真人用户消息」算：一条用户消息 = 一轮
+        // （工具结果、注入通知、assistant 步骤都不算，否则 8 轮冷却一两步就被跳过去了）
+        if (st && nodes.some(isUserNode)) st.turn += 1
         restorePushed(agent)
         // 只扫「真人用户输入」：注入的（门控通知、审批、定时提醒、系统提示）一律跳过
         const text = (Array.isArray(list) ? list : [list]).filter(isUserNode).map(textOf).join('\n')
@@ -719,7 +722,7 @@ export function apply(ctx, config = {}) {
       try {
         const agent = payload?.agent
         const st = stateOf(agent)
-        if (st && Number.isFinite(payload?.turn) && payload.turn > st.turn) st.turn = Number(payload.turn)
+        // st.turn 只由 agent/inbox/inserted 里的「真人用户消息」推进，这里别再拿循环步数覆盖
         let lastUser = null
         try {
           const msgs = agent?.session?.deriveMessages?.() || []
