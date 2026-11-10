@@ -361,6 +361,7 @@ export function apply(ctx, config = {}) {
       if (hijacked(name)) return false
       // 内置工具（pwsh/read/edit…）的文案会被 wire 精简改写，跳过
       if (change.builtin) return false
+      if (String(change.before || '') === String(change.after || '')) return false
       const at = Date.parse(change.at || '')
       if (!(Number.isFinite(at) ? Date.now() - at < DESC_WINDOW_MS : true)) return false
       const key = descKeyOf(change)
@@ -511,12 +512,10 @@ export function apply(ctx, config = {}) {
     const liveDef = globalThis.__ykpToolLive
     const def = (liveDef && typeof liveDef.get === 'function' ? liveDef.get(name) : null) || defs.get(name)
     const desc = typeof def?.description === 'string' ? def.description : ''
-    const params = def?.parameters ? JSON.stringify(def.parameters) : ''
     const key = String(matchedKey || '').trim()
     return [
-      '关键词「' + key + '」命中（不是必须要调用），已解锁工具 「' + name + '」（不在 tools 列表里，如果需要直接按格式调用即可）',
+      '关键词「' + key + '」命中，已解锁工具「' + name + '」',
       desc,
-      params ? '参数：\n```json\n' + params + '\n```' : '',
     ].filter(Boolean).join('\n')
   }
   // ── 真正的门控点：请求组装时，把这个会话还没解锁的工具从工具表里摘掉 ──
@@ -660,10 +659,12 @@ export function apply(ctx, config = {}) {
           for (const name of unlocks) {
             parts.push(unlockNotice(name, q ? q.unlockKeys[name] : ''))
           }
+          // 多个命中时不在每条后面重复声明，统一补一次
+          if (unlocks.length) parts.push('仅静态命中，不是要求调用；不在 tools 列表里，直接按格式调用即可')
           for (const change of notes) {
             parts.push(['〔工具说明已更新 · ' + change.name + '〕',
               '请求开头的工具定义保持不变（为了复用缓存），以这段为新说明：',
-              String(change.after || '') + (change.params ? '\n\n参数定义：\n```json\n' + String(change.params) + '\n```' : '')].join('\n'))
+              String(change.after || '')].join('\n'))
           }
           const requeue = () => {
             if (q) {
