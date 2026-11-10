@@ -351,6 +351,22 @@ export function apply(ctx, config = {}) {
       return false
     }
   }
+  // 取「模型实际看到过的消息文本」：判断某条解锁通知在不在这个会话的历史里。
+  // 分支/复制只该继承「分支点之前就见过」的解锁，不能把父会话后来解锁的也带过来。
+  const historyTextOf = (agent) => {
+    try {
+      const msgs = agent?.session?.deriveMessages?.() || []
+      return msgs.map((m) => {
+        const c = m?.content
+        if (typeof c === 'string') return c
+        try { return JSON.stringify(c || '') } catch { return '' }
+      }).join('\n')
+    } catch { return '' }
+  }
+  const unlockSeenIn = (history, name) =>
+    history.includes('已解锁工具「' + name + '」') ||
+    history.includes('已解锁工具 「' + name + '」') ||
+    history.includes('已解锁工具 · ' + name)
   const descSent = new Map() // sid -> Set(变更 key)，同一个会话同一条说明只提示一次
   const hijacked = (name) => compiled.has(name) || compiledNotes.has('tool:' + name)
   const pendingDescNotices = (agent) => {
@@ -585,24 +601,54 @@ export function apply(ctx, config = {}) {
           try {
             const parentState = readStateFile()[parentSid]
             if (Array.isArray(parentState) && parentState.length) {
+              // 只继承「分支这份历史里真的出现过解锁通知」的：分支点之后才解锁的不能算
+              const hist = historyTextOf(agent)
+              const carried = hist
+                ? parentState.filter((name) => unlockSeenIn(hist, name))
+                : []
               const all = readStateFile()
-              const merged = new Set([...(Array.isArray(all[sid]) ? all[sid] : []), ...parentState])
+              const merged = new Set([...(Array.isArray(all[sid]) ? all[sid] : []), ...carried])
               all[sid] = [...merged]
               fsx().writeFileSync(statePath(), JSON.stringify(all, null, 2))
               const stNow = stateOf(agent)
               if (stNow) {
-                for (const name of parentState) {
+                for (const name of carried) {
                   if (!compiled.has(name)) continue
                   stNow.registered.add(name)
                   stNow.pushed[name] = stNow.pushed[name] || 1
                 }
               }
-              dbg('分支继承已解锁 ' + parentState.length + ' 条 · sid=' + sid + ' <- ' + parentSid)
+              dbg('分支继承已解锁 ' + carried.length + '/' + parentState.length + ' 条 · sid=' + sid + ' <- ' + parentSid)
             }
           } catch {}
         }
       }
       if (snap) {
+        // 分支/复制修正：state 里可能有「分支点之后才解锁」的工具（历史里没有解锁通知），
+        // 否则面板显示解锁、模型却根本没见过。每个会话进程内只校正一次。
+        try {
+          const bParent = parentSidOf(agent)
+          const stNow = stateOf(agent)
+          if (bParent && bParent !== sid && stNow && !stNow.branchStateFixed) {
+            stNow.branchStateFixed = true
+            const all = readStateFile()
+            const names = Array.isArray(all[sid]) ? all[sid] : []
+            if (names.length) {
+              const hist = historyTextOf(agent)
+              if (hist) {
+                const kept = names.filter((name) => unlockSeenIn(hist, name))
+                if (kept.length !== names.length) {
+                  all[sid] = kept
+                  fsx().writeFileSync(statePath(), JSON.stringify(all, null, 2))
+                  if (stNow.registered instanceof Set) {
+                    for (const name of names) if (!kept.includes(name)) stNow.registered.delete(name)
+                  }
+                  dbg('分支解锁校正 ' + names.length + ' -> ' + kept.length + ' · sid=' + sid)
+                }
+              }
+            }
+          }
+        } catch {}
         // 前缀（tools/sections）继续锁死用快照；但「注入用定义」要按当前注册表刷新：
         // 被门控工具下一次解锁注入时才带最新说明/参数。
         for (const tool of assembly.tools) {
