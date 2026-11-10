@@ -2587,7 +2587,22 @@ var sessionDeleteUI = (function () {
               .then((r) => (r.ok ? r.json() : Promise.reject(new Error('http ' + r.status))))
               .then((d) => {
                 if (!d || !d.ok) throw new Error('bad payload')
+                const changedInfoRaw = d.changed && typeof d.changed === 'object' ? d.changed : {}
+                const dataSig = JSON.stringify([
+                  d.hash || '', d.toolSig || '',
+                  Array.isArray(d.tools) ? d.tools : [],
+                  Array.isArray(d.unlocked) ? d.unlocked : [],
+                  Array.isArray(d.droppedSections) ? d.droppedSections : [],
+                  Array.isArray(d.everDropped) ? d.everDropped : [],
+                  changedInfoRaw, d.round || 0, d.fadeRounds || 3,
+                ])
+                const prevEntry = toolCache.get(sid)
+                if (prevEntry && prevEntry.dataSig === dataSig) {
+                  prevEntry.fetchedAt = Date.now()
+                  return
+                }
                 toolCache.set(sid, {
+                  dataSig,
                   hash: d.hash || '',
                   toolSig: d.toolSig || '',
                   tools: Array.isArray(d.tools) ? d.tools : [],
@@ -2802,6 +2817,9 @@ var sessionDeleteUI = (function () {
               for (const d of panel.querySelectorAll('details')) if (d.dataset.key) openMap.set(d.dataset.key, d.open)
             }
             panel.dataset.sid = s.sessionId
+            // 重建前记住列表滚动位置：读下面的内容时不能被拉回顶部
+            const prevBody = panel.querySelector('[data-xypk-body]')
+            const keepScroll = prevBody ? prevBody.scrollTop : 0
 
             panel.textContent = ''
             panel.style.width = collapsed
@@ -3062,6 +3080,7 @@ var sessionDeleteUI = (function () {
             if (openMap.get(secGroup.dataset.key)) secGroup.open = true
 
             const body = document.createElement('div')
+            body.setAttribute('data-xypk-body', '1')
             body.style.cssText =
               'display:' +
               (collapsed ? 'none' : 'flex') +
@@ -3069,6 +3088,10 @@ var sessionDeleteUI = (function () {
             body.appendChild(toolsGroup)
             body.appendChild(secGroup)
             panel.appendChild(body)
+            if (keepScroll > 0) {
+              body.scrollTop = keepScroll
+              requestAnimationFrame(() => { try { body.scrollTop = keepScroll } catch {} })
+            }
           }
 
           const tick = () => {
