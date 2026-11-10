@@ -26,6 +26,10 @@ import { configFor } from '../../ui/store.js'
 //           cache: true            # 缓存命中率
 //           context: true          # 上下文占用
 //           price: true            # 估算花费
+//         transferHint:            # 上下文到阈值时提醒换对话（文案配置化）
+//           enabled: true
+//           at: 0.5                # 占比，0.5 = 50%
+//           text: '⚠ 上下文已用 {pct}%（{used}/{window}）…'   # 支持占位符
 //       cost:                      # 可选：元 / 百万 token，用于估算
 //         input: 1
 //         cacheRead: 0.02
@@ -38,6 +42,11 @@ import { scanUsage } from './usage.js'
 export const name = 'token-reporter'
 export const inject = ['tools', 'agents']
 
+// 交接提醒的默认文案：可以在 config.prompt.transferHint.text 里改，
+// 占位符 {pct} = 已用百分比，{used}/{window} = 已用 / 窗口 token 数。
+const DEFAULT_TRANSFER_HINT =
+  '⚠ 上下文已用 {pct}%（{used}/{window}），再长下去注意力会散、容易丢角色 —— 想接着认真聊就调 memory_movctx 把交接带到一个新对话，或者先问问要不要转。'
+
 const DEFAULTS = {
   presets: { list: [], blacklist: false },
   prompt: {
@@ -46,7 +55,7 @@ const DEFAULTS = {
     fields: { turn: true, session: true, cache: true, context: true, price: true },
     // ⭐ 2026-10-27（主人想的）：上下文用到多少就提醒「该转移了」。
     //   at = 占比（0.5 = 50%）。理由：太长之后注意力被稀释，到后面很容易丢角色。
-    transferHint: { enabled: true, at: 0.5, text: '' },
+    transferHint: { enabled: true, at: 0.5, text: DEFAULT_TRANSFER_HINT },
   },
   cost: { input: 0, cacheRead: 0, output: 0 },
   sessionsRoot: '',
@@ -198,14 +207,11 @@ function transferHintLine(pressure, config) {
   const ratio = used / win
   if (ratio < at) return ''
   const pct = Math.round(ratio * 100)
-  const custom = String(hint.text || '').trim()
-  if (custom) {
-    return custom
-      .replace(/\{pct\}/g, String(pct))
-      .replace(/\{used\}/g, fmt(used))
-      .replace(/\{window\}/g, fmt(win))
-  }
-  return `⚠ 上下文已用 ${pct}%（${fmt(used)}/${fmt(win)}），再长下去注意力会散、容易丢角色 —— 想接着认真聊就调 memory_movctx 把交接带到一个新对话，或者先问问要不要转。`
+  const text = String(hint.text ?? '').trim() || DEFAULT_TRANSFER_HINT
+  return text
+    .replace(/\{pct\}/g, String(pct))
+    .replace(/\{used\}/g, fmt(used))
+    .replace(/\{window\}/g, fmt(win))
 }
 
 function promptLine(agent, config) {
