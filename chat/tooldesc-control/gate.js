@@ -189,8 +189,6 @@ export function apply(ctx, config = {}) {
       if (!compiled.has(name)) continue
       st.registered.add(name)
       st.pushed[name] = st.pushed[name] || 1
-      // 重启后冷却从现在重新算，避免刚启动就再推一遍
-      if (st.lastTurn[name] === undefined) st.lastTurn[name] = st.turn
       log('恢复已解锁的 ' + name + '（重启后不抖工具表）')
     }
   }
