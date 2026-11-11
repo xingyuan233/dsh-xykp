@@ -3025,22 +3025,8 @@ var __xykpVk1Peak = (function () {
     },
   } : null
 
-  // 首次升级：把旧 localStorage 里的设置整体迁到统一配置
-  if (RAW_LOCAL && BOOT_UI && !CFG_OWNED) {
-    try {
-      var migrate = {}
-      ;[SIZE_KEY, GAP_KEY, SOUND_KEY, OPTIONS_KEY].forEach(function (key) {
-        var raw = RAW_LOCAL.getItem(key)
-        var patch = raw ? localStorageToConfig(key, raw) : null
-        if (!patch) return
-        for (var field in patch) if (Object.prototype.hasOwnProperty.call(patch, field)) migrate[field] = patch[field]
-      })
-      if (Object.keys(migrate).length) {
-        CFG_OWNED = true
-        configSave(migrate)
-      }
-    } catch (err) {}
-  }
+  // 首次迁移放在 startHostSync 里（那时 state 已按 localStorage 初始化完），
+  // 用完整 15 项推上去，避免只迁到 localStorage 里恰好有的那几项。
 
   // 反向同步：控制台/别的页面改 config.yml 后，挂件这边几秒内跟上（配置是准）。
   var hostSyncTimer = 0
@@ -3102,6 +3088,27 @@ var __xykpVk1Peak = (function () {
   }
 
   function startHostSync() {
+    // 首次：config.yml 还是空的 → 把当前这一整套（15 项，含默认值兜底）一次性推上去
+    if (!CFG_OWNED) {
+      CFG_OWNED = true
+      configSave({
+        theme: state.theme,
+        displayMode: state.displayMode,
+        pollSeconds: state.pollSeconds,
+        size: state.size,
+        yieldOn: state.yieldOn,
+        yieldOpacity: state.yieldOpacity,
+        scrollGapOn: state.scrollGapOn,
+        scrollGapPx: state.scrollGapPx,
+        scrollGapSnap: state.snapRatio === 0 ? false : state.snapRatio,
+        fxBowl: state.fxBowl,
+        fxPat: state.fxPat,
+        fxHurt: state.fxHurt,
+        soundOn: state.soundOn,
+        volume: state.volume,
+        cueVolumes: (state.cueVolumes || []).slice(0, 4),
+      })
+    }
     function schedule() {
       if (hostSyncTimer) return
       hostSyncTimer = setTimeout(tick, 4000)
