@@ -5,8 +5,7 @@
 - **工具 `token_report` 是全局的**，一直可用，没有开关——工具定义只占系统提示词一次
   （KV 缓存友好），关掉反而会让工具集变化、整段提示词重传，纯浪费。
 - **`presets` 决定「哪些预设想在每轮系统提示里看到 token 用量摘要」**：
-  `presets.blacklist: false`（默认）是**白名单**，只有 `presets.list` 里的预设带摘要，
-  `list` 空 = 都不注入；`blacklist: true` 是**黑名单**，`list` 里的预设不注入，其余都有。
+  它是一份**黑名单**，里面的预设不注入摘要，其余都注入；`presets: []`（空）= 全部注入。
 - 摘要**每个字段一个开关**（`prompt.fields` 下的 bool），默认全开，想关哪个就设成 `false`。
 
 ## 配置
@@ -16,9 +15,7 @@
     - id: token-reporter
       name: 'dsh-xykp/chat/token-reporter'
       config:
-        presets:                 # 注入范围；工具照样全局可用
-          list: [alive]          # 预设 id，白名单/黑名单里意思见上
-          blacklist: false       # false = 白名单（只注入 list）；true = 黑名单（list 不注入）
+        presets: []              # 黑名单：列出的预设不注入摘要；空 = 全部注入（工具照样全局可用）
         prompt:                  # 摘要格式，字段每个一个开关，默认全开
           order: 880             # 提示里的顺序（越大越靠后）
           header: '[token]'

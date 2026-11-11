@@ -17,9 +17,7 @@ import { configFor } from '../../ui/store.js'
 //     config:
 //       enabled: true
 //       tool: true                 # 注册 token_report 工具
-//       presets:                   # 注入范围（白名单默认空 = 不注入）
-//         list: [standard]
-//         blacklist: false         # 勾上 = 黑名单：list 里的预设不注入，其余都注入
+//       presets: [chatty]          # 黑名单：列出的预设不注入摘要（空 = 全部注入）
 //       prompt:                    # 每轮塞进系统提示的摘要
 //         order: 880
 //         header: '[token]'
@@ -51,7 +49,7 @@ const DEFAULT_TRANSFER_HINT =
   '⚠ 上下文已用 {pct}%（{used}/{window}），再长下去注意力会散、容易丢角色 —— 想接着认真聊就调 memory_movctx 把交接带到一个新对话，或者先问问要不要转。'
 
 const DEFAULTS = {
-  presets: { list: [], blacklist: false },
+  presets: [],
   prompt: {
     order: 880,
     header: '[token]',
@@ -68,13 +66,13 @@ function log(message) {
   console.error(`[token-reporter] ${message}`)
 }
 
-/** presets 两种写法都认：老的列表（= 白名单），或 { list, blacklist }。 */
+/** presets 是黑名单：列出的预设不注入摘要，空数组 = 全部注入。也认老的 { list } 写法。 */
 function normalizePresets(input) {
   const listOf = (value) =>
     [...new Set((Array.isArray(value) ? value : []).map((v) => String(v || '').trim()).filter(Boolean))]
-  if (Array.isArray(input)) return { list: listOf(input), blacklist: false }
+  if (Array.isArray(input)) return listOf(input)
   const raw = input && typeof input === 'object' ? input : {}
-  return { list: listOf(raw.list), blacklist: raw.blacklist === true }
+  return listOf(raw.list)
 }
 
 /** prompt.fields 两种写法都认：老的列表（填了就开），或每个字段一个 bool；缺省全开。 */
@@ -477,11 +475,7 @@ const debug = (line) => {
 export function apply(ctx, rawConfig = {}) {
   rawConfig = configFor('token-reporter', rawConfig)
   const config = pickConfig(rawConfig)
-  const presets = config.presets
-  const presetList = new Set(presets.list)
-  const blacklist = presets.blacklist === true
-  // 白名单 + 空列表 = 谁都不注入（默认）；黑名单 + 空列表 = 谁都不拦。
-  const scopeEmpty = !blacklist && presetList.size === 0
+  const presetList = new Set(config.presets)
 
   const watched = new Set()
   const perAgent = new Map()
@@ -491,7 +485,7 @@ export function apply(ctx, rawConfig = {}) {
   // 开关它反而会因为工具集变化让整个提示词重传，纯浪费。
   disposers.push(ctx.tools.register(toolDefinition(ctx, config)))
 
-  /** 摘要按预设生效：白名单里列出的才注入；黑名单模式反过来，列出的不注入。 */
+  /** 摘要按预设生效：黑名单里列出的预设不注入，其余都注入。 */
   const allowed = (agent) => {
     const presetId = (() => {
       try {
@@ -506,14 +500,14 @@ export function apply(ctx, rawConfig = {}) {
       } catch {}
       return ''
     })()
-    debug(`allowed presetId=${presetId || '(none)'} blacklist=${blacklist} list=[${[...presetList].join(',')}]`)
-    if (!presetId) return blacklist && presetList.size === 0
-    return blacklist ? !presetList.has(presetId) : presetList.has(presetId)
+    debug(`allowed presetId=${presetId || '(none)'} blacklist=[${[...presetList].join(',')}]`)
+    if (!presetId) return presetList.size === 0
+    return !presetList.has(presetId)
   }
 
   const watch = (agent) => {
     if (!agent || watched.has(agent)) return
-    if (scopeEmpty || !allowed(agent)) return
+    if (!allowed(agent)) return
     watched.add(agent)
     debug(`attached agent=${agent?.session?.id ?? agent?.id ?? '?'}`)
     const mine = []
@@ -596,11 +590,9 @@ export function apply(ctx, rawConfig = {}) {
   const enabledFields = Object.entries(config.prompt.fields)
     .filter(([, on]) => on)
     .map(([key]) => key)
-  const scope = blacklist
-    ? `黑名单（排除 ${presetList.size ? [...presetList].join('/') : '无'}）`
-    : `白名单（${presetList.size ? [...presetList].join('/') : '空'}）`
+  const scope = presetList.size ? `黑名单（排除 ${[...presetList].join('/')}）` : '黑名单（空=全部注入）'
   log(
-    `已启用：工具 token_report（全局）；提示摘要 ${scopeEmpty ? '不注入' : scope}（${
+    `已启用：工具 token_report（全局）；提示摘要 ${scope}（${
       enabledFields.length ? enabledFields.join('/') : '字段全关'
     }）` + (hintOn ? `；上下文 ≥${Math.round((Number.isFinite(hintAt) && hintAt > 0 ? hintAt : 0.5) * 100)}% 时提醒转移` : ''),
   )

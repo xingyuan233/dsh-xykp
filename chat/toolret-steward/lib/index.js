@@ -8,18 +8,15 @@ import { configFor } from '../../../ui/store.js'
 //   - 概括：steward(summarize: [{ id: 7, text: '...' }])
 //   - 召回：steward(recall: [7])              —— 从内存档案把原文铺回 surface
 //
-// 哪些工具参与决策由 mode 决定：
-//   mode: blacklist（默认）—— tools 里列的工具不参与决策，只保留头尾
-//   mode: whitelist       —— 只有 tools 里列的工具参与决策，其余原样不动
+// 哪些工具参与决策：tools 里列的工具不参与决策，只保留头尾（名单一律按黑名单理解）。
 //
 // 时机：
 //   工具结果落地 → 记进 pending 与 archive（先不动，模型这一步还要看）
 //   下一条 assistant 消息出现 → 解析它里面的 steward 调用 → 按决定处理 pending / 召回
 //
 // 配置（profile 那一行的 config）：
-//   presets    哪些预设生效（空数组 = 全部）
-//   mode       blacklist（默认）| whitelist
-//   tools      见 mode
+//   presets    哪些预设不生效（黑名单；空数组 = 全部生效）
+//   tools      不参与决策、只保留头尾的工具
 //   minChars   小于这个长度的结果不打扰也不折叠（default 2000）
 //   headChars / tailChars  不参与决策的工具保留的长度（default 1200 / 400）
 //   emptyStub  丢弃时换成空串（default false；留 ⟨dropped #id⟩ 线索）
@@ -261,8 +258,7 @@ function decisionsOf(message) {
 
 export function apply(ctx, config = {}) {
   config = configFor('toolret-steward', config)
-  // mode/presets 管「哪些预设生效」；tools 永远是「不碰的名单」（只留头尾）
-  const blacklist = String(config.mode ?? 'blacklist').toLowerCase() !== 'whitelist'
+  // presets 是黑名单：列出的预设不生效；tools 永远是「不碰的名单」（只留头尾）
   const presets = new Set(Array.isArray(config.presets) ? config.presets : [])
   const minChars = Number.isFinite(config.minChars) ? config.minChars : 2000
   const headChars = Number.isFinite(config.headChars) ? config.headChars : 1200
@@ -280,11 +276,11 @@ export function apply(ctx, config = {}) {
   const watched = new Map()
 
   const allowed = (agent) => {
-    if (!presets.size) return true // 名单为空 = 全部预设
+    if (!presets.size) return true // 黑名单为空 = 全部预设
     try {
       const id = ctx.agentPresets?.composedPreset?.(agent.ctx)
-      if (!id) return blacklist
-      return blacklist ? !presets.has(id) : presets.has(id)
+      if (!id) return true
+      return !presets.has(id)
     } catch (error) {
       return false
     }
@@ -609,7 +605,7 @@ export function apply(ctx, config = {}) {
   ctx.on('dispose', () => clearInterval(timer))
 
   log(
-    `就绪：预设名单 ${[...presets].join('/') || '(空=全部)'}，模式 ${blacklist ? 'blacklist（名单外的预设都生效）' : 'whitelist（只有名单内的生效）'}，` +
+    `就绪：预设黑名单 ${[...presets].join('/') || '(空=全部生效)'}，` +
       `不碰的工具 ${[...listed].join('/') || '(无)'}，阈值 ${minChars}，emptyStub ${emptyStub}，档案 ${archiveEntries} 条`,
   )
 }

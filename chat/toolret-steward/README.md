@@ -37,8 +37,7 @@ id 是**全局单调**的（不是每轮从 1 数），并且打在**结果本�
     - id: toolret-steward
       name: 'dsh-toolret-steward'
       config:
-        mode: blacklist                        # 管「预设」：blacklist = 名单外的都生效；whitelist = 只有名单内的生效
-        presets: []                            # 名单内容；空 = 全部预设
+        presets: []                            # 黑名单：列出的预设不生效（空 = 全部预设生效）
         tools: [ pwsh, job_output, web_fetch ] # 永远不碰：这些工具只留头尾，不参与决策
         minChars: 2000                         # 小结果不打扰
         headChars: 1200
@@ -47,8 +46,8 @@ id 是**全局单调**的（不是每轮从 1 数），并且打在**结果本�
         archiveEntries: 80                     # 召回档案保留多少条（FIFO）
 ```
 
-- **`mode` / `presets` 管的是「哪些预设生效」**：`blacklist` 时对名单**以外**的预设生效，`whitelist` 时只对名单**以内**的生效；名单为空 = 全部。
-- **`tools` 是「不碰的名单」**，两种模式下含义一样：这些工具的结果只做头尾保留，不参与决策。
+- **`presets` 是黑名单**：列出的预设不生效，名单为空 = 全部预设生效。
+- **`tools` 是「不碰的名单」**：这些工具的结果只做头尾保留，不参与决策。
 - `emptyStub` 默认 `false`：留一行 `⟨dropped #id⟩`，模型才不会把「被折叠」误读成「工具失败」（失败会带错误码）。
 
 ## 时机（为什么这样设计）
