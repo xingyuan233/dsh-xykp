@@ -3,7 +3,7 @@
 // 每个插件自己的东西都在 <DSH_HOME>/xykp/<行 id>/ 下：
 //   config.yml   配置（插件 apply 开头用 configFor(id, config) 读）
 //   labels.yml   界面显示名（控制台读写）
-// 旧的统一文件 <DSH_HOME>/xykp/config.yml 只留给还没迁移完的行（whaleisle / 已弃用）。
+// 不再有统一的 xykp/config.yml：旧文件已随 whaleisle 迁移 / qq-adapter、memory-refine 清理而删除。
 //
 // 约定：新增代码不要再自己拼 `xykp/<名字>`，用这里的 dataDir(id) / configFile(id)；
 // bili 系列共用的 cookie 等放 dataDir('bilibili')。
@@ -11,8 +11,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join } from 'node:path'
 import yaml from 'js-yaml'
 
-// 这些行的代码还没迁移到独立文件（whaleisle 正在用旧文件 / 已弃用），继续读写统一文件。
-const LEGACY_IDS = new Set(['whaleisle', 'qq-adapter', 'memory-refine'])
+// 旧统一文件已清退（whaleisle 已迁移，qq-adapter / memory-refine 已删），保留空集合兜底。
+const LEGACY_IDS = new Set()
 export const isLegacyId = (id) => LEGACY_IDS.has(id)
 
 let homeOverride = ''

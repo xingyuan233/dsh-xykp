@@ -9,9 +9,10 @@
 // 所有异常只记日志，绝不拖死宿主；没配 bridgeToken 时插件保持静默。
 
 import { access, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import Schema from '@deepseek-ai/schemastery'
+import yaml from 'js-yaml'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { configFor } from '../../../ui/store.js'
@@ -811,61 +812,35 @@ export async function apply(ctx, config = {}) {
     return hit.type === 'group' ? `g-${hit.id}` : `u-${hit.peer?.username || hit.id}`
   }
 
-  // ── 配置写回（只改 config.yml 的 whaleisle 段）──────────────
-  const configPath = () => join(home(), 'xykp', 'config.yml')
+  // ── 配置写回（只写 xykp/whaleisle/config.yml）──────────────
+  const configPath = () => join(home(), 'xykp', 'whaleisle', 'config.yml')
 
-  const yamlValue = (value) => {
-    const s = String(value ?? '')
-    return /^[\w./:@-]+$/.test(s) ? s : JSON.stringify(s)
-  }
-
-  const serializeConfig = () => {
-    const out = ['whaleisle:']
-    out.push(`  bridgeUrl: ${yamlValue(cfg.bridgeUrl)}`)
-    out.push(`  bridgeToken: ${yamlValue(cfg.bridgeToken)}`)
-    out.push(`  defaultTarget: ${yamlValue(cfg.defaultTarget || cfg.target || '')}`)
-    out.push(`  mode: ${cfg.mode}`)
-    const list = (name, values) => {
-      if (!values.length) { out.push(`  ${name}: []`); return }
-      out.push(`  ${name}:`)
-      values.forEach((item) => out.push(`    - ${yamlValue(item)}`))
-    }
-    list('blocked', cfg.blocked || [])
-    list('allowed', cfg.allowed || [])
-    if ((cfg.mappings || []).length) {
-      out.push('  mappings:')
-      cfg.mappings.forEach((row) => {
-        out.push(`    - chat: ${yamlValue(row.chat)}`)
-        out.push(`      target: ${yamlValue(row.target)}`)
-      })
-    } else {
-      out.push('  mappings: []')
-    }
-    list('adminUsers', cfg.adminUsers || [])
-    out.push(`  autoReply: ${cfg.autoReply ? 'true' : 'false'}`)
-    out.push(`  pollWait: ${Number(cfg.pollWait) || 20}`)
-    return out.join('\n')
-  }
+  // 控制台管理的字段；accounts 等其它字段原样保留。
+  const managedConfig = () => ({
+    bridgeUrl: cfg.bridgeUrl ?? null,
+    bridgeToken: cfg.bridgeToken ?? null,
+    defaultTarget: cfg.defaultTarget || cfg.target || '',
+    mode: cfg.mode,
+    blocked: cfg.blocked ?? [],
+    allowed: cfg.allowed ?? [],
+    mappings: (cfg.mappings || []).map((row) => ({ chat: row.chat, target: row.target })),
+    adminUsers: cfg.adminUsers ?? [],
+    autoReply: !!cfg.autoReply,
+    pollWait: Number(cfg.pollWait) || 20,
+  })
 
   const persistConfig = async () => {
     const path = configPath()
-    let text = ''
+    let prev = {}
     try {
-      text = await readFile(path, 'utf8')
-    } catch {
-      return 'config.yml 读不到，没保存（内存里已生效）'
-    }
-    const block = serializeConfig()
-    const start = text.indexOf('\nwhaleisle:')
-    if (start < 0) {
-      await writeFile(path, `${text.replace(/\s*$/, '')}\n${block}\n`, 'utf8')
-      return '已写入 config.yml'
-    }
-    const afterKey = text.slice(start + 1 + 'whaleisle:'.length)
-    const next = /\n(?=\S)/.exec(afterKey)
-    const tailStart = next ? start + 1 + 'whaleisle:'.length + next.index + 1 : text.length
-    await writeFile(path, text.slice(0, start + 1) + block + '\n' + text.slice(tailStart), 'utf8')
-    return '已写入 config.yml'
+      const parsed = yaml.load(await readFile(path, 'utf8'))
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) prev = parsed
+    } catch { /* 文件不存在就从头写 */ }
+    await mkdir(dirname(path), { recursive: true })
+    const tmp = path + '.tmp'
+    await writeFile(tmp, yaml.dump({ ...prev, ...managedConfig() }, { lineWidth: 120, noRefs: true }), 'utf8')
+    await rename(tmp, path)
+    return '已写入 whaleisle/config.yml'
   }
 
   // ── 新建会话 ───────────────────────────────────────────────

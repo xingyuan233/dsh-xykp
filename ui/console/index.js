@@ -1,8 +1,8 @@
 // dsh-xykp/ui/console —— 「插件配置」控制台的宿主半边。
 //
-// 持久化：所有 dsh-xykp 行的配置统一放在
-//   <home>/xykp/config.yml
-// 一个文件里（宿主启动后用它覆盖 loader 里的值，保存时写文件 + 热重载该行）。
+// 持久化：每一行自己的配置放在
+//   <home>/xykp/<行 id>/config.yml
+// （宿主启动后用它覆盖 loader 里的值，保存时写文件 + 热重载该行）。
 // profile 的 cordis.patch.yml 不再是这里的编辑对象。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -28,7 +28,6 @@ const META = {
   'dsh-session-delete': { title: '会话删除', desc: '侧边栏右键永久删除会话（带二次确认）。' },
   'preset-loader': { title: '预设文件加载', desc: '从预设目录加载 / 热更新预设，记录变更日志。' },
   'preset-binder': { title: '预设绑定', desc: '把当前对话和预设绑定，显示模型 / token / 上下文。' },
-  'memory-refine': { title: '记忆整理', desc: '预设级记忆开关、记忆内容整理（设置里有单独页面）。' },
   'toolret-steward': { title: '工具结果管家', desc: '把长工具结果折叠成存根，省上下文（预设 / 工具都按黑名单排除）。' },
   'toolret-forget': { title: '工具结果折叠（旧）', desc: '已被 toolret-steward 取代，行本身是停用的。' },
   'token-reporter': { title: 'token 汇报', desc: '每轮统计 token / 费用 / 余额，可插入提示。' },
@@ -38,10 +37,6 @@ const META = {
   'balance-reporter': { title: '余额挂件', desc: '页面右下角的 VK-1 余额宠物；balance_report 查余额/变动/节假日。' },
   'bili-reply': { title: 'B 站自动回复', desc: '定时拉 @ / 私信，绑定对话自动回复。' },
   'bili-rove': { title: 'B 站工具', desc: 'bili_rove：搜索、视频、评论、三连等。' },
-  'qq-adapter': {
-    title: 'QQ 通道',
-    desc: 'QQ 桥接（收发消息、二维码登录、管理员权限）。',
-  },
   ntfy: { title: 'ntfy 推送', desc: 'ntfy_push / ntfy_wait：往频道推消息、等消息。' },
   'search-engine': { title: '搜索 / 抓取', desc: 'web_search / web_fetch 的免费 provider（含 reader 正文清洗）。' },
   'dsh-prosecutor': { title: '监察', desc: '定时检查 dsh 是否活着，异常时发 ntfy 唤醒。' },
