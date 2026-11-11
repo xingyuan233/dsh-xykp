@@ -261,6 +261,93 @@
     } catch (err) {}
   }
 
+  // 反向同步：控制台/别的页面改 config.yml 后，挂件这边几秒内跟上（配置是准）。
+  var hostSyncTimer = 0
+  function hostNumber(value, fallback) {
+    var n = Number(value)
+    return isFinite(n) ? n : fallback
+  }
+  function applyHostConfig(ui) {
+    if (!ui || typeof ui !== 'object') return
+    var touched = false
+    if (ui.size !== undefined) {
+      var size = Math.round(hostNumber(ui.size, state.size))
+      if (size !== state.size) { setSize(size); touched = true }
+    }
+    if (ui.scrollGapOn !== undefined && !!ui.scrollGapOn !== state.scrollGapOn) {
+      setScrollGapOn(!!ui.scrollGapOn)
+      touched = true
+    }
+    if (ui.scrollGapPx !== undefined) {
+      var gapPx = Math.round(hostNumber(ui.scrollGapPx, state.scrollGapPx))
+      if (gapPx !== state.scrollGapPx) { setScrollGapPx(gapPx); touched = true }
+    }
+    if (ui.scrollGapSnap !== undefined) {
+      var snap = ui.scrollGapSnap === false ? 0 : hostNumber(ui.scrollGapSnap, state.snapRatio)
+      snap = clamp(snap, 0, 0.5)
+      if (Math.abs(snap - state.snapRatio) > 0.0001) { setSnapPct(Math.round(snap * 100)); touched = true }
+    }
+    if (ui.soundOn !== undefined && !!ui.soundOn !== state.soundOn) { state.soundOn = !!ui.soundOn; touched = true }
+    if (ui.volume !== undefined) {
+      var volume = Math.round(hostNumber(ui.volume, state.volume))
+      if (volume !== state.volume) { state.volume = clamp(volume, 0, 100); touched = true }
+    }
+    if (Array.isArray(ui.cueVolumes)) {
+      var cue = [0, 1, 2, 3].map(function (i) { return Math.round(hostNumber(ui.cueVolumes[i], state.cueVolumes[i])) })
+      if (cue.join(',') !== state.cueVolumes.join(',')) { state.cueVolumes = cue; touched = true }
+    }
+    ;['fxBowl', 'fxPat', 'fxHurt'].forEach(function (key) {
+      if (ui[key] !== undefined && !!ui[key] !== !!state[key]) { state[key] = !!ui[key]; touched = true }
+    })
+    if (ui.theme && ui.theme !== state.theme) { state.theme = ui.theme; touched = true }
+    if (ui.displayMode && ui.displayMode !== state.displayMode) {
+      state.displayMode = ui.displayMode
+      lastClockSec = -1
+      try { updateTablet() } catch (err) {}
+      touched = true
+    }
+    if (ui.pollSeconds !== undefined) {
+      var poll = clamp(Math.round(hostNumber(ui.pollSeconds, state.pollSeconds)), 2, 600)
+      if (poll !== state.pollSeconds) { state.pollSeconds = poll; touched = true }
+    }
+    if (ui.yieldOn !== undefined && !!ui.yieldOn !== state.yieldOn) { state.yieldOn = !!ui.yieldOn; touched = true }
+    if (ui.yieldOpacity !== undefined) {
+      var opacity = Math.round(hostNumber(ui.yieldOpacity, state.yieldOpacity))
+      if (opacity !== state.yieldOpacity) { state.yieldOpacity = clamp(opacity, 0, 100); touched = true }
+    }
+    if (!touched) return
+    try { applyYieldPrefs() } catch (err) {}
+    try { layout() } catch (err) {}
+  }
+
+  function startHostSync() {
+    function schedule() {
+      if (hostSyncTimer) return
+      hostSyncTimer = setTimeout(tick, 4000)
+    }
+    function tick() {
+      hostSyncTimer = 0
+      try {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') { schedule(); return }
+        fetch('/xykp/balance-reporter/ui', { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (res) { return res.ok ? res.json() : null })
+          .then(function (data) {
+            if (data && data.ok && data.configured && data.ui && typeof data.ui === 'object') {
+              CFG_OWNED = true
+              BOOT_UI = data.ui
+              window.__xykpVk1Config = { ui: data.ui, configured: true }
+              applyHostConfig(data.ui)
+            }
+            schedule()
+          })
+          .catch(function () { schedule() })
+      } catch (err) { schedule() }
+    }
+    schedule()
+  }
+
+  try { setTimeout(startHostSync, 0) } catch (err) {}
+
   function round4(v) { return Math.round(v * 10000) / 10000 }
   function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v) }
   function amountText(v) { return String(Math.round(v * 10000) / 10000) }
