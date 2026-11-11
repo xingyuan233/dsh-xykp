@@ -16,8 +16,9 @@ import { fileURLToPath } from 'node:url'
 import { configFor, readConfig, writeConfig } from '../../ui/store.js'
 
 export const name = 'balance-reporter'
-// 只等 tools；webServer 用 ctx.get 软取，宿主没挂也不影响工具。
-export const inject = ['tools']
+// 等 tools；webServer 也必须 inject，否则 ctx.get('webServer') 拿到 undefined，
+// /xykp/balance-reporter/* 路由根本不会注册（挂件只能退回账号直连）。
+export const inject = ['tools', 'webServer']
 
 // 挂件自己的外观/交互设置（主题、文本、右键设置面板里那些开关）原来只存在浏览器
 // localStorage（dsh-vk1-options / -size / -gap / -sound），现在统一写进插件配置
