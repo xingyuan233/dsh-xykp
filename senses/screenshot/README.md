@@ -67,17 +67,16 @@
 实测：白底文字 UI / 深色终端 / 照片+文字的网页 → png；纯照片 → jpg。
 开销在缩略图上，4K 帧约 13ms、2560 宽约 6ms（`INTER_AREA` 缩放占大头）。
 
-阈值在 `home/xykp/config.yml` 的 `senses-screenshot.auto` 下，**改完下一次调用就生效**，不用重启：
+阈值在 `home/xykp/senses-screenshot/config.yml` 的 `auto` 下，**改完下一次调用就生效**，不用重启：
 
 ```yaml
-senses-screenshot:
-  auto:
-    png_max_uniq: 0.12
-    jpg_min_uniq: 0.55
-    flat_text: 0.45
-    edge_dense: 0.02
-    uniq_mid: 0.35
-    thumb: 256      # 判定用缩略图长边，越大越准也越慢
+auto:
+  png_max_uniq: 0.12
+  jpg_min_uniq: 0.55
+  flat_text: 0.45
+  edge_dense: 0.02
+  uniq_mid: 0.35
+  thumb: 256      # 判定用缩略图长边，越大越准也越慢
 ```
 
 判定结果和依据写在返回文本里（`fmt=jpg note=auto->jpg(photo uniq=0.97 flat=0.12 edge=0.000)`），
@@ -116,7 +115,7 @@ Python 进程在第一次调用时拉起。
 
 ## 注意
 
-- 子进程 cwd 固定在 `home\xykp\senses\screenshot`：驱动/库往 cwd 写的日志不会进插件目录（更新插件不丢数据）。
+- 子进程 cwd 固定在 `home\xykp\senses-screenshot`：驱动/库往 cwd 写的日志不会进插件目录（更新插件不丢数据）。
 - `desktop` 抓的是**合成后的桌面**：窗口被遮挡，抓到的是遮挡后的画面；最小化会停更。
   `window` 抓的是窗口自己的表面，不受遮挡影响（局限见上节）。
 - **DXGI 桌面复制是每个输出独占的**：本进程空闲 15 秒会释放复制会话，把主屏让给

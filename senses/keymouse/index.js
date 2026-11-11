@@ -23,7 +23,7 @@ const PYTHON = process.env.DSH_SENSES_PYTHON || 'D:\\Program-Files\\Python\\312\
 const SERVER = fileURLToPath(new URL('./server.py', import.meta.url))
 const HOME = process.env.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
 // 子进程 cwd 固定在 home 下，插件目录保持干净（更新插件不丢数据）。
-const DATA_DIR = join(HOME, 'xykp', 'senses', 'keymouse')
+const DATA_DIR = join(HOME, 'xykp', 'senses-keymouse')
 
 function log(msg) {
   console.error(`[senses-keymouse] ${msg}`)

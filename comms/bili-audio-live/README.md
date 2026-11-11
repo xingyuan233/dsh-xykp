@@ -16,63 +16,62 @@
 
 ## 配置
 
-`<DSH_HOME>/xykp/config.yml` 的 `bili-audio-live:` 段：
+`<DSH_HOME>/xykp/bili-audio-live/config.yml`（直接是顶层 key，不用外层行 id）：
 
 ```yaml
-bili-audio-live:
-  enabled: true            # 装载即启动
-  dryRun: false            # true = 只把批写进日志，不投递（先看效果）
+enabled: true            # 装载即启动
+dryRun: false            # true = 只把批写进日志，不投递（先看效果）
 
-  rooms:                   # 纯静态目录：房间号 + 名字
-    - { roomId: 1967225563, name: 果莓 }
+rooms:                   # 纯静态目录：房间号 + 名字
+  - { roomId: 1967225563, name: 果莓 }
 
-  bindings:                # 真正的绑定：一条 = 一个房间 → 一个对话/预设
-    - target: s-bcd904a3-…    # s-<会话id> 或 p-<预设名>
-      roomId: 1967225563
-      enabled: true
-      danmaku: true           # 这条要不要弹幕
-      audio: true             # 这条要不要语音
-      # windows: ['20:00-02:00']   # 可选：条目级时段，覆盖全局
+bindings:                # 真正的绑定：一条 = 一个房间 → 一个对话/预设
+  - target: s-bcd904a3-…    # s-<会话id> 或 p-<预设名>
+    roomId: 1967225563
+    enabled: true
+    danmaku: true           # 这条要不要弹幕
+    audio: true             # 这条要不要语音
+    # windows: ['20:00-02:00']   # 可选：条目级时段，覆盖全局
 
-  sources:
-    danmaku: true          # 全局总开关
-    audio: true            # 关掉 = 纯弹幕模式
+sources:
+  danmaku: true          # 全局总开关
+  audio: true            # 关掉 = 纯弹幕模式
 
-  pacing:
-    # 硬限制（先判这两条）
-    minIntervalSec: 120    # 距上次投递不到这么久，一律不发
-    maxWaitSec: 420        # 攒超过这么久，只要有内容就发
-    # 软限制（过完硬限制后，满足任意一条就发）
-    minSentences: 5
-    maxSentences: 40
-    minDanmaku: 8
-    maxDanmaku: 60
-    # 渲染
-    maxChars: 1500
-    renderDanmakuCap: 80
+pacing:
+  # 硬限制（先判这两条）
+  minIntervalSec: 120    # 距上次投递不到这么久，一律不发
+  maxWaitSec: 420        # 攒超过这么久，只要有内容就发
+  # 软限制（过完硬限制后，满足任意一条就发）
+  minSentences: 5
+  maxSentences: 40
+  minDanmaku: 8
+  maxDanmaku: 60
+  # 渲染
+  maxChars: 1500
+  renderDanmakuCap: 80
 
-  schedule:
-    windows: ['20:00-02:00']   # 全局时段；空 = 一直开；支持跨零点
-  asr:
-    modelDir: 'D:/AI/DeepseekHarness/home/xykp/bili-audio-live/models/sensevoice'
-    ffmpegPath: 'ffmpeg'
-    numThreads: 4
-    minSpeechMs: 400
-    cutSilenceMs: 800
-    vadThreshold: 0.55
-    mergeGapMs: 600          # 相邻片段停顿小于这个就并成一句再识别
+schedule:
+  windows: ['20:00-02:00']   # 全局时段；空 = 一直开；支持跨零点
+asr:
+  modelDir: 'D:/AI/DeepseekHarness/home/xykp/bili-audio-live/models/sensevoice'
+  ffmpegPath: 'ffmpeg'
+  numThreads: 4
+  minSpeechMs: 400
+  cutSilenceMs: 800
+  vadThreshold: 0.55
+  mergeGapMs: 600          # 相邻片段停顿小于这个就并成一句再识别
 
-  pushGift: true
-  pushGuard: true
+pushGift: true
+pushGuard: true
 
-  send:                      # 主动发送（写操作，默认全关）
+send:                      # 主动发送（写操作，默认全关）
+  enabled: false
+  gift:
     enabled: false
-    gift:
-      enabled: false
-      minYuan: 1
-      maxYuan: 50
-      maxPerSend: 1
-      allow: []              # 只允许这些礼物（名字或 id）；空 = 不限制种类
+    minYuan: 1
+    maxYuan: 50
+    maxPerSend: 1
+    allow: []              # 只允许这些礼物（名字或 id）；空 = 不限制种类
 ```
 
 **同一个 target 只能绑一个房间**，第二条会被跳过并告警——否则两路消息会串进同一个对话。

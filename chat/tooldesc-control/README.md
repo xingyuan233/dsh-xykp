@@ -30,23 +30,22 @@ toolUpdate: "addition-only"        // 工具中途变化 → 只认「新增」�
 
 ## 3. 配置：两套，互不相干
 
-都在 `<DSH_HOME>/xykp/config.yml` → `tooldesc-control` 段。**改完不需要重启**（每次组装按 mtime 重新编译规则）。
+都在 `<DSH_HOME>/xykp/tooldesc-control/config.yml`，直接是顶层 key（每个插件一个文件，不用外层行 id）。**改完不需要重启**（每次组装按 mtime 重新编译规则）。
 
 ```yaml
-tooldesc-control:
-  rules:                                  # 工具：命中才让它出现在 tools 里
-    bili_rove:
-      keys: [B站, bilibili, 视频]
-      cooldown: 8                         # 按「大轮」算（一条用户消息 = 一轮）
-      limit: 3                            # 可选，这个会话最多推几次；不填 = 无限
-    create_goal: { keys: [goal, 长期目标], cooldown: 8 }
+rules:                                  # 工具：命中才让它出现在 tools 里
+  bili_rove:
+    keys: [B站, bilibili, 视频]
+    cooldown: 8                         # 按「大轮」算（一条用户消息 = 一轮）
+    limit: 3                            # 可选，这个会话最多推几次；不填 = 无限
+  create_goal: { keys: [goal, 长期目标], cooldown: 8 }
 
-  notes:                                  # 说明：key = 系统提示词里那段 section 的名字（tool:goal 这种）
-    tool:workflow:
-      keys: [工作流, workflow, 编排]
-      cooldown: 8
-      text: |
-        长流程用 workflow：写一个 JS 脚本一次编排多个 subagent……
+notes:                                  # 说明：key = 系统提示词里那段 section 的名字（tool:goal 这种）
+  tool:workflow:
+    keys: [工作流, workflow, 编排]
+    cooldown: 8
+    text: |
+      长流程用 workflow：写一个 JS 脚本一次编排多个 subagent……
 ```
 
 字段语义：

@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import yaml from 'js-yaml'
+import { clearConfig, dataDir, hasConfig, isLegacyId, migrateLegacy, readConfig, readLabel, setHomeDir, writeConfig, writeLabel } from '../store.js'
 
 export const name = 'xykp-console'
 export const inject = ['configEditor', 'webServer', 'profileContext']
@@ -28,13 +29,13 @@ const META = {
   'preset-loader': { title: '预设文件加载', desc: '从预设目录加载 / 热更新预设，记录变更日志。' },
   'preset-binder': { title: '预设绑定', desc: '把当前对话和预设绑定，显示模型 / token / 上下文。' },
   'memory-refine': { title: '记忆整理', desc: '预设级记忆开关、记忆内容整理（设置里有单独页面）。' },
-  'toolret-steward': { title: '工具结果管家', desc: '按黑/白名单把长工具结果折叠成存根，省上下文。' },
+  'toolret-steward': { title: '工具结果管家', desc: '把长工具结果折叠成存根，省上下文（预设 / 工具都按黑名单排除）。' },
   'toolret-forget': { title: '工具结果折叠（旧）', desc: '已被 toolret-steward 取代，行本身是停用的。' },
   'token-reporter': { title: 'token 汇报', desc: '每轮统计 token / 费用 / 余额，可插入提示。' },
   'tooldesc-control': { title: '工具说明控制', desc: '工具说明懒加载、变更通知、按大轮重贴。' },
   'senses-screenshot': { title: '截屏', desc: 'screenshot_acquire：整屏 / 窗口 / 区域截图。' },
   'senses-keymouse': { title: '键鼠', desc: 'mouse_input / keyboard_input：鼠标键盘模拟。' },
-  'senses-balance-reporter': { title: '余额挂件', desc: '页面右下角的 VK-1 余额宠物；balance_report 查余额/变动/节假日。' },
+  'balance-reporter': { title: '余额挂件', desc: '页面右下角的 VK-1 余额宠物；balance_report 查余额/变动/节假日。' },
   'bili-reply': { title: 'B 站自动回复', desc: '定时拉 @ / 私信，绑定对话自动回复。' },
   'bili-rove': { title: 'B 站工具', desc: 'bili_rove：搜索、视频、评论、三连等。' },
   'qq-adapter': {
@@ -71,6 +72,21 @@ const FIELDS = {
   intervalHours: '间隔（小时）',
   refreshSeconds: '刷新间隔（秒）',
   lowBalance: '低余额提醒（元）',
+  theme: '挂件主题（auto/light/dark）',
+  displayMode: '挂件显示（balance/clock/both）',
+  pollSeconds: '挂件轮询（秒）',
+  size: '挂件尺寸',
+  yieldOn: '鼠标移入时让开',
+  yieldOpacity: '让开时透明度',
+  scrollGapOn: '滚动避让',
+  scrollGapPx: '避让留白（px）',
+  scrollGapSnap: '避让吸附',
+  fxBowl: '掉盆特效',
+  fxPat: '抚摸特效',
+  fxHurt: '受伤特效',
+  soundOn: '音效',
+  volume: '音量',
+  cueVolumes: '分项音量[4]',
   holidays: '后台更新节假日',
   holidayRefreshDays: '节假日刷新（天）',
   holidayUrl: '节假日数据源',
@@ -243,55 +259,28 @@ export function apply(ctx) {
 
   const rowsList = () => [...ctx.configEditor.entries()].filter(isXykpRow)
 
-  // 第一次跑 / 新增插件：把当前运行时的配置补进总文件
-  const bootstrap = () => {
-    const data = loadStore()
-    let changed = false
+  // 统一路径：控制台和所有插件都用 ui/store.js 算出来的 home。
+  setHomeDir(homeDir())
+
+  // 旧的总文件（xykp/config.yml、labels.yml）一次性摊到每个插件目录：
+  //   xykp/<行 id>/config.yml、xykp/<行 id>/labels.yml
+  // 之后保存某一项只动它自己的文件，不再重写所有人的配置。
+  try {
+    const moved = migrateLegacy()
+    if (moved.config || moved.labels) logger.info('旧配置已迁移到 xykp/<插件>/ 下')
+  } catch (error) {
+    logger.warn('迁移旧配置失败：' + String((error && error.message) || error))
+  }
+
+  // 新的行第一次出现时，把 loader 里带过来的配置落成自己的 config.yml。
+  try {
     for (const entry of rowsList()) {
       const id = entry.options.id
-      if (!(id in data)) {
-        data[id] = entry.options.config ?? {}
-        changed = true
-      }
+      if (!isLegacyId(id) && !hasConfig(id)) writeConfig(id, entry.options.config ?? {})
     }
-    if (changed) saveStore(data)
-  }
-
-  try {
-    bootstrap()
   } catch (error) {
-    logger.warn('初始化 config.yml 失败：' + String((error && error.message) || error))
+    logger.warn('初始化插件配置失败：' + String((error && error.message) || error))
   }
-
-  // 一次性把内置中文名搬进 labels.yml：之后默认显示英文（行 id / 字段 key），
-  // 新插件不会出现「默认英文、老插件中文」的割裂。
-  const seedLabels = () => {
-    const SEED = 2
-    const labels = loadLabels()
-    if (labels.__seed === SEED) return
-    const data = loadStore()
-    for (const entry of rowsList()) {
-      const id = entry.options.id
-      const cur = labelEntry(labels, id)
-      const meta = META[id] || {}
-      if (!cur.title && meta.title) cur.title = meta.title
-      const cfg = id in data ? data[id] : entry.options.config ?? {}
-      for (const key of walkKeys(cfg)) {
-        if (FIELDS[key] && !cur.fields[key]) cur.fields[key] = FIELDS[key]
-      }
-      labels[id] = cur
-    }
-    labels.__seed = SEED
-    saveLabels(labels)
-  }
-  try {
-    seedLabels()
-  } catch (error) {
-    logger.warn('初始化 labels.yml 失败：' + String((error && error.message) || error))
-  }
-
-  // 各插件自己在 apply 开头用 ui/store.js 的 configFor() 读这个文件，
-  // 所以启动时就是最终值，这里不需要再同步/重启一轮。
 
   const send = (res, status, body) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -316,121 +305,107 @@ export function apply(ctx) {
     )
   }
 
-  const collect = () => {
-    const data = loadStore()
-    const labels = loadLabels()
-    const conf = new Map(
-      (ctx.configEditor.configuration() || []).map((row) => [row.entry.options.id, row]),
-    )
-    const rows = []
-    for (const entry of rowsList()) {
-      const id = entry.options.id
-      const spec = specOf(entry)
-      const meta = META[id] || {}
-      const lab = labelEntry(labels, id)
-      const inherited = (conf.get(id) || {}).inherited || {}
-      const stored = id in data ? data[id] : entry.options.config ?? {}
-      rows.push({
-        id,
-        spec,
-        module: moduleOf(spec),
-        group: GROUPS[moduleOf(spec)] || '其它',
-        title: lab.title || id,
-        fields: lab.fields,
-        desc: meta.desc || '',
-        note: meta.note || '',
-        disabled: entry.options.disabled === true,
-        config: stored,
-        inherited,
-        override: !same(stored, inherited),
-      })
-    }
-    const order = ['storage', 'chat', 'comms', 'senses', 'observer', 'ui']
-    rows.sort(
-      (a, b) =>
-        order.indexOf(moduleOf(a.spec)) - order.indexOf(moduleOf(b.spec)) || a.id.localeCompare(b.id),
-    )
-    return rows
+  // 每行自己的配置：有自己的 config.yml 就用文件里的，否则用 loader 的配置。
+  const storedOf = (entry) => {
+    const value = readConfig(entry.options.id)
+    return value === undefined ? entry.options.config ?? {} : value
   }
 
+  const DOC_PATH = 'home\\xykp\\<插件>\\config.yml'
+
+  // 把一行整理成界面要的形状。
+  const collect = () =>
+    rowsList().map((entry) => {
+      const id = entry.options.id
+      const spec = specOf(entry)
+      const module = moduleOf(spec)
+      const meta = META[id] || {}
+      const label = readLabel(id)
+      const stored = storedOf(entry)
+      const keys = [...walkKeys(stored)]
+      // 配置为空时把 labels.yml 里记录的字段名列出来（空值），不让表单整片空白；已有配置的行保持原样。
+      const fields = keys.length === 0 ? { ...label.fields } : {}
+      for (const key of keys) fields[key] = label.fields[key] || FIELDS[key] || key
+      return {
+        id,
+        spec,
+        module,
+        group: GROUPS[module] || module,
+        title: label.title || meta.title || id,
+        desc: meta.desc || '',
+        note: meta.note || '',
+        disabled: !!entry.options.disabled,
+        config: stored,
+        inherited: entry.options.config ?? {},
+        override: keys.length > 0,
+        fields,
+        configPath: isLegacyId(id) ? 'home\\xykp\\config.yml' : 'home\\xykp\\' + id + '\\config.yml',
+      }
+    })
+
+  const allFields = () => {
+    const out = { ...FIELDS }
+    for (const entry of rowsList()) Object.assign(out, readLabel(entry.options.id).fields)
+    return out
+  }
+
+  const reply = (res) => send(res, 200, { ok: true, rows: collect(), fields: allFields(), documentPath: DOC_PATH })
+
   route('/xykp-console/rows', async (req, res) => {
-    send(res, 200, { ok: true, rows: collect(), fields: FIELDS, documentPath: storePath() })
+    reply(res)
   })
 
   route('/xykp-console/save', async (req, res) => {
-    if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method' })
-    const body = await readBody(req)
-    const id = String(body.id || '')
-    if (!id) return send(res, 400, { ok: false, error: 'missing id' })
-    const entry = rowsList().find((e) => e.options.id === id)
-    if (!entry) return send(res, 404, { ok: false, error: '未知的行：' + id })
-
-    const next = body.config
-    if (!next || typeof next !== 'object' || Array.isArray(next)) {
-      return send(res, 400, { ok: false, error: 'config 必须是一个对象' })
-    }
-
     try {
-      const data = loadStore()
-      data[id] = next
-      saveStore(data)
+      const body = await readBody(req)
+      const id = String(body.id || '')
+      const entry = rowsList().find((item) => item.options.id === id)
+      if (!entry) return send(res, 400, { ok: false, error: '没有这个插件：' + id })
+      const next = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
+      writeConfig(id, next)
       await entry.update({ config: next })
     } catch (error) {
       return send(res, 400, { ok: false, error: String((error && error.message) || error) })
     }
-    send(res, 200, { ok: true, rows: collect() })
+    reply(res)
   })
 
   route('/xykp-console/reset', async (req, res) => {
-    if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method' })
-    const body = await readBody(req)
-    const id = String(body.id || '')
-    const entry = rowsList().find((e) => e.options.id === id)
-    if (!entry) return send(res, 404, { ok: false, error: '未知的行：' + id })
-    const conf = new Map(
-      (ctx.configEditor.configuration() || []).map((row) => [row.entry.options.id, row]),
-    )
-    const inherited = (conf.get(id) || {}).inherited || {}
     try {
-      const data = loadStore()
-      delete data[id]
-      saveStore(data)
+      const body = await readBody(req)
+      const id = String(body.id || '')
+      const entry = rowsList().find((item) => item.options.id === id)
+      if (!entry) return send(res, 400, { ok: false, error: '没有这个插件：' + id })
+      const inherited = entry.options.config ?? {}
+      clearConfig(id)
       await entry.update({ config: inherited })
-      const fresh = loadStore()
-      fresh[id] = inherited
-      saveStore(fresh)
     } catch (error) {
       return send(res, 400, { ok: false, error: String((error && error.message) || error) })
     }
-    send(res, 200, { ok: true, rows: collect() })
+    reply(res)
   })
 
-  // 左边列表的显示名（只存 labels.yml，不影响插件实际配置）
   route('/xykp-console/label', async (req, res) => {
-    if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method' })
-    const body = await readBody(req)
-    const id = String(body.id || '')
-    if (!id) return send(res, 400, { ok: false, error: 'missing id' })
-    if (!rowsList().some((e) => e.options.id === id)) return send(res, 404, { ok: false, error: '未知的行：' + id })
-    const field = String(body.field || '').trim()
-    const title = String(body.title || '').trim()
     try {
-      const labels = loadLabels()
-      const cur = labelEntry(labels, id)
+      const body = await readBody(req)
+      const id = String(body.id || '')
+      const entry = rowsList().find((item) => item.options.id === id)
+      if (!entry) return send(res, 400, { ok: false, error: '没有这个插件：' + id })
+      const cur = readLabel(id)
+      const field = body.field === undefined ? '' : String(body.field)
+      const title = body.title === undefined ? '' : String(body.title).trim()
       if (field) {
         if (title) cur.fields[field] = title
         else delete cur.fields[field]
       } else {
         cur.title = title
       }
-      if (!cur.title && Object.keys(cur.fields).length === 0) delete labels[id]
-      else labels[id] = cur
-      saveLabels(labels)
+      writeLabel(id, cur)
     } catch (error) {
       return send(res, 400, { ok: false, error: String((error && error.message) || error) })
     }
-    send(res, 200, { ok: true, rows: collect() })
+    reply(res)
   })
 
-  logger.info('插件配置控制台已挂载：' + storePath())
+  logger.info('插件配置控制台已挂载：每个插件一个 config.yml（' + dataDir('<插件 id>') + '）')
 }

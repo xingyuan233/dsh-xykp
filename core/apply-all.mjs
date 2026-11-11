@@ -15,7 +15,7 @@
 // 用法：
 //   node apply-all.mjs            应用全部（幂等）
 //   node apply-all.mjs --check    只列状态
-//   node apply-all.mjs --restore  从 .backup\ 还原全部
+//   node apply-all.mjs --restore  从 .backup\ 还原全部（只认与当前 dsh 版本匹配的备份）
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, renameSync } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
@@ -35,6 +35,32 @@ function backupPath(target) {
   const rel = i >= 0 ? parts.slice(i + 1) : parts.slice(-3)
   return join(BACKUPS, rel.join('_').replace(/[^A-Za-z0-9._-]/g, '_') + '.orig')
 }
+
+/** 当前 dsh 的版本：备份按版本存，宿主升级后旧备份不再复用。 */
+function hostVersion() {
+  try {
+    const pkg = join(CORE, '..', '..', 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
+    return JSON.parse(readFileSync(pkg, 'utf8')).version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** 备份的版本记录文件（`.orig.version`）。 */
+function versionPath(bak) {
+  return `${bak}.version`
+}
+
+function readBackupVersion(bak) {
+  try {
+    return readFileSync(versionPath(bak), 'utf8').trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** 补丁写进文件后的标记字样；备份里出现就说明它已不是原文。 */
+const PATCH_MARK = /dsh-patch |ykp patch /
 
 function loadModules() {
   return readdirSync(CORE)
@@ -61,7 +87,19 @@ if (RESTORE) {
     for (const edit of mod.edits ?? []) {
       const bak = backupPath(edit.target)
       if (existsSync(bak)) {
+        const ver = hostVersion()
+        const bakVer = readBackupVersion(bak)
+        // 老备份没记版本：内容干净（不含补丁标记）才认为原文还在
+        if (bakVer === null && PATCH_MARK.test(readFileSync(bak, 'utf8'))) {
+          console.log(`· 跳过 ${mod.id}：备份无版本记录且疑似中间态（${basename(bak)}）`)
+          continue
+        }
+        if (bakVer !== null && bakVer !== ver) {
+          console.log(`· 跳过 ${mod.id}：备份属于 dsh ${bakVer}，当前 dsh ${ver}`)
+          continue
+        }
         copyFileSync(bak, edit.target)
+        if (bakVer === null) writeFileSync(versionPath(bak), ver, 'utf8')
         console.log(`restored  ${mod.id}  备份还原 -> ${edit.target}`)
         restored++
         continue
@@ -138,15 +176,29 @@ for (const { file, path } of modules) {
     }
     const bak = backupPath(edit.target)
     mkdirSync(BACKUPS, { recursive: true })
-    // 备份只在「目标文件没被换过」时才有意义：宿主升级/重装后旧备份属于旧版本，
-    // 拿它 -Restore 会把旧版本源码写回去。内容对不上就留档旧备份、按当前版本重新备份。
-    if (!existsSync(bak)) {
-      copyFileSync(edit.target, bak)
-    } else if (readFileSync(bak, 'utf8') !== text) {
+    // 备份跟 dsh 版本绑定：同版本说明当前版本的原文已经存过，不再处理；
+    // 版本变了（npm 升级/重装）才把当前文件重新备份，旧备份连同版本记录留档。
+    const ver = hostVersion()
+    const bakVer = existsSync(bak) ? readBackupVersion(bak) : null
+    const bakOK = existsSync(bak) && !PATCH_MARK.test(readFileSync(bak, 'utf8'))
+    if (bakVer === ver && existsSync(bak)) {
+      // 同版本、备份已在：什么都不做
+    } else if (bakOK && bakVer === null) {
+      writeFileSync(versionPath(bak), ver, 'utf8')
+      console.log(`· ${mod.id.padEnd(28)} 老备份补记 dsh ${ver}`)
+    } else if (bakOK) {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      renameSync(bak, join(BACKUPS, `${basename(bak).replace(/\.orig$/, '')}.${stamp}.old`))
+      const stem = basename(bak).replace(/\.orig$/, '')
+      renameSync(bak, join(BACKUPS, `${stem}.${stamp}.old`))
+      if (existsSync(versionPath(bak))) renameSync(versionPath(bak), join(BACKUPS, `${stem}.${stamp}.version.old`))
       copyFileSync(edit.target, bak)
-      console.log(`! ${mod.id.padEnd(28)} 目标已换版本，旧备份留档 ${stamp}.old`)
+      writeFileSync(versionPath(bak), ver, 'utf8')
+      console.log(`! ${mod.id.padEnd(28)} 目标已换版本（${bakVer ?? '未知'} -> ${ver}），旧备份留档 ${stamp}.old`)
+    } else if (!PATCH_MARK.test(text)) {
+      copyFileSync(edit.target, bak)
+      writeFileSync(versionPath(bak), ver, 'utf8')
+    } else {
+      console.log(`! ${mod.id.padEnd(28)} 当前文件已含补丁且无干净备份，跳过备份`)
     }
     writeFileSync(edit.target, next, 'utf8')
     console.log(`+ ${mod.id.padEnd(28)} 已应用  ${text.length} -> ${next.length} 字节`)

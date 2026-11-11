@@ -151,6 +151,116 @@
   var OPTIONS_KEY = 'dsh-vk1-options'
   var USAGE_KEY = 'dsh-vk1-usage'
 
+  // --- 统一配置桥 --------------------------------------------------------
+  // 尺寸/避让/音效/主题/文本这些设置原来只存 localStorage；现在桥接到插件配置
+  // （HOME\xykp\balance-reporter\config.yml，经 /xykp/balance-reporter/ui 读写）。
+  // mount.js 启动前注入 window.__xykpVk1Config = { ui, configured }，并提供
+  // window.__xykpVk1Save(patch)；没配置过时继续读 localStorage，并一次性迁过去。
+  var BOOT_CFG = (typeof window !== 'undefined' && window.__xykpVk1Config && typeof window.__xykpVk1Config === 'object') ? window.__xykpVk1Config : {}
+  var BOOT_UI = BOOT_CFG.ui && typeof BOOT_CFG.ui === 'object' ? BOOT_CFG.ui : null
+  var CFG_OWNED = !!BOOT_CFG.configured
+  var RAW_LOCAL = null
+  try { RAW_LOCAL = window.localStorage } catch (err) { RAW_LOCAL = null }
+
+  function configSave(patch) {
+    if (!patch) return
+    try { if (typeof window.__xykpVk1Save === 'function') window.__xykpVk1Save(patch) } catch (err) {}
+  }
+
+  function localStorageToConfig(key, value) {
+    if (!value || typeof value !== 'string') return null
+    if (key === SIZE_KEY) {
+      var size = Number(value)
+      return size > 0 ? { size: Math.round(size) } : null
+    }
+    if (key === GAP_KEY) {
+      var gap = null
+      try { gap = JSON.parse(value) } catch (err) { return null }
+      if (!gap || typeof gap !== 'object') return null
+      var gapPatch = { scrollGapOn: !!gap.on, scrollGapPx: Number(gap.px) || 0 }
+      if (typeof gap.snap === 'number' && gap.snap >= 0) gapPatch.scrollGapSnap = Math.max(0, Math.min(0.5, gap.snap))
+      else if (gap.snap === false) gapPatch.scrollGapSnap = false
+      return gapPatch
+    }
+    if (key === SOUND_KEY) {
+      var sound = null
+      try { sound = JSON.parse(value) } catch (err) { return null }
+      if (!sound || typeof sound !== 'object') return null
+      return { soundOn: sound.on !== false, volume: Number(sound.vol) >= 0 ? Number(sound.vol) : 80 }
+    }
+    if (key === OPTIONS_KEY) {
+      var options = null
+      try { options = JSON.parse(value) } catch (err) { return null }
+      if (!options || typeof options !== 'object') return null
+      var fields = ['theme', 'displayMode', 'fxBowl', 'fxPat', 'fxHurt', 'pollSeconds', 'yieldOn', 'yieldOpacity', 'cueVolumes']
+      var optionsPatch = {}
+      for (var i = 0; i < fields.length; i++) if (options[fields[i]] !== undefined) optionsPatch[fields[i]] = options[fields[i]]
+      return Object.keys(optionsPatch).length ? optionsPatch : null
+    }
+    return null
+  }
+
+  function configToLocalStorage(key) {
+    if (!CFG_OWNED || !BOOT_UI) return null
+    if (key === SIZE_KEY) return BOOT_UI.size !== undefined ? String(BOOT_UI.size) : null
+    if (key === GAP_KEY) {
+      if (BOOT_UI.scrollGapOn === undefined) return null
+      return JSON.stringify({
+        on: !!BOOT_UI.scrollGapOn,
+        px: BOOT_UI.scrollGapPx !== undefined ? BOOT_UI.scrollGapPx : 17,
+        snap: BOOT_UI.scrollGapSnap === false ? false : (BOOT_UI.scrollGapSnap !== undefined ? BOOT_UI.scrollGapSnap : 0.25),
+      })
+    }
+    if (key === SOUND_KEY) {
+      if (BOOT_UI.soundOn === undefined) return null
+      return JSON.stringify({ on: !!BOOT_UI.soundOn, vol: BOOT_UI.volume !== undefined ? BOOT_UI.volume : 80 })
+    }
+    if (key === OPTIONS_KEY) {
+      var fields = ['fxBowl', 'fxPat', 'fxHurt', 'theme', 'cueVolumes', 'displayMode', 'pollSeconds', 'yieldOn', 'yieldOpacity']
+      var out = {}
+      var any = false
+      for (var i = 0; i < fields.length; i++) {
+        if (BOOT_UI[fields[i]] !== undefined) { out[fields[i]] = BOOT_UI[fields[i]]; any = true }
+      }
+      return any ? JSON.stringify(out) : null
+    }
+    return null
+  }
+
+  var localStorage = RAW_LOCAL ? {
+    getItem: function (key) {
+      var fromConfig = configToLocalStorage(key)
+      return fromConfig !== null ? fromConfig : RAW_LOCAL.getItem(key)
+    },
+    setItem: function (key, value) {
+      try { RAW_LOCAL.setItem(key, value) } catch (err) {}
+      var patch = localStorageToConfig(key, value)
+      if (!patch) return
+      CFG_OWNED = true
+      configSave(patch)
+    },
+    removeItem: function (key) {
+      try { RAW_LOCAL.removeItem(key) } catch (err) {}
+    },
+  } : null
+
+  // 首次升级：把旧 localStorage 里的设置整体迁到统一配置
+  if (RAW_LOCAL && BOOT_UI && !CFG_OWNED) {
+    try {
+      var migrate = {}
+      ;[SIZE_KEY, GAP_KEY, SOUND_KEY, OPTIONS_KEY].forEach(function (key) {
+        var raw = RAW_LOCAL.getItem(key)
+        var patch = raw ? localStorageToConfig(key, raw) : null
+        if (!patch) return
+        for (var field in patch) if (Object.prototype.hasOwnProperty.call(patch, field)) migrate[field] = patch[field]
+      })
+      if (Object.keys(migrate).length) {
+        CFG_OWNED = true
+        configSave(migrate)
+      }
+    } catch (err) {}
+  }
+
   function round4(v) { return Math.round(v * 10000) / 10000 }
   function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v) }
   function amountText(v) { return String(Math.round(v * 10000) / 10000) }

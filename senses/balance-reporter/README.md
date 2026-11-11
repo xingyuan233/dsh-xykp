@@ -70,21 +70,48 @@ node D:\AI\DeepseekHarness\plugins\senses\balance-reporter\client\build.mjs --in
 
 挂件的取值顺序：先走上面的 HTTP 快照（有 10 秒缓存、能拿到历史），404 时自动退回客户端 `remote.account`。所以**没重启时挂件照常工作**，重启后只是更省请求、多一份历史。
 
-配置在 `$DSH_HOME/xykp/config.yml`（xykp 控制台里行 id 是 `senses-balance-reporter`）：
+配置在 `$DSH_HOME/xykp/balance-reporter/config.yml`（行 id 和目录都是 `balance-reporter`）：
 
 ```yaml
-senses-balance-reporter:
-  enabled: true
-  tool: true
-  route: true
-  lowBalance: 20      # 低于这个数在工具输出里提醒
-  refreshSeconds: 10  # 宿主余额缓存 TTL
-  holidays: true      # 是否后台拉取节假日
-  holidayRefreshDays: 7
-  holidayUrl: https://raw.githubusercontent.com/NateScarlet/holiday-cn/master
+enabled: true
+tool: true
+route: true
+lowBalance: 20      # 低于这个数在工具输出里提醒
+refreshSeconds: 10  # 宿主余额缓存 TTL
+holidays: true      # 是否后台拉取节假日
+holidayRefreshDays: 7
+holidayUrl: https://raw.githubusercontent.com/NateScarlet/holiday-cn/master
 ```
 
 > 刷新间隔只控制**页面**多久查一次余额。宿主 `/status` 默认有 10 秒缓存，页面会把 `maxAge=<刷新间隔>` 带过去，所以页面设 2 秒时宿主也会按 2 秒重新取；`balance_report` 工具仍用宿主的 `refreshSeconds` 缓存。
+
+### 挂件外观/交互设置（统一配置）
+
+挂件右键「设置」里的那些参数（主题、文本、尺寸、音效、让开、避让等）以前只存在
+浏览器的 localStorage（`dsh-vk1-options` / `dsh-vk1-size` / `dsh-vk1-gap` /
+`dsh-vk1-sound`），现在统一写进同一份插件配置 `config.yml`，控制台「插件配置」里也能改：
+
+```yaml
+theme: auto            # auto / light / dark
+displayMode: both      # balance / clock / both
+pollSeconds: 12
+size: 340
+yieldOn: true          # 鼠标移入时让开
+yieldOpacity: 7
+scrollGapOn: false
+scrollGapPx: 17
+scrollGapSnap: 0.25    # 数字=吸附比例，false=关闭
+fxBowl: true
+fxPat: true
+fxHurt: true
+soundOn: true
+volume: 80
+cueVolumes: [100, 100, 100, 100]
+```
+
+- 页面通过 `GET /xykp/balance-reporter/ui` 读、`POST` 回写（挂件改动会防抖 400ms 合并保存）。
+- 第一次升级时会把浏览器里旧的 localStorage 设置整体迁到 `config.yml`（只迁一次）。
+- 位置 `dsh-vk1-pos`、今日用量 `dsh-vk1-usage` 仍留在本地，属于每屏/每天的运行时状态，不算配置。
 
 ## 开发
 

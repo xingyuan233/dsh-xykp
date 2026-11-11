@@ -45,19 +45,68 @@ export async function writeJson(path, value) {
   await rename(tmp, path)
 }
 
+/**
+ * 配置只有 config.yml 一份：账号绑定（target / workspace / preset）就存在它的 accounts[] 里。
+ * 插件 apply 时把 cfg 喂进来，读绑定就从这里拼，不再维护第二份静态配置。
+ */
+let bindingCfg = null
+
+export function useConfigAsBindings(cfg) {
+  bindingCfg = cfg || null
+}
+
+function accountsOf() {
+  return bindingCfg && Array.isArray(bindingCfg.accounts) ? bindingCfg.accounts : []
+}
+
 export async function readBindings() {
-  const data = await readJson(bindingsPath(), {})
-  return data && typeof data === 'object' ? data : {}
+  const map = {}
+  for (const a of accountsOf()) {
+    if (!a || !a.name) continue
+    if (a.target) map[`acct:${a.name}`] = { target: String(a.target), updatedAt: 0 }
+    if (a.workspace) map[`ws:${a.name}`] = { target: String(a.workspace), updatedAt: 0 }
+    if (a.preset) map[`newpreset:${a.name}`] = { target: String(a.preset), updatedAt: 0 }
+  }
+  // 一次性兼容：config.yml 里还没填的，回落到旧的 bindings.json（迁完就可以删那个文件）
+  const legacy = await readJson(bindingsPath(), {})
+  if (legacy && typeof legacy === 'object') {
+    for (const [k, v] of Object.entries(legacy)) {
+      if (!map[k] && v && v.target) map[k] = v
+    }
+  }
+  return map
+}
+
+/** 把整份配置写回 config.yml（宿主控制台接口，保存后会热重载这一行） */
+async function saveConfig(cfg) {
+  const base = `http://127.0.0.1:${process.env.DSH_PORT || 3080}`
+  const resp = await fetch(`${base}/xykp-console/save`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: 'whaleisle', config: cfg }),
+  })
+  if (!resp.ok) throw new Error(`保存 config.yml 失败：HTTP ${resp.status}`)
 }
 
 export async function writeBinding(chatKey, target) {
-  const all = await readBindings()
   const key = String(chatKey || '').trim()
-  if (!key) return all
+  if (!key) return readBindings()
+  const m = /^(acct|ws|newpreset):(.+)$/.exec(key)
+  const acct = m ? accountsOf().find((a) => a && a.name === m[2]) : null
+  if (acct) {
+    const value = String(target || '').trim()
+    if (m[1] === 'acct') acct.target = value
+    else if (m[1] === 'ws') acct.workspace = value
+    else acct.preset = value
+    await saveConfig(bindingCfg)
+    return readBindings()
+  }
+  // 账号级以外的 key（正常不该有）：留在运行时小文件里，不算配置
+  const all = (await readJson(bindingsPath(), {})) || {}
   if (!target) delete all[key]
   else all[key] = { target: String(target).trim(), updatedAt: Date.now() }
   await writeJson(bindingsPath(), all)
-  return all
+  return readBindings()
 }
 
 /** 预设池：预设名 → { active: <会话id>, sessions: {id: ...} } */

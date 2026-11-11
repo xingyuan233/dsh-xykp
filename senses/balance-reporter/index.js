@@ -13,13 +13,52 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { configFor } from '../../ui/store.js'
+import { configFor, readConfig, writeConfig } from '../../ui/store.js'
 
 export const name = 'balance-reporter'
 // 只等 tools；webServer 用 ctx.get 软取，宿主没挂也不影响工具。
 export const inject = ['tools']
 
+// 挂件自己的外观/交互设置（主题、文本、右键设置面板里那些开关）原来只存在浏览器
+// localStorage（dsh-vk1-options / -size / -gap / -sound），现在统一写进插件配置
+// （HOME\xykp\balance-reporter\config.yml），Web 控制台的「插件配置」也能改。
+const UI_KEYS = [
+  'theme',
+  'displayMode',
+  'pollSeconds',
+  'size',
+  'yieldOn',
+  'yieldOpacity',
+  'scrollGapOn',
+  'scrollGapPx',
+  'scrollGapSnap',
+  'fxBowl',
+  'fxPat',
+  'fxHurt',
+  'soundOn',
+  'volume',
+  'cueVolumes',
+]
+const UI_DEFAULTS = {
+  theme: 'auto',
+  displayMode: 'both',
+  pollSeconds: 12,
+  size: 340,
+  yieldOn: true,
+  yieldOpacity: 7,
+  scrollGapOn: false,
+  scrollGapPx: 17,
+  scrollGapSnap: 0.25,
+  fxBowl: true,
+  fxPat: true,
+  fxHurt: true,
+  soundOn: true,
+  volume: 80,
+  cueVolumes: [100, 100, 100, 100],
+}
+
 const DEFAULTS = {
+  ...UI_DEFAULTS,
   enabled: true,
   tool: true,
   route: true,
@@ -30,6 +69,70 @@ const DEFAULTS = {
   // 法定节假日：宿主每周从 holiday-cn 拉一次，落盘缓存；页面也能直接读这个缓存。
   holidayUrl: 'https://raw.githubusercontent.com/NateScarlet/holiday-cn/master',
   holidayRefreshDays: 7,
+}
+
+const UI_JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
+const UI_THEMES = new Set(['auto', 'light', 'dark'])
+const UI_MODES = new Set(['balance', 'clock', 'both'])
+
+function uiSend(res, status, body) {
+  res.writeHead(status, UI_JSON_HEADERS)
+  res.end(JSON.stringify(body))
+}
+
+function uiReadBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = ''
+    req.on('data', (chunk) => {
+      raw += chunk
+      if (raw.length > 128 * 1024) reject(new Error('请求体过大'))
+    })
+    req.on('end', () => resolve(raw))
+    req.on('error', reject)
+  })
+}
+
+function uiInt(value, min, max, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback
+}
+
+function uiNum(value, min, max, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback
+}
+
+function pickUi(source) {
+  const out = {}
+  for (const key of UI_KEYS) if (source && source[key] !== undefined) out[key] = source[key]
+  return out
+}
+
+function uiConfigured(source) {
+  return !!source && UI_KEYS.some((key) => source[key] !== undefined)
+}
+
+function sanitizeUi(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  const out = {}
+  if (input.theme !== undefined) out.theme = UI_THEMES.has(String(input.theme)) ? String(input.theme) : 'auto'
+  if (input.displayMode !== undefined) out.displayMode = UI_MODES.has(String(input.displayMode)) ? String(input.displayMode) : 'both'
+  if (input.pollSeconds !== undefined) out.pollSeconds = uiInt(input.pollSeconds, 2, 600, 12)
+  if (input.size !== undefined) out.size = uiInt(input.size, 96, 1200, 340)
+  if (input.yieldOn !== undefined) out.yieldOn = !!input.yieldOn
+  if (input.yieldOpacity !== undefined) out.yieldOpacity = uiInt(input.yieldOpacity, 0, 100, 7)
+  if (input.scrollGapOn !== undefined) out.scrollGapOn = !!input.scrollGapOn
+  if (input.scrollGapPx !== undefined) out.scrollGapPx = uiInt(input.scrollGapPx, 0, 60, 17)
+  if (input.scrollGapSnap !== undefined) {
+    out.scrollGapSnap = input.scrollGapSnap === false ? false : uiNum(input.scrollGapSnap, 0.05, 0.5, 0.25)
+  }
+  for (const key of ['fxBowl', 'fxPat', 'fxHurt', 'soundOn']) if (input[key] !== undefined) out[key] = !!input[key]
+  if (input.volume !== undefined) out.volume = uiInt(input.volume, 0, 100, 80)
+  if (input.cueVolumes !== undefined) {
+    const list = Array.isArray(input.cueVolumes) ? input.cueVolumes : []
+    out.cueVolumes = [0, 1, 2, 3].map((i) => uiInt(list[i], 0, 100, 100))
+  }
+  return out
 }
 
 const STATE_VERSION = 1
@@ -345,7 +448,7 @@ function toolDefinition(ctx, config) {
 }
 
 export function apply(ctx, rawConfig = {}) {
-  const config = configFor('senses-balance-reporter', { ...DEFAULTS, ...rawConfig })
+  const config = configFor('balance-reporter', { ...DEFAULTS, ...rawConfig })
   if (!config.enabled) return
 
   if (config.tool !== false) {
@@ -407,6 +510,32 @@ export function apply(ctx, rawConfig = {}) {
           }
         },
       })
+      // 挂件外观/交互设置的读写：GET 返回统一配置里的 ui，POST 合并写回
+      // HOME\xykp\balance-reporter\config.yml（控制台编辑的是同一个文件）。
+      const disposeUi = webServer.register({
+        kind: 'exact',
+        path: '/xykp/balance-reporter/ui',
+        handler: async (req, res) => {
+          const method = String(req.method || 'GET').toUpperCase()
+          try {
+            if (method === 'POST') {
+              const raw = await uiReadBody(req)
+              const body = raw ? JSON.parse(raw) : {}
+              const patch = sanitizeUi(body && typeof body.ui === 'object' && body.ui ? body.ui : body)
+              if (Object.keys(patch).length === 0) throw new Error('没有可保存的设置')
+              const stored = readConfig('balance-reporter')
+              const next = { ...stored, ...patch }
+              writeConfig('balance-reporter', next)
+              uiSend(res, 200, { ok: true, ui: { ...UI_DEFAULTS, ...pickUi(next) }, configured: true })
+              return
+            }
+            const stored = readConfig('balance-reporter')
+            uiSend(res, 200, { ok: true, ui: { ...UI_DEFAULTS, ...pickUi(stored) }, configured: uiConfigured(stored) })
+          } catch (err) {
+            uiSend(res, method === 'POST' ? 400 : 500, { ok: false, error: String(err?.message || err).slice(0, 300) })
+          }
+        },
+      })
       return () => {
         try {
           disposeStatus?.()
@@ -415,6 +544,11 @@ export function apply(ctx, rawConfig = {}) {
         }
         try {
           disposeHolidays?.()
+        } catch {
+          /* ignore */
+        }
+        try {
+          disposeUi?.()
         } catch {
           /* ignore */
         }

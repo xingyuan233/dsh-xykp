@@ -43,7 +43,7 @@
       name: 'dsh-xykp/senses/screenshot'
     - id: senses-keymouse
       name: 'dsh-xykp/senses/keymouse'
-    - id: senses-balance-reporter
+    - id: balance-reporter
       name: 'dsh-xykp/senses/balance-reporter'
 
     - id: bili-reply

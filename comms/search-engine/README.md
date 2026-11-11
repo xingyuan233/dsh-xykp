@@ -124,7 +124,7 @@ node probe\fetch.mjs "https://www.sqlite.org/wal.html" # 抓正文
 6. **降级**：富化/重排任何一步失败，回退到旧的交替合并顺序，保证工具永远有结果。
 
 重排/富化的阈值都是**代码内置默认**（enrich 开、top 6 条、4.5s 超时、每站 2 条），不新增配置项。
-插件参数统一还是走 Web 设置页（写入 `home\xykp\config.yml` 的 `search-engine` 段），没有第二份配置文件。
+插件参数统一还是走 Web 设置页（写入 `home\xykp\search-engine\config.yml` 的 `search-engine` 段），没有第二份配置文件。
 
 已知限制：
 

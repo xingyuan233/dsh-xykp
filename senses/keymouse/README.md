@@ -96,7 +96,7 @@ SendInput / PostMessage 两条路），
 ```
 
 改了 `index.js` 要重启 `dsh web` 才生效（工具定义进的是宿主进程）；只改描述文字不用重启。
-Python 进程按需拉起，cwd 固定在 `home\xykp\senses\keymouse`（插件目录保持干净）。
+Python 进程按需拉起，cwd 固定在 `home\xykp\senses-keymouse`（插件目录保持干净）。
 
 ## 注意
 

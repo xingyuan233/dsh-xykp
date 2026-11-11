@@ -3,7 +3,7 @@
 把 `prosecutor.mjs` 变成插件（清单里的 `observer/dsh-prosecutor`）：
 **宿主启动时探一下它在不在，不在就拉起来；之后每 10 分钟再探一次。**
 
-数据（日志 / pid / state / 哈希）放在 `<DSH_HOME>/xykp/prosecutor/`。
+数据（日志 / pid / state / 哈希）放在 `<DSH_HOME>/xykp/dsh-prosecutor/`。
 
 ## 关键点
 
@@ -20,7 +20,7 @@ Windows 不允许删除/替换「某个进程的当前工作目录」。以前 `
 `cordis.patch.yml / index.js / client.js / chat / comms` 被删掉，宿主直接
 `skipping profile bundle "dsh-xykp"` 起不来。
 
-现在固定 `cwd: <DSH_HOME>/xykp/prosecutor`（本来就在那儿写日志）。实测结论：
+现在固定 `cwd: <DSH_HOME>/xykp/dsh-prosecutor`（本来就在那儿写日志）。实测结论：
 
 - 正在运行的 `.mjs` 文件本身**不**锁 —— 进程活着也能删掉脚本、删掉整个目录；
 - 只有 cwd 会锁，而且锁的是**整条目录**，pnpm 的 swap 正好卡在这。
@@ -45,7 +45,7 @@ Windows 不允许删除/替换「某个进程的当前工作目录」。以前 `
     machineId: ''           # 机器标识（指令后面跟的标识要跟它一样）
     checkIntervalMinutes: 0 # 每隔多少分钟检查 DSH 存活（0 = 不主动检查）
     dshPort: 3080
-    hashPath: ''            # 空 = <DSH_HOME>/xykp/prosecutor/.prosecutor-hash
+    hashPath: ''            # 空 = <DSH_HOME>/xykp/dsh-prosecutor/.prosecutor-hash
     newSessionCwd: ''       # -p 开新对话用的目录（空 = <DSH_HOME>/../workspaces/default-workspace）
     dryRun: false
 ```

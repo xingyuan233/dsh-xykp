@@ -224,7 +224,80 @@ function installBalanceReporter(ctx) {
     showRestoreButton()
   }
 
+  // --- 统一配置桥 --------------------------------------------------------
+  // 挂件的外观/交互设置（主题、文本、尺寸、音效、让开…）现在存在插件配置里
+  // （HOME\xykp\balance-reporter\config.yml），不再只存本机 localStorage。
+  // 启动前先 GET 一次注入 window.__xykpVk1Config；挂件通过 window.__xykpVk1Save
+  // 把改动合并 POST 回宿主（防抖 400ms）。
+  var uiBridge = { loaded: false, task: null, ui: null, configured: false }
+  var uiSaveTimer = 0
+  var uiSavePending = {}
+
+  function uiBridgeUrl() {
+    return '/xykp/balance-reporter/ui'
+  }
+
+  function loadUiBridge() {
+    if (uiBridge.task) return uiBridge.task
+    uiBridge.task = fetch(uiBridgeUrl(), { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (res) {
+        return res.ok ? res.json() : null
+      })
+      .then(function (data) {
+        var ok = !!(data && data.ok)
+        uiBridge.ui = ok && data.ui && typeof data.ui === 'object' ? data.ui : null
+        uiBridge.configured = ok && !!data.configured
+        uiBridge.loaded = true
+        window.__xykpVk1Config = { ui: uiBridge.ui || {}, configured: uiBridge.configured }
+        return uiBridge
+      })
+      .catch(function () {
+        uiBridge.loaded = true
+        window.__xykpVk1Config = { ui: {}, configured: false }
+        return uiBridge
+      })
+    return uiBridge.task
+  }
+
+  function flushUiBridge() {
+    uiSaveTimer = 0
+    var patch = uiSavePending
+    uiSavePending = {}
+    fetch(uiBridgeUrl(), {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ui: patch }),
+    })
+      .then(function (res) {
+        return res.ok ? res.json() : null
+      })
+      .then(function (data) {
+        if (!data || !data.ok || !data.ui) return
+        uiBridge.ui = data.ui
+        uiBridge.configured = true
+        window.__xykpVk1Config = { ui: uiBridge.ui, configured: true }
+      })
+      .catch(function () {})
+  }
+
+  function saveUiBridge(patch) {
+    if (!patch || typeof patch !== 'object') return
+    for (var key in patch) if (Object.prototype.hasOwnProperty.call(patch, key)) uiSavePending[key] = patch[key]
+    if (uiSaveTimer) return
+    uiSaveTimer = setTimeout(flushUiBridge, 400)
+  }
+
+  window.__xykpVk1Save = saveUiBridge
+
   function startWidget() {
+    if (stopped) return
+    if (window.__dshVk1Widget) stopWidget()
+    if (uiBridge.loaded) startWidgetNow()
+    else loadUiBridge().then(startWidgetNow)
+  }
+
+  function startWidgetNow() {
     if (stopped) return
     if (window.__dshVk1Widget) stopWidget()
     try {

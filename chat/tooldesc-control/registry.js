@@ -4,7 +4,7 @@
 // 直接 ctx.get('toolGate') 那时还是 undefined，于是工具就按普通方式注册进去了（门控失效）。
 // 所以这里用「静态 import registry + 直接读配置文件」：谁先谁后都行，规则在每次用时现读。
 //
-// 规则文件：<DSH_HOME>/xykp/config.yml → tooldesc-control.rules（Web 控制台/QQ /cfg-* 写的那份）
+// 规则文件：<DSH_HOME>/xykp/tooldesc-control/config.yml → tooldesc-control.rules（Web 控制台/QQ /cfg-* 写的那份）
 //   tooldesc-control:
 //     rules:
 //     rules:   bili_rove: { keys: [B站, bilibili], cooldown: 8, limit: 3 }
@@ -40,11 +40,11 @@ export function dbg(msg) {
     appendFileSync(DEBUG_LOG, new Date().toISOString() + ' ' + msg + '\n', 'utf8')
   } catch {}
 }
-dbg('registry 初始化 · DSH_HOME=' + (process.env.DSH_HOME || '(未设置)') + ' · 配置=<DSH_HOME>/xykp/config.yml → tooldesc-control.rules')
+dbg('registry 初始化 · DSH_HOME=' + (process.env.DSH_HOME || '(未设置)') + ' · 配置=<DSH_HOME>/xykp/tooldesc-control/config.yml → tooldesc-control.rules')
 
 
 export function loadRules(extra) {
-  // 规则只有一份：Web 控制台（以及 QQ /cfg-*）写的 <DSH_HOME>/xykp/config.yml → tooldesc-control.rules
+  // 规则只有一份：Web 控制台（以及 QQ /cfg-*）写的 <DSH_HOME>/xykp/tooldesc-control/config.yml → tooldesc-control.rules
   // 不缓存：控制台保存后，下一次装配/offer 就该拿到新值。
   let fromWeb = {}
   try {
@@ -77,7 +77,7 @@ export function ruleOf(toolName) {
 /** 规则的「版本号」= config.yml 的 mtime；gate 靠它判断要不要重建规则表（改规则不用重启） */
 export function rulesVersion() {
   try {
-    return statSync(configFile()).mtimeMs
+    return statSync(configFile('tooldesc-control')).mtimeMs
   } catch {
     return 0
   }

@@ -92,7 +92,9 @@ export const TRIMS = {
   },
   ask_user_question: {
     desc: 'Ask the user to confirm, choose, or fill in missing info.',
-    params: { questions: '1-4 questions, ask them all at once' },
+    params: {
+      questions: '1-4, all at once: [{id, question, header?, options?: [{label, description?}], multi_select?}] (id/question required)',
+    },
   },
 
   // ── goals ───────────────────────────────────────────────────────────────

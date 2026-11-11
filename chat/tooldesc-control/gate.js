@@ -25,7 +25,7 @@ import Schema from '@deepseek-ai/schemastery'
 
 import * as __R from './registry.js'
 
-// 调试日志只有一份实现（写 <DSH_HOME>/xykp/tool-gate.log），放在 registry 里；
+// 调试日志只有一份实现（写 <DSH_HOME>/xykp/tooldesc-control/tool-gate.log），放在 registry 里；
 // 以前 gate.js 直接写 dbg(...) 但没定义 → 每次 assemble 抛 ReferenceError，整个回合挂掉。
 const dbg = __R.dbg
 

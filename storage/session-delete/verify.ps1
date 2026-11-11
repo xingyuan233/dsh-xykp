@@ -27,8 +27,6 @@ function Check([string]$label, [bool]$ok) {
 Write-Host '== 1. 离线单元测试 =='
 & node (Join-Path $pluginDir 'test\offline.mjs')
 Check '永久删除离线测试通过' ($LASTEXITCODE -eq 0)
-& node (Join-Path $pluginDir 'test\tail.mjs')
-Check '末尾截断离线测试通过' ($LASTEXITCODE -eq 0)
 
 Write-Host '== 2. profile 安装布局 =='
 $target = Join-Path $ProfileDir 'node_modules\dsh-xykp\storage\session-delete'
@@ -42,9 +40,8 @@ Write-Host '== 3. 浏览器 bundle 内容 =='
 if (Test-Path $bundle) {
     $text = Get-Content $bundle -Raw
     Check 'bundle 含 deleteSession' ($text.Contains('deleteSession'))
-    Check 'bundle 含 previewTurns' ($text.Contains('previewTurns'))
-    Check 'bundle 含 deleteTurnsFrom' ($text.Contains('deleteTurnsFrom'))
-    Check 'bundle 含「删除末尾对话」菜单文案' ($text.Contains('删除末尾对话'))
+    Check 'bundle 含「永久删除会话」菜单文案' ($text.Contains('永久删除会话'))
+    Check 'bundle 不含末尾截断残留' (-not $text.Contains('deleteTurnsFrom') -and -not $text.Contains('previewTurns'))
 }
 
 Write-Host '== 4. xykp 注册行 =='
@@ -53,14 +50,17 @@ if (Test-Path $patch) {
     Check 'cordis.patch.yml 含 dsh-session-delete' ($hits.Count -gt 0)
 }
 
-Write-Host '== 5. 核心补丁（agents.close） =='
+Write-Host '== 5. 已移除末尾截断的收尾检查 =='
 $agentFile = 'D:\AI\DeepseekHarness\npm\node_modules\@deepseek-ai\dsh-agent\lib\index.js'
 if (Test-Path $agentFile) {
     $agentText = Get-Content $agentFile -Raw
-    Check 'dsh-agent 已打 agent-close 补丁（async close(id)）' ($agentText.Contains('async close(id)') -and $agentText.Contains('this.handles'))
+    Check 'dsh-agent 无 agent-close 补丁残留' (-not $agentText.Contains('async close(id)'))
 } else {
     Check "存在 $agentFile" $false
 }
+$coreDir = 'D:\AI\DeepseekHarness\plugins\core'
+Check 'agent-close 补丁文件已删' (-not (Test-Path (Join-Path $coreDir 'agent-close.mjs')))
+Check 'user-footer-slot 补丁文件已删' (-not (Test-Path (Join-Path $coreDir 'user-footer-slot.mjs')))
 
 Write-Host ''
 if ($failed -eq 0) {

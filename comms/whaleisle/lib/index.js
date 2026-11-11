@@ -20,7 +20,7 @@ import {
 } from './routing.js'
 import {
   ago, archiveSession, archivedIds, homeDir, listSessions, newSessionId, presetActive, presetPools,
-  readBindings,
+  readBindings, useConfigAsBindings,
   readJson, readSessionModel, readSessionTitle, writeBinding, writeJson,
 } from './bindings.js'
 
@@ -78,10 +78,18 @@ export const Config = Schema.object({
     .description('允许发指令的用户名（留空=不限制）'),
   accounts: Schema.array(Schema.object({
     name: Schema.string().description('账号名（唯一）'),
+    username: Schema.string().default('')
+      .description('鲸屿登录名（启动器按它生成桥配置；插件本身只读名字）'),
+    password: Schema.string().default('')
+      .description('鲸屿登录密码（同上，只给启动器用）'),
     bridgeUrl: Schema.string().description('这个账号的桥地址，例如 http://127.0.0.1:8711'),
     bridgeToken: Schema.string().description('这个账号的桥 token'),
     target: Schema.string().default('')
       .description('这个账号默认投到哪：p-<预设名> 或 s-<会话id>；留空=用默认账号/全局 defaultTarget'),
+    workspace: Schema.string().default('')
+      .description('这个账号 /new 新建会话时挂哪个工作区（空=不挂）'),
+    preset: Schema.string().default('')
+      .description('这个账号 /new 新建会话时默认用哪个预设（空=用对话当前的）'),
     admin: Schema.boolean().default(true)
       .description('false=这个号的聊天不能发指令（只收发消息）'),
   })).default([])
@@ -219,7 +227,17 @@ function mentionedMe(event, acct) {
 }
 
 export async function apply(ctx, config = {}) {
+  // 先掐掉旧实例（热重载可能留下还在轮询的旧副本 → 同一消息投好几次）
+  try {
+    const runtimes = globalThis.__whaleisleRuntimes || (globalThis.__whaleisleRuntimes = new Set())
+    for (const stop of [...runtimes]) {
+      try { stop() } catch { /* ignore */ }
+    }
+    runtimes.clear()
+  } catch { /* ignore */ }
   const cfg = { ...DEFAULTS, ...Config(rawConfig(config)) }
+  // 绑定信息就在 config.yml 的 accounts 里，喂给 bindings 模块当唯一来源
+  useConfigAsBindings(cfg)
   const accountsConfigured = Array.isArray(cfg.accounts)
     && cfg.accounts.some((a) => a && (a.bridgeToken || a.bridgeUrl))
   if (!cfg.bridgeToken && !accountsConfigured) {
@@ -323,6 +341,8 @@ export async function apply(ctx, config = {}) {
   })
 
   const pending = new Map()          // canonSessionId -> { account, conversationId, lastMessageId, armed, sawOutput, at }
+  /** 账号 -> 最近一次投递的聊天（回程兜底：/new 之后会话 id 对不上时用） */
+  const lastChatOf = new Map()
   const recentSends = []             // { conversationId, text, at }
   const lastInboundConv = { id: '' }
   const lastSessionList = []        // /session 列出来的会话 id，/use <编号> 用
@@ -656,6 +676,8 @@ export async function apply(ctx, config = {}) {
       sawOutput: false,
       at: Date.now(),
     })
+    // 兜底用：这个账号最近一次是往哪个聊天投的（回程按会话 id 对不上时靠它找回来）
+    lastChatOf.set(cur.name, { conversationId, chatKey, at: Date.now() })
     lastInboundConv.id = conversationId
     delivered.set(conversationId, lastId)
     await saveState()
@@ -689,11 +711,23 @@ export async function apply(ctx, config = {}) {
     try { controller.abort() } catch { /* ignore */ }
   }
   try { ctx.on('dispose', cleanup) } catch { /* older host */ }
+  // 进程级单例：热重载会再 apply 一次，旧实例的轮询不一定被 dispose 掉，
+  // 两个实例各轮询一遍 → 同一个聊天看到同一条消息两三次（👀 x3 就是这么来的）
+  try {
+    const runtimes = globalThis.__whaleisleRuntimes || (globalThis.__whaleisleRuntimes = new Set())
+    for (const stop of [...runtimes]) {
+      if (stop !== cleanup) {
+        try { stop() } catch { /* ignore */ }
+      }
+    }
+    runtimes.clear()
+    runtimes.add(cleanup)
+  } catch { /* ignore */ }
 
   const pollOne = async (acct) => {
     const wait = Math.max(0, Math.min(30, Number(cfg.pollWait) || 20))
     // 拉消息并发（只读 acct），处理放进 withLock 串行，避免切账号的全局视图被交叉污染
-    const data = await apiOn(acct, `/v1/inbound?after=${acct.cursor}&wait=${wait}`,
+    const data = await apiOn(acct, `/v1/inbound?after=${acct.cursor}&wait=${wait}&consume=1`,
       { timeoutMs: (wait + 15) * 1000 })
     const events = Array.isArray(data?.events) ? data.events : []
     if (!events.length) return
@@ -880,7 +914,8 @@ export async function apply(ctx, config = {}) {
   /** 这个聊天当前指向的会话 id（不抛错） */
   const sessionForChat = async (chatKey) => {
     const bound = (await readBindings())[chatKey]
-    const target = bound?.target || cfg.defaultTarget || cfg.target
+    // target 现在存在账号级（accounts[].target），频道级 cfg.target 只是老配置的回落
+    const target = bound?.target || (cur && cur.target) || cfg.defaultTarget || cfg.target
     try {
       return await resolveTarget(target)
     } catch {
@@ -956,64 +991,6 @@ export async function apply(ctx, config = {}) {
         lines.push(`下轮权限: ${perm || '未知'}`)
         return lines.join('\n')
       }
-      case 'acc': {
-        const parts = arg.split(/\s+/).filter(Boolean)
-        if (!parts.length) {
-          const rows = []
-          for (const a of accounts) {
-            const t = await accountTarget(a)
-            rows.push(`${a.name}${a.name === defaultAccount().name ? '（默认）' : ''} → ${t || '（未配置）'}${a.me ? ` · ${a.me}` : ''}`)
-          }
-          return `账号：\n${rows.join('\n')}\n用 /acc <账号名> <p-预设|s-会话id|none> 改目标`
-        }
-        const [name, target] = parts
-        const acct = accountByName(name)
-        if (!acct) return `没有账号 ${name}（有：${accounts.map((a) => a.name).join(' / ')}）`
-        if (!target || target === 'none' || target === 'off') {
-          await writeBinding(`acct:${name}`, '')
-          return `已清掉账号 ${name} 的目标，回落到默认账号/全局默认`
-        }
-        const ref = /^(p|s)-/i.test(target) ? target : `p-${target}`
-        const parsedRef = parseTargetRef(ref)
-        if (parsedRef.kind === 'preset') {
-          const active = await presetActive(parsedRef.value)
-          if (!active) return `预设 ${parsedRef.value} 没有活跃会话`
-        }
-        await writeBinding(`acct:${name}`, ref)
-        return `账号 ${name} → ${ref}`
-      }
-      case 'bind': {
-        if (!arg) {
-          return [
-            '用法：/bind [聊天] <目标>',
-            '  聊天：g-<会话id> / u-<用户名> / 群名，省略=当前聊天',
-            '  目标：p-<预设名> / s-<会话id>，也可以只写预设名',
-          ].join('\n')
-        }
-        const parts = arg.split(/\s+/).filter(Boolean)
-        let chatRef = ''
-        let targetRef = parts[0]
-        if (parts.length >= 2) {
-          chatRef = parts[0]
-          targetRef = parts[1]
-        }
-        const target = /^(p|s)-/i.test(targetRef) ? targetRef : `p-${targetRef}`
-        const parsed = parseTargetRef(target)
-        if (parsed.kind === 'preset') {
-          const active = await presetActive(parsed.value)
-          if (!active) return `预设 ${parsed.value} 没有绑定会话`
-        }
-        const bindChat = chatRef ? await resolveChatRef(chatRef) : chatKey
-        if (!bindChat) return `找不到聊天：${chatRef}`
-        await writeBinding(bindChat, target)
-        return `已把 ${bindChat} 绑到 ${target}`
-      }
-      case 'unbind': {
-        const bindChat = arg ? await resolveChatRef(arg) : chatKey
-        if (!bindChat) return `找不到聊天：${arg}`
-        await writeBinding(bindChat, '')
-        return `已解除 ${bindChat} 的绑定`
-      }
       case 'new': {
         try {
           const target = await accountTarget(cur)
@@ -1033,17 +1010,11 @@ export async function apply(ctx, config = {}) {
           if (wsName) {
             wsPath = /^[A-Za-z]:[\\/]/.test(String(wsName)) ? String(wsName) : join(await workspacesRoot(), String(wsName))
           } else if (base) {
-            // 没单独指定就复制当前对话的工作区
+            // 没单独指定就复制当前对话的工作区；slug 目录名是单向编码（盘符冒号会丢），直接读会话头里的 cwd
             try {
-              const root = join(homeDir(), 'sessions')
-              for (const d of await readdir(root)) {
-                let subs = []
-                try { subs = await readdir(join(root, d)) } catch { continue }
-                if (subs.includes(base)) {
-                  wsPath = d.replace(/^--|--$/g, '').split('-').join('\\')
-                  break
-                }
-              }
+              const meta = await readSessionMeta(base)
+              const c = String(meta?.cwd || '')
+              if (/^[A-Za-z]:[\\/]/.test(c) || c.startsWith('/') || c.startsWith('\\\\')) wsPath = c
             } catch { /* ignore */ }
           }
           const d = new Date()
@@ -1096,30 +1067,6 @@ export async function apply(ctx, config = {}) {
           return `新建对话失败：${err?.message || err}`
         }
       }
-      case 'use': {
-        // /use <编号|s-会话id|p-预设|none>：把这个账号的目标切过去
-        if (!arg) return '用法：/use <编号|s-会话id|p-预设|none>'
-        let target = arg.trim()
-        if (/^\d+$/.test(target)) {
-          const hit = lastSessionList[Number(target) - 1]
-          if (!hit) return `没有第 ${target} 个会话（先发 /session）`
-          target = `s-${hit}`
-        }
-        if (target === 'none' || target === 'off') {
-          await writeBinding(`acct:${cur.name}`, '')
-          return `已清掉账号「${cur.name}」的目标，回落到默认账号/全局默认`
-        }
-        if (!/^(p|s)-/i.test(target)) target = `p-${target}`
-        const parsed = parseTargetRef(target)
-        if (parsed.kind === 'preset') {
-          const active = await presetActive(parsed.value)
-          if (!active) return `预设 ${parsed.value} 没有活跃会话`
-        }
-        await writeBinding(`acct:${cur.name}`, target)
-        return `账号「${cur.name}」→ ${target}`
-      }
-      case 'say':
-        return '未知或不完整的命令'
       case 'permission': {
         const pp = typeof ctx.get === 'function' ? ctx.get('permissionPresets') : null
         if (!pp) return '宿主没有 permissionPresets，改不了权限'
@@ -1152,15 +1099,15 @@ export async function apply(ctx, config = {}) {
         const activeSid = await activeSessionForAccount()
         const meta = activeSid ? await readSessionMeta(activeSid) : { cwd: '' }
         const curWs = String(meta.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
+        let dirs = []
+        try {
+          const root = await workspacesRoot()
+          dirs = (await readdir(root, { withFileTypes: true }))
+            .filter((d) => d.isDirectory())
+            .map((d) => d.name)
+            .sort()
+        } catch { dirs = [] }
         if (!arg) {
-          let dirs = []
-          try {
-            const root = await workspacesRoot()
-            dirs = (await readdir(root, { withFileTypes: true }))
-              .filter((d) => d.isDirectory())
-              .map((d) => d.name)
-              .sort()
-          } catch { dirs = [] }
           return dirs.map((name, i) => {
             const marks = []
             if (name === curWs) marks.push('[当前]')
@@ -1168,7 +1115,12 @@ export async function apply(ctx, config = {}) {
             return `${i + 1}.${marks.join('')}${name}`
           }).join('\n') || '（没有工作区）'
         }
-        const chosen = String(arg).trim()
+        let chosen = String(arg).trim()
+        if (/^\d+$/.test(chosen)) {
+          const n = Number(chosen)
+          chosen = n >= 1 && n <= dirs.length ? dirs[n - 1] : ''
+          if (!chosen) return `找不到工作区：${arg}`
+        }
         await writeBinding(`ws:${cur.name}`, chosen)
         return `已将新建工作目录改为 ${chosen}`
       }
@@ -1265,59 +1217,6 @@ export async function apply(ctx, config = {}) {
         const running = !!agent && (agent.running === true || agent.status === 'running')
         return `${sid || '（无对话）'} ${running ? '正在运行' : '未在运行'}`
       }
-      case 'free': {
-        const sessionId = await sessionForChat(chatKey)
-        const agent = sessionId ? findAgent(sessionId) : null
-        if (!agent) return '没有可释放的会话'
-        if (typeof agent.free === 'function') {
-          await agent.free()
-          return `已释放 ${sessionId}`
-        }
-        if (agent.status && agent.status !== 'idle') {
-          await agent.cancel()
-          return `已停止 ${sessionId}`
-        }
-        return `${sessionId} 现在空闲`
-      }
-      case 'compact': {
-        const sessionId = await sessionForChat(chatKey)
-        const agent = sessionId ? findAgent(sessionId) : null
-        if (!agent) return '没有可压缩的会话'
-        if (typeof agent.compact !== 'function') return '宿主没暴露 compact 接口'
-        await agent.compact()
-        return `已请求压缩 ${sessionId}`
-      }
-      case 'cfg-default': {
-        if (!arg) return '用法：/cfg-default p-alive'
-        cfg.defaultTarget = arg
-        return persistConfig()
-      }
-      case 'cfg-mode': {
-        const mode = arg.toLowerCase()
-        if (!['blacklist', 'whitelist', 'off'].includes(mode)) {
-          return '用法：/cfg-mode blacklist|whitelist|off'
-        }
-        cfg.mode = mode
-        return persistConfig()
-      }
-      case 'cfg-list': {
-        const [which, action, value] = arg.split(/\s+/).filter(Boolean)
-        const name = which === 'blocked' || which === 'allowed' ? which : ''
-        if (!name) return '用法：/cfg-list blocked|allowed [add|del] [聊天]'
-        const list = (cfg[name] || []).map(normalizeKey)
-        if (!action) return `${name}: ${list.length ? list.join(', ') : '（空）'}`
-        const chat = await resolveChatRef(value || '')
-        if (!chat) return `找不到聊天：${value}`
-        if (action === 'add' && !list.includes(chat)) list.push(chat)
-        if (action === 'del') {
-          const index = list.indexOf(chat)
-          if (index >= 0) list.splice(index, 1)
-        }
-        cfg[name] = list
-        return persistConfig()
-      }
-      case 'cfg-table':
-        return serializeConfig()
       case 'preset': {
         const bindings = await readBindings()
         const active = await activeSessionForAccount()
@@ -1398,9 +1297,19 @@ export async function apply(ctx, config = {}) {
           const own = new Set()
           if (pool?.active) own.add(pool.active)
           if (pool?.sessions && pool.sessions !== true) {
-            for (const k of Object.keys(pool.sessions)) own.add(k)
+            for (const k of pool.sessions) own.add(k)
           }
-          for (let k = matches.length - 1; k >= 0; k -= 1) if (!own.has(matches[k].id)) matches.splice(k, 1)
+          // 池子可能过期（只记过 /new 建的那些），再以会话实际挂的预设为准兜底
+          const kept = []
+          for (const item of matches) {
+            if (own.has(item.id)) { kept.push(item); continue }
+            try {
+              const meta = await readSessionMeta(item.id)
+              if (String(meta?.preset || '') === boundPreset) kept.push(item)
+            } catch { /* ignore */ }
+          }
+          matches.length = 0
+          for (const item of kept) matches.push(item)
         }
         matches.sort((a, b) => b.ts - a.ts)
         const seenTitles = new Set()
@@ -1426,7 +1335,12 @@ export async function apply(ctx, config = {}) {
         }
         const ref = rest[0]
         let found = null
-        for (const item of list) {
+        // 支持列表里显示的编号（1 起）
+        if (/^\d+$/.test(ref)) {
+          const n = Number(ref)
+          if (n >= 1 && n <= list.length) found = list[n - 1]
+        }
+        if (!found) for (const item of list) {
           if (item.id === ref || item.id === `s-${ref}`) { found = item; break }
         }
         if (!found) {
@@ -1504,8 +1418,29 @@ export async function apply(ctx, config = {}) {
   const onSessionEvent = async (session, event) => {
     if (!cfg.autoReply) return
     const key = canonSessionId(session && session.id)
-    const info = pending.get(key)
-    if (!info) return
+    let info = pending.get(key)
+    if (!info) {
+      // 兜底：/new 之后投递记下的 session id 有时和事件里带的对不上，
+      // 这时按「账号当前绑定的会话」反查，再用这个账号最近一次投递的聊天把回复发出去
+      const rawId = String((session && session.id) || '')
+      const targets = [`s-${rawId}`, rawId]
+      const bind = await readBindings().catch(() => ({}))
+      const hit = Object.entries(bind || {}).find(([k, v]) => k.startsWith('acct:')
+        && targets.includes(String(v?.target || '')))
+      const acctName = hit ? hit[0].slice(5) : ''
+      const last = acctName ? lastChatOf.get(acctName) : null
+      if (!last || Date.now() - last.at > 15 * 60_000) return
+      info = {
+        account: acctName,
+        conversationId: last.conversationId,
+        chatKey: last.chatKey,
+        lastMessageId: 0,
+        armed: true,
+        sawOutput: false,
+        at: Date.now(),
+      }
+      pending.set(key, info)
+    }
     if (Date.now() - info.at > 15 * 60_000) { pending.delete(key); return }
     if (!event || typeof event !== 'object') return
     if (event.type === 'user/message') {
@@ -1515,7 +1450,6 @@ export async function apply(ctx, config = {}) {
       }
       return
     }
-    if (!info.armed) return
     if (event.type === 'assistant/message') {
       const text = extractText(event?.data?.message)
       if (!text) return

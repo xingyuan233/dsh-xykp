@@ -24,7 +24,7 @@ senses/
     └── test_input.py / e2e_window.py / README.md
 ```
 
-运行时子进程的 cwd 都在 `home\xykp\senses\<插件名>`（不是插件目录）——驱动/库往 cwd
+运行时子进程的 cwd 都在 `home\xykp\senses-screenshot` / `home\xykp\senses-keymouse`（不是插件目录）——驱动/库往 cwd
 写的日志（比如 NVIDIA `umdlogs`）不会混进仓库，更新插件也不会丢。
 
 ## 为什么多一层 JS

@@ -44,13 +44,12 @@ http://127.0.0.1:3080/injection-shower
 
 页面每 2 秒刷新，按会话分卡片：最新一轮展开，旧的折叠；收件箱通知单独一组。
 
-## 配置（`HOME\xykp\config.yml`）
+## 配置（`HOME\xykp\injection-shower\config.yml`）
 
 ```yaml
-injection-shower:
-  maxSnapshots: 20   # 每个会话保留几轮 assembly
-  maxNotices: 30     # 每个会话保留几条收件箱消息
-  maxChars: 4000     # 单段文本最长保留多少字（超了截断）
+maxSnapshots: 20   # 每个会话保留几轮 assembly
+maxNotices: 30     # 每个会话保留几条收件箱消息
+maxChars: 4000     # 单段文本最长保留多少字（超了截断）
 ```
 
 数据落盘在 `HOME\xykp\injection-shower\state.json`（宿主重启后恢复）；够看「刚才那轮注入了什么」。

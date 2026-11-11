@@ -13,7 +13,7 @@
 //   node prosecutor.mjs --parse-test 只打印参数解析结果
 //
 // 包内版（2026-10-27）：脚本和 config.json 跟着插件包走；
-// 日志 / 状态 / pid 放 <DSH_HOME>/prosecutor/，不往 node_modules 里写。
+// 日志 / 状态 / pid 放 <DSH_HOME>/xykp/dsh-prosecutor/，不往 node_modules 里写。
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -22,7 +22,7 @@ import net from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home';
-const RUN_DIR = join(HOME, 'xykp', 'prosecutor');
+const RUN_DIR = join(HOME, 'xykp', 'dsh-prosecutor');
 const CFG_PATH = join(HERE, 'config.json');
 const LOG_PATH = join(RUN_DIR, 'prosecutor.log');
 const STATE_PATH = join(RUN_DIR, 'state.json');

@@ -17,7 +17,7 @@ import { configFor } from '../../ui/store.js'
 export const name = 'senses-screenshot'
 export const inject = ['tools']
 
-// fmt=auto 的判定阈值；home/xykp/config.yml 的 senses-screenshot.auto 会覆盖这里的默认值。
+// fmt=auto 的判定阈值；home/xykp/senses-screenshot/config.yml 的 senses-screenshot.auto 会覆盖这里的默认值。
 const CONFIG_FALLBACK = {
   auto: {
     png_max_uniq: 0.12,
@@ -33,7 +33,7 @@ const PYTHON = process.env.DSH_SENSES_PYTHON || 'D:\\Program-Files\\Python\\312\
 const SERVER = fileURLToPath(new URL('./server.py', import.meta.url))
 const HOME = process.env.DSH_HOME || 'D:\\AI\\DeepseekHarness\\home'
 // 子进程的 cwd 落在这里：驱动/库往 cwd 写的日志（NVIDIA umdlogs 等）不会再污染插件目录。
-const DATA_DIR = join(HOME, 'xykp', 'senses', 'screenshot')
+const DATA_DIR = join(HOME, 'xykp', 'senses-screenshot')
 
 const IMAGE_VALUE_SCHEMA = {
   type: 'object',

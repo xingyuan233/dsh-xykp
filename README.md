@@ -29,7 +29,7 @@ DeepSeek Harness 的个人插件集合：**一个 npm 包装二十来个子插�
 | 行 id | 包内路径 | 干什么 |
 |---|---|---|
 | `xykp` | `dsh-xykp`（根） | 客户端门面，加载根级 `client.js` |
-| `xykp-console` | `ui/console` | 设置 → **xykp 配置**（读写 `HOME\xykp\config.yml`） |
+| `xykp-console` | `ui/console` | 设置 → **xykp 配置**（读写 `HOME\xykp\<行 id>\config.yml`） |
 | `log-cleaner` | `storage/log-cleaner` | 定时扫 `dsh-*.log`，备份、删旧 |
 | `session-archiver` | `storage/session-archiver` | 归档很久没动过的会话 |
 | `dsh-session-delete` | `storage/session-delete` | 侧边栏右键永久删除会话 |
@@ -42,7 +42,7 @@ DeepSeek Harness 的个人插件集合：**一个 npm 包装二十来个子插�
 | `injection-shower` | `chat/injection-shower` | 只读旁路：每轮注入的 context / section / 收件箱消息，看 `http://127.0.0.1:3080/injection-shower` |
 | `senses-screenshot` | `senses/screenshot` | 截屏（Python MCP，带窗口/区域） |
 | `senses-keymouse` | `senses/keymouse` | 鼠标键盘注入 |
-| `senses-balance-reporter` | `senses/balance-reporter` | 页面右下角的 VK-1 余额挂件 + `balance_report` |
+| `balance-reporter` | `senses/balance-reporter` | 页面右下角的 VK-1 余额挂件 + `balance_report` |
 | `bili-reply` | `comms/bili-reply` | B 站评论 / 私信自动回复（含队列、去重） |
 | `bili-rove` | `comms/bili-rove` | B 站工具：搜索、视频、字幕、评论、弹幕、真帧、回复、三连 |
 | `bili-audio-live` | `comms/bili-audio-live` | 直播语音识别 + 弹幕攒批投递 |
@@ -54,11 +54,10 @@ DeepSeek Harness 的个人插件集合：**一个 npm 包装二十来个子插�
 
 ## 配置与显示名
 
-- `HOME\xykp\config.yml` —— 行 id → 配置（YAML，可手改；控制台保存会热重载那一行）
-- `HOME\xykp\labels.yml` —— 只存界面显示名（左栏标题、字段中文名）
+- `HOME\xykp\<行 id>\config.yml` —— 每个插件自己的配置（YAML，可手改；控制台保存只改这一行并热重载）
+- `HOME\xykp\<行 id>\labels.yml` —— 只存这一行的界面显示名（左栏标题、字段中文名）
 
-子插件读配置统一用 `ui/store.js` 的 `configFor('<行id>')`；**不要再把 xykp 的 config 写回 profile 的 patch**，
-文件优先，patch 里的值会被覆盖，两处打架最难查。
+子插件读配置统一用 `ui/store.js` 的 `configFor('<行id>')`；**不要再把 xykp 的 config 写回 profile 的 patch**。
 
 ## 包结构
 
